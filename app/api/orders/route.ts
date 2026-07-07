@@ -16,6 +16,7 @@ import {
   resolveItemsAndTotals,
   serializeOrderListRow,
 } from "@/lib/orders";
+import { syncReservations } from "@/lib/stock";
 import { normalizePhone, type OrderStatusValue } from "@/lib/order-constants";
 
 // Order list — same filters/window/search/pagination as the Orders page
@@ -202,6 +203,11 @@ export async function POST(req: Request) {
             });
           }
           await recomputeDue(tx, order.id); // integrity rule 1
+          // SPEC §1.3: stock reserves at CONFIRMED (ON_HOLD reserves nothing —
+          // the reservation happens when the hold lifts via the status route).
+          if (initialStatus === "CONFIRMED") {
+            await syncReservations(tx, order.id, session.user.id);
+          }
           await tx.orderStatusHistory.create({
             data: {
               orderId: order.id,

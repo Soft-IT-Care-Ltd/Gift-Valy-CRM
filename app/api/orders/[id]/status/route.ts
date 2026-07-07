@@ -10,6 +10,7 @@ import {
   orderViewScope,
   statusChangePermitted,
 } from "@/lib/orders";
+import { syncStockForStatus } from "@/lib/stock";
 import { ALLOWED_TRANSITIONS, ORDER_STATUSES } from "@/lib/order-constants";
 
 type Params = { params: Promise<{ id: string }> };
@@ -24,7 +25,9 @@ const bodySchema = z.object({
 });
 
 // Status lifecycle per SPEC §1.3, every change logged to order_status_history
-// (§4.2). Stock reserve/deduct at CONFIRMED/PACKED arrives with Phase 2.
+// (§4.2). Stock follows the status in the same transaction (SPEC §6.3):
+// RESERVE at CONFIRMED, RELEASE+OUT_SALE at PACKED (+ cost snapshot freeze),
+// RELEASE on hold/cancel, IN_RETURN restore on RETURNED / post-pack cancel.
 export async function POST(req: Request, { params }: Params) {
   try {
     // Base auth only — Packing has orders.pack but no view permission, so the
@@ -114,6 +117,7 @@ export async function POST(req: Request, { params }: Params) {
           note,
         },
       });
+      await syncStockForStatus(tx, id, to, session.user.id, note);
     });
     await logAudit({
       userId: session.user.id,

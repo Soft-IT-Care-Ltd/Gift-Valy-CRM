@@ -3,6 +3,7 @@ import type { Session } from "next-auth";
 import { z } from "zod";
 import { prisma } from "./db";
 import { AuthzError } from "./authz";
+import { syncReservations } from "./stock";
 import {
   BD_DISTRICTS,
   CUSTOMER_COUNTRIES,
@@ -399,7 +400,8 @@ export function withinEditWindow(createdAt: Date, minutes: number): boolean {
 
 // ---------- apply an edit (direct PATCH or approved edit request) ----------
 
-// Replaces sections B/C fields + items, recomputes totals and due.
+// Replaces sections B/C fields + items, recomputes totals and due, and
+// re-syncs stock reservations when the order is CONFIRMED (SPEC §6.3).
 // Floor checks are the caller's job (they know who authorized the edit).
 export async function applyOrderEdit(
   tx: Prisma.TransactionClient,
@@ -445,6 +447,16 @@ export async function applyOrderEdit(
   // COD: explicit value wins, otherwise follow the recomputed due (never < 0).
   const cod = payload.codAmount ?? Math.max(due, 0);
   await tx.order.update({ where: { id: orderId }, data: { codAmount: cod } });
+  // Reservations track the items of a CONFIRMED order. PACKED edits don't
+  // touch stock — the deduction reflects what was physically packed, and any
+  // later cancel/return reverses the ledger, not the edited item list.
+  const { status } = await tx.order.findUniqueOrThrow({
+    where: { id: orderId },
+    select: { status: true },
+  });
+  if (status === "CONFIRMED") {
+    await syncReservations(tx, orderId, userId);
+  }
 }
 
 // ---------- serialization (field-level security per CLAUDE.md rule 1) ----------

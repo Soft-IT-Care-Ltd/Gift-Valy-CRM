@@ -54,6 +54,17 @@ export default async function DashboardLayout({
       section: "Catalog",
     });
   }
+  // Inventory (SPEC §6.3). Packing sees only its queue; stock/purchases are
+  // gated on their own permissions so each role gets exactly its tools.
+  if (permissions.includes("orders.pack")) {
+    navItems.push({ href: "/packing", label: "Packing Queue", section: "Inventory" });
+  }
+  if (permissions.includes("stock.view")) {
+    navItems.push({ href: "/stock", label: "Stock", section: "Inventory" });
+  }
+  if (permissions.includes("purchases.create")) {
+    navItems.push({ href: "/purchases", label: "Purchases", section: "Inventory" });
+  }
   if (permissions.includes("users.manage")) {
     navItems.push(
       { href: "/admin/users", label: "Users", section: "Admin" },

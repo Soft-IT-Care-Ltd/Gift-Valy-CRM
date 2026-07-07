@@ -179,7 +179,9 @@ async function main() {
   const productIdBySku = new Map<string, number>();
   for (const p of demoProducts) {
     const { sku, category, ...fields } = p;
-    const data = { ...fields, categoryId: catIdByName.get(category)! };
+    // reservedQty resets to 0 on every seed run; the demo CONFIRMED orders
+    // below re-establish reservations so cache and ledger stay consistent.
+    const data = { ...fields, categoryId: catIdByName.get(category)!, reservedQty: 0 };
     const product = await prisma.product.upsert({
       where: { sku },
       update: data,
@@ -281,6 +283,12 @@ async function main() {
   const oldIds = oldDemo.map((o) => o.id);
   await prisma.payment.deleteMany({ where: { orderId: { in: oldIds } } });
   await prisma.order.deleteMany({ where: { id: { in: oldIds } } });
+
+  // Phase-2 derived data is fully regenerated below (opening balances,
+  // reservations, and any purchases/expenses), so wipe it for a clean re-seed.
+  await prisma.stockMovement.deleteMany({});
+  await prisma.expense.deleteMany({});
+  await prisma.purchase.deleteMany({}); // cascades purchase_items
 
   const daysAgo = (n: number, hour = 10) => {
     const d = new Date();
@@ -576,6 +584,40 @@ async function main() {
 
   const round2 = (n: number) => Math.round(n * 100) / 100;
   const accountsId = userIdByEmail.get("accounts@giftvaly.com")!;
+  const adminId = userIdByEmail.get(ADM)!;
+
+  // Opening stock (SPEC §14 "current stock = SUM(movements)"): one ADJUST_PLUS
+  // baseline per tracked product so the ledger reconciles with the seeded
+  // stock_qty cache. Perishables (non-stock-tracked) never hit the ledger.
+  const trackedProducts = demoProducts.filter((p) => p.isStockTracked && p.stockQty > 0);
+  await prisma.stockMovement.createMany({
+    data: trackedProducts.map((p) => ({
+      productId: productIdBySku.get(p.sku)!,
+      type: "ADJUST_PLUS" as const,
+      qty: p.stockQty,
+      reason: "Opening stock (seed baseline)",
+      at: daysAgo(40, 9),
+      createdBy: adminId,
+    })),
+  });
+
+  // BOM-expanded stock requirement per tracked product for an order's lines
+  // (PRODUCT lines count themselves; PACKAGE lines expand their BOM).
+  const isTrackedBySku = new Map(demoProducts.map((p) => [p.sku, p.isStockTracked]));
+  const pkgItemsByCode = new Map(demoPackages.map((pkg) => [pkg.code, pkg.items]));
+  const trackedRequirements = (items: DemoLine[]) => {
+    const need = new Map<number, number>();
+    const add = (sku: string, qty: number) => {
+      if (!isTrackedBySku.get(sku)) return;
+      const id = productIdBySku.get(sku)!;
+      need.set(id, (need.get(id) ?? 0) + qty);
+    };
+    for (const it of items) {
+      if (it.sku) add(it.sku, it.qty);
+      else for (const b of pkgItemsByCode.get(it.pkg!)!) add(b.sku, it.qty * b.qty);
+    }
+    return need;
+  };
 
   for (const d of demoOrders) {
     const seId = userIdByEmail.get(d.seEmail)!;
@@ -678,17 +720,46 @@ async function main() {
           })),
         });
       }
+
+      // SPEC §1.3: CONFIRMED orders hold a live reservation. PACKED-and-beyond
+      // orders already deducted stock historically — the seeded stock_qty is
+      // the current on-hand, so they need no ledger rows here. Terminal states
+      // (cancelled/returned) hold nothing.
+      if (status === "CONFIRMED") {
+        const need = trackedRequirements(d.items);
+        if (need.size > 0) {
+          await tx.stockMovement.createMany({
+            data: [...need].map(([productId, qty]) => ({
+              productId,
+              type: "RESERVE" as const,
+              qty: -qty, // RESERVE is signed negative (reserved_qty goes up)
+              refTable: "orders",
+              refId: order.id,
+              at: createdAt,
+              createdBy: seId,
+            })),
+          });
+          for (const [productId, qty] of need) {
+            await tx.product.update({
+              where: { id: productId },
+              data: { reservedQty: { increment: qty } },
+            });
+          }
+        }
+      }
     });
   }
 
   const orderCount = await prisma.order.count();
   const paymentCount = await prisma.payment.count();
+  const movementCount = await prisma.stockMovement.count();
 
   console.log("Seed complete:");
   console.log(`  ${PERMISSION_DEFS.length} permissions, ${ROLE_NAMES.length} roles (matrix applied)`);
   console.log("  Team: Team Alpha");
   console.log(`  Catalog: ${categoryNames.length} categories, ${demoProducts.length} products, ${demoPackages.length} packages`);
   console.log(`  Demo data: ${demoCustomers.length} customers, ${demoOrders.length} demo orders (${orderCount} total), ${paymentCount} payments`);
+  console.log(`  Stock: ${movementCount} movements (opening balances + confirmed-order reservations)`);
   console.log("  Admin:    mh.neshad39@gmail.com / Admin@GV2026");
   console.log("  Manager:  manager@giftvaly.com  / Manager@GV2026");
   console.log("  TL:       sakib@giftvaly.com    / Team@GV2026");

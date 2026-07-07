@@ -1,5 +1,6 @@
 // Gift Valy ERP — Prisma schema
 // Phase 1: AUTH & ORG + CATALOG + CUSTOMERS & ORDERS + PAYMENTS (SPEC §14).
+// Phase 2: STOCK MOVEMENTS + PURCHASES + EXPENSES (SPEC §6.3 / §9.1 / §14).
 // Naming: snake_case in DB via @map/@@map. Money = Decimal(12,2) BDT.
 
 generator client {
@@ -128,17 +129,142 @@ model Product {
   lowStockThreshold Int      @default(0) @map("low_stock_threshold")
   isStockTracked    Boolean  @default(true) @map("is_stock_tracked") // false = perishable/per-order (cake, flowers)
   isActive          Boolean  @default(true) @map("is_active")
-  stockQty          Int      @default(0) @map("stock_qty") // cache; kept in sync with stock_movements in one txn (Phase 2)
+  // Caches — pure sums over stock_movements, written in the SAME transaction
+  // as the movement rows (SPEC §14 integrity rule 2). stock_qty = physical
+  // on-hand; reserved_qty = held by CONFIRMED orders; available = qty − reserved.
+  stockQty          Int      @default(0) @map("stock_qty")
+  reservedQty       Int      @default(0) @map("reserved_qty")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
   createdBy         Int?     @map("created_by")
   updatedBy         Int?     @map("updated_by")
 
-  category     Category      @relation(fields: [categoryId], references: [id])
-  packageItems PackageItem[]
-  orderItems   OrderItem[]
+  category       Category        @relation(fields: [categoryId], references: [id])
+  packageItems   PackageItem[]
+  orderItems     OrderItem[]
+  stockMovements StockMovement[]
+  purchaseItems  PurchaseItem[]
 
   @@map("products")
+}
+
+// ============ STOCK MOVEMENTS (SPEC §6.3 / §14) ============
+
+enum StockMovementType {
+  IN_PURCHASE
+  OUT_SALE
+  RESERVE
+  RELEASE_RESERVE
+  IN_RETURN
+  ADJUST_PLUS
+  ADJUST_MINUS
+}
+
+// Immutable ledger — rows are only ever inserted, never updated or deleted
+// (corrections are new ADJUST rows). qty is SIGNED by effect on availability:
+//   physical types (IN_PURCHASE +, OUT_SALE −, IN_RETURN +, ADJUST_PLUS +,
+//   ADJUST_MINUS −) sum to products.stock_qty;
+//   RESERVE (−) / RELEASE_RESERVE (+) sum to −products.reserved_qty.
+// Therefore SUM(qty) over ALL rows = available-to-sell ("current stock =
+// SUM(movements)", SPEC §14). All writes go through lib/stock.ts applyMovements.
+model StockMovement {
+  id        Int               @id @default(autoincrement())
+  productId Int               @map("product_id")
+  type      StockMovementType
+  qty       Int
+  refTable  String?           @map("ref_table") // "orders" | "purchases" | null (manual adjust)
+  refId     Int?              @map("ref_id")
+  reason    String?
+  at        DateTime          @default(now())
+  createdBy Int?              @map("created_by")
+
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([productId, at])
+  @@index([refTable, refId])
+  @@map("stock_movements")
+}
+
+// ============ PURCHASES (SPEC §6.3 / §14) ============
+
+enum PurchasePaymentStatus {
+  PAID
+  DUE
+  PARTIAL
+}
+
+model Purchase {
+  id            Int                   @id @default(autoincrement())
+  supplierName  String                @map("supplier_name")
+  purchaseDate  DateTime              @map("purchase_date") @db.Date
+  totalAmount   Decimal               @map("total_amount") @db.Decimal(12, 2)
+  paymentStatus PurchasePaymentStatus @default(PAID) @map("payment_status")
+  notes         String?
+  createdAt     DateTime              @default(now()) @map("created_at")
+  updatedAt     DateTime              @updatedAt @map("updated_at")
+  createdBy     Int?                  @map("created_by")
+  updatedBy     Int?                  @map("updated_by")
+
+  items PurchaseItem[]
+
+  @@index([purchaseDate])
+  @@map("purchases")
+}
+
+model PurchaseItem {
+  id         Int     @id @default(autoincrement())
+  purchaseId Int     @map("purchase_id")
+  productId  Int     @map("product_id")
+  qty        Int
+  unitCost   Decimal @map("unit_cost") @db.Decimal(12, 2)
+  lineTotal  Decimal @map("line_total") @db.Decimal(12, 2)
+
+  purchase Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId], references: [id])
+
+  @@map("purchase_items")
+}
+
+// ============ EXPENSES (SPEC §9.1 / §14) ============
+// Phase 2 scope: the model + the auto-created purchase expense (§6.3).
+// The daily expense-entry UI arrives with the Accounting module.
+
+enum CostType {
+  FIXED
+  VARIABLE
+}
+
+model ExpenseCategory {
+  id       Int      @id @default(autoincrement())
+  name     String   @unique
+  costType CostType @map("cost_type")
+
+  expenses Expense[]
+
+  @@map("expense_categories")
+}
+
+model Expense {
+  id           Int      @id @default(autoincrement())
+  expenseDate  DateTime @map("expense_date") @db.Date
+  categoryId   Int      @map("category_id")
+  amount       Decimal  @db.Decimal(12, 2)
+  walletId     Int?     @map("wallet_id") // FK once wallets land (Phase 2 money module)
+  campaignName String?  @map("campaign_name")
+  notes        String?
+  receiptUrl   String?  @map("receipt_url")
+  refTable     String?  @map("ref_table") // links auto-expenses: "purchases", "shipments", "rewards"
+  refId        Int?     @map("ref_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  createdBy    Int?     @map("created_by")
+  updatedBy    Int?     @map("updated_by")
+
+  category ExpenseCategory @relation(fields: [categoryId], references: [id])
+
+  @@index([expenseDate])
+  @@index([refTable, refId])
+  @@map("expenses")
 }
 
 model Package {
