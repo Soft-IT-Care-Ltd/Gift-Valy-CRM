@@ -6,6 +6,8 @@ import { prisma } from "@/lib/db";
 import { getEffectivePermissions } from "@/lib/rbac";
 import { PERMISSION_DEFS, ROLE_LABELS, type RoleName } from "@/lib/permissions";
 import { dhakaDayStart, dhakaMonthStart } from "@/lib/orders";
+import { canSeeCosts } from "@/lib/catalog";
+import { buildStockReport, buildPackageReport } from "@/lib/reports";
 import { money, formatDateTime } from "@/lib/format";
 import {
   Card,
@@ -153,6 +155,88 @@ async function SalesExecutiveHome({ userId }: { userId: number }) {
   );
 }
 
+// SPEC §13 Row 3 (Operations): stock value + low-stock alert count + package
+// availability alerts. Rendered for any stock.view role; the numbers come from
+// the same builders as the R4/R5 reports, so a dashboard glance and the report
+// always agree. Stock value is cost data — populated only for cost-visible
+// roles (canSeeCosts), so Packing sees the alert counts but not the value.
+async function InventorySummary({ showCosts }: { showCosts: boolean }) {
+  const [stock, pkg] = await Promise.all([
+    buildStockReport(showCosts),
+    buildPackageReport(showCosts),
+  ]);
+  const trackedCount = stock.rows.filter((r) => r.isStockTracked).length;
+  const activePackages = pkg.rows.filter((r) => r.isActive);
+  const packageAlerts = activePackages.filter((r) => r.buildable === 0).length;
+
+  return (
+    <div>
+      <div className="mb-2 text-sm font-semibold text-muted-foreground">
+        Inventory
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {showCosts && stock.totalStockValue != null && (
+          <Link href="/reports/stock">
+            <Card className="h-full transition-colors hover:bg-muted/50">
+              <CardHeader className="pb-2">
+                <CardDescription>Stock value</CardDescription>
+                <CardTitle className="text-2xl">
+                  {money(stock.totalStockValue)}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="text-sm text-muted-foreground">
+                Across {trackedCount} tracked products
+              </CardContent>
+            </Card>
+          </Link>
+        )}
+        <Link href="/reports/stock">
+          <Card
+            className={`h-full transition-colors hover:bg-muted/50 ${
+              stock.lowStockCount > 0 ? "border-destructive/40" : ""
+            }`}
+          >
+            <CardHeader className="pb-2">
+              <CardDescription>Low-stock alerts</CardDescription>
+              <CardTitle
+                className={`text-2xl ${stock.lowStockCount > 0 ? "text-destructive" : ""}`}
+              >
+                {stock.lowStockCount}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">
+              {stock.lowStockCount > 0
+                ? "Products at or below their threshold"
+                : "All products above threshold"}
+            </CardContent>
+          </Card>
+        </Link>
+        <Link href="/reports/packages">
+          <Card
+            className={`h-full transition-colors hover:bg-muted/50 ${
+              packageAlerts > 0 ? "border-destructive/40" : ""
+            }`}
+          >
+            <CardHeader className="pb-2">
+              <CardDescription>Package availability alerts</CardDescription>
+              <CardTitle
+                className={`text-2xl ${packageAlerts > 0 ? "text-destructive" : ""}`}
+              >
+                {packageAlerts}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">
+              {packageAlerts > 0
+                ? `Can't build ${packageAlerts} of ${activePackages.length} packages`
+                : `All ${activePackages.length} packages buildable`}
+            </CardContent>
+          </Card>
+        </Link>
+      </div>
+    </div>
+  );
+}
+
 export default async function HomePage() {
   // Pages render in parallel with the layout, so guard here too.
   const session = await getServerSession(authOptions);
@@ -208,6 +292,10 @@ export default async function HomePage() {
           </CardContent>
         )}
       </Card>
+
+      {permissions.includes("stock.view") && (
+        <InventorySummary showCosts={canSeeCosts(permissions)} />
+      )}
 
       {isSalesExecutive && <SalesExecutiveHome userId={user.id} />}
 
