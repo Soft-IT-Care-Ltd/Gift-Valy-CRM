@@ -56,7 +56,7 @@ Both Sales Executives belong to **Team Alpha**.
 
 **Admin/Manager — Catalog** (sidebar section *Catalog*):
 - **Categories** — CRUD; deleting a category with products is blocked.
-- **Products** — CRUD with SKU auto-generated on save (`GV-0001`…), unit (pcs/box/set), avg cost, selling price + price floor, low-stock threshold (red *low* badge), stock-tracked toggle (off = perishable/per-order, e.g. cake & flowers), active toggle.
+- **Products** — CRUD with SKU auto-generated on save (`GV-0001`…), unit (pcs/box/set), avg cost, selling price + price floor, low-stock threshold (red *low* badge), stock-tracked toggle (off = perishable/per-order, e.g. cake & flowers), active toggle, and direct photo upload (JPEG/PNG/WebP ≤ 5MB → stored in `public/uploads/`, thumbnail in the table).
 - **Packages** — CRUD with a BOM editor (add/remove product lines with qty). **Cost** = Σ component avg cost and **Margin** = price − cost are computed live and shown only to cost-visible roles. **Can make** = min over stock-tracked components of ⌊stock ÷ qty⌋ (seeded: Probashi Premium = 8, limited by 8 sarees); per-order components don't constrain it.
 
 **Sales Executive** — log in as Sanjoy or Partho:
@@ -85,5 +85,7 @@ lib/audit.ts              Audit log writer
 lib/catalog.ts            Cost-visibility gate, serializers, SKU/code generation,
                           package cost & available-to-sell math
 app/(dashboard)/          Signed-in shell + admin + catalog pages
-app/api/                  users, teams, roles, account, categories, products, packages APIs
+app/api/                  users, teams, roles, account, categories, products, packages,
+                          uploads (image upload → public/uploads, SPEC §15) APIs
+public/uploads/           Uploaded catalog photos (gitignored; back up alongside pg_dump)
 ```

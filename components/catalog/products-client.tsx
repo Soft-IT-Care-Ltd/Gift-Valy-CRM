@@ -38,6 +38,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { PhotoField } from "./photo-field";
 
 export interface ProductRow {
   id: number;
@@ -198,7 +199,19 @@ export function ProductsClient({
             {products.map((p) => (
               <TableRow key={p.id}>
                 <TableCell className="font-mono text-xs">{p.sku}</TableCell>
-                <TableCell className="font-medium">{p.name}</TableCell>
+                <TableCell className="font-medium">
+                  <span className="flex items-center gap-2">
+                    {p.photoUrl && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={p.photoUrl}
+                        alt=""
+                        className="h-8 w-8 shrink-0 rounded border object-cover"
+                      />
+                    )}
+                    {p.name}
+                  </span>
+                </TableCell>
                 <TableCell>{p.categoryName}</TableCell>
                 <TableCell>{p.unit}</TableCell>
                 {showCosts && (
@@ -358,13 +371,7 @@ export function ProductsClient({
                   disabled={!isStockTracked}
                 />
               </div>
-              <div className="grid gap-2">
-                <Label>Photo URL (optional)</Label>
-                <Input
-                  value={photoUrl}
-                  onChange={(e) => setPhotoUrl(e.target.value)}
-                />
-              </div>
+              <PhotoField value={photoUrl} onChange={setPhotoUrl} />
             </div>
             <div className="flex items-center justify-between rounded-md border p-3">
               <div>

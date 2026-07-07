@@ -39,6 +39,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { money } from "./products-client";
+import { PhotoField } from "./photo-field";
 
 interface PackageItemRow {
   id: number;
@@ -222,7 +223,19 @@ export function PackagesClient({
             {packages.map((pkg) => (
               <TableRow key={pkg.id}>
                 <TableCell className="font-mono text-xs">{pkg.code}</TableCell>
-                <TableCell className="font-medium">{pkg.name}</TableCell>
+                <TableCell className="font-medium">
+                  <span className="flex items-center gap-2">
+                    {pkg.photoUrl && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={pkg.photoUrl}
+                        alt=""
+                        className="h-8 w-8 shrink-0 rounded border object-cover"
+                      />
+                    )}
+                    {pkg.name}
+                  </span>
+                </TableCell>
                 <TableCell className="max-w-xs text-sm text-muted-foreground">
                   {pkg.items
                     .map((it) => `${it.qty}× ${it.productName}`)
@@ -318,7 +331,7 @@ export function PackagesClient({
               <Label>Name</Label>
               <Input value={name} onChange={(e) => setName(e.target.value)} />
             </div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-2">
                 <Label>Selling price (৳)</Label>
                 <Input
@@ -337,14 +350,8 @@ export function PackagesClient({
                   onChange={(e) => setPriceFloor(e.target.value)}
                 />
               </div>
-              <div className="grid gap-2">
-                <Label>Photo URL (optional)</Label>
-                <Input
-                  value={photoUrl}
-                  onChange={(e) => setPhotoUrl(e.target.value)}
-                />
-              </div>
             </div>
+            <PhotoField value={photoUrl} onChange={setPhotoUrl} />
 
             <div className="grid gap-2">
               <Label>Contents (BOM)</Label>
