@@ -65,6 +65,18 @@ export default async function DashboardLayout({
   if (permissions.includes("purchases.create")) {
     navItems.push({ href: "/purchases", label: "Purchases", section: "Inventory" });
   }
+  // Reports (SPEC §12). R4/R5 are inventory reports gated on stock.view — the
+  // same read scope as the Stock screen (Admin, Manager, Accounts, Packing).
+  if (permissions.includes("stock.view")) {
+    navItems.push(
+      { href: "/reports/stock", label: "Stock Report", section: "Reports" },
+      {
+        href: "/reports/packages",
+        label: "Package Availability",
+        section: "Reports",
+      }
+    );
+  }
   if (permissions.includes("users.manage")) {
     navItems.push(
       { href: "/admin/users", label: "Users", section: "Admin" },
