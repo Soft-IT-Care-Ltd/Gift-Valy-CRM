@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { requirePermissionCtx, apiError, AuthzError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
+import { generateInvoiceSafe } from "@/lib/invoice";
 import { canSeeCosts } from "@/lib/catalog";
 import { getOrderEditWindowMinutes } from "@/lib/settings";
 import {
@@ -95,6 +96,14 @@ export async function PATCH(req: Request, { params }: Params) {
       before: order,
       after,
     });
+    // SPEC §5: an applied edit changes invoice-visible data → regenerate as
+    // version N+1 (old versions kept). ON_HOLD orders without an invoice get
+    // v1 at confirmation instead.
+    const hasInvoice = await prisma.invoice.findFirst({
+      where: { orderId: id },
+      select: { id: true },
+    });
+    if (hasInvoice) await generateInvoiceSafe(id, session.user.id);
     return NextResponse.json({ ok: true });
   } catch (e) {
     return apiError(e);

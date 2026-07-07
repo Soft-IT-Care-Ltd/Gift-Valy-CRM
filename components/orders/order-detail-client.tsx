@@ -39,6 +39,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Download, MessageCircle, Printer } from "lucide-react";
 import { PhotoField } from "@/components/catalog/photo-field";
 import { money, formatDate, formatDateTime } from "@/lib/format";
 import { StatusBadge } from "./orders-list-client";
@@ -49,6 +50,7 @@ import {
   PAYMENT_METHOD_LABELS,
   PAYMENT_TYPES,
   PAYMENT_TYPE_LABELS,
+  orderIsInvoiceable,
   type OrderStatusValue,
   type PaymentMethodValue,
   type PaymentTypeValue,
@@ -120,6 +122,11 @@ export interface OrderDetail {
     reason: string | null;
     reviewNote: string | null;
     createdAt: string;
+  }[];
+  invoices: {
+    id: number;
+    version: number;
+    generatedAt: string;
   }[];
 }
 
@@ -241,6 +248,38 @@ export function OrderDetailClient({
     0
   );
 
+  // ---- invoice (§5): download / print / WhatsApp ----
+  const latestInvoice = order.invoices[0] ?? null; // serialized newest-first
+  const invoiceAvailable = latestInvoice !== null || orderIsInvoiceable(order.status);
+  const invoiceUrl = `/api/orders/${order.id}/invoice`;
+
+  // Loads the PDF inline in a hidden iframe and opens the print dialog.
+  function printInvoice() {
+    document.getElementById("invoice-print-frame")?.remove();
+    const frame = document.createElement("iframe");
+    frame.id = "invoice-print-frame";
+    frame.style.display = "none";
+    frame.src = `${invoiceUrl}?disposition=inline`;
+    frame.onload = () => frame.contentWindow?.print();
+    document.body.appendChild(frame);
+  }
+
+  // wa.me pre-filled message to the customer (SPEC §5) — the SE attaches the
+  // downloaded PDF in the same chat.
+  const waText = [
+    `আসসালামু আলাইকুম ${order.customer.name}!`,
+    `Gift Valy-তে অর্ডার করার জন্য আপনাকে ধন্যবাদ। আপনার ইনভয়েস:`,
+    ``,
+    `🧾 Invoice: ${order.orderNo}`,
+    `মোট: ${money(order.totalAmount)}`,
+    `অগ্রিম জমা: ${money(order.advanceAmount)}`,
+    `বাকি (ডেলিভারিতে): ${money(order.dueAmount)}`,
+    `প্রাপক: ${order.recipientName}, ${order.district}`,
+    ``,
+    `ইনভয়েস PDF টি এই চ্যাটে পাঠানো হচ্ছে। যেকোনো প্রয়োজনে মেসেজ করুন। — Gift Valy`,
+  ].join("\n");
+  const waHref = `https://wa.me/${order.customer.phoneForeign.replace(/\D/g, "")}?text=${encodeURIComponent(waText)}`;
+
   return (
     <div className="mx-auto grid max-w-5xl gap-4">
       <div className="flex flex-wrap items-center gap-3">
@@ -361,6 +400,69 @@ export function OrderDetailClient({
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
+          <div>
+            <CardTitle>Invoice (ইনভয়েস)</CardTitle>
+            <CardDescription>
+              {latestInvoice ? (
+                <>
+                  {order.orderNo} · v{latestInvoice.version} · generated{" "}
+                  {formatDateTime(latestInvoice.generatedAt)}
+                  {order.invoices.length > 1 &&
+                    " · regenerated after an approved edit — old versions kept"}
+                </>
+              ) : invoiceAvailable ? (
+                "Not generated yet — it will be created on first download."
+              ) : (
+                "Generated automatically when the order is confirmed."
+              )}
+            </CardDescription>
+          </div>
+          {invoiceAvailable && (
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" asChild>
+                <a href={invoiceUrl}>
+                  <Download className="mr-1 size-4" /> Download PDF
+                </a>
+              </Button>
+              <Button variant="outline" onClick={printInvoice}>
+                <Printer className="mr-1 size-4" /> Print
+              </Button>
+              <Button asChild className="bg-green-600 text-white hover:bg-green-700">
+                <a href={waHref} target="_blank" rel="noreferrer">
+                  <MessageCircle className="mr-1 size-4" /> Send via WhatsApp
+                </a>
+              </Button>
+            </div>
+          )}
+        </CardHeader>
+        {invoiceAvailable && (
+          <CardContent className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span>
+              WhatsApp opens the customer&apos;s chat with the message pre-filled —
+              attach the downloaded PDF there.
+            </span>
+            {order.invoices.length > 1 && (
+              <span className="ml-auto">
+                Older versions:{" "}
+                {order.invoices.slice(1).map((inv, i) => (
+                  <span key={inv.id}>
+                    {i > 0 && " · "}
+                    <a
+                      className="underline"
+                      href={`${invoiceUrl}?version=${inv.version}`}
+                    >
+                      v{inv.version}
+                    </a>
+                  </span>
+                ))}
+              </span>
+            )}
+          </CardContent>
+        )}
+      </Card>
 
       <Card>
         <CardHeader>

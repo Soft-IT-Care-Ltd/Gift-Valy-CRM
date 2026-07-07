@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { requireUser, apiError, AuthzError } from "@/lib/authz";
 import { getEffectivePermissions } from "@/lib/rbac";
 import { logAudit } from "@/lib/audit";
+import { generateInvoiceSafe } from "@/lib/invoice";
 import {
   orderScopeWhere,
   orderViewScope,
@@ -122,6 +123,15 @@ export async function POST(req: Request, { params }: Params) {
       before: { status: order.status },
       after: { status: to, note },
     });
+    // SPEC §5: first confirmation (e.g. ON_HOLD → CONFIRMED once the advance
+    // lands) generates invoice v1 if none exists yet.
+    if (to === "CONFIRMED") {
+      const existing = await prisma.invoice.findFirst({
+        where: { orderId: id },
+        select: { id: true },
+      });
+      if (!existing) await generateInvoiceSafe(id, session.user.id);
+    }
     return NextResponse.json({ ok: true });
   } catch (e) {
     return apiError(e);

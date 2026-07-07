@@ -59,6 +59,19 @@ export const EDITABLE_STATUSES: OrderStatusValue[] = [
   "PACKED",
 ];
 
+// SPEC §5 — invoices exist only once an order has reached CONFIRMED;
+// pre-sale stages and never-confirmed holds/cancels have nothing to invoice.
+export const NON_INVOICEABLE_STATUSES: OrderStatusValue[] = [
+  "LEAD",
+  "FOLLOW_UP",
+  "ON_HOLD",
+  "CANCELLED",
+];
+
+export function orderIsInvoiceable(status: OrderStatusValue): boolean {
+  return !NON_INVOICEABLE_STATUSES.includes(status);
+}
+
 export const PAYMENT_TYPES = [
   "ADVANCE",
   "PARTIAL",

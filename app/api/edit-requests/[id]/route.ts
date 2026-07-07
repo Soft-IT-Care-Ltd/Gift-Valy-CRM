@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { requirePermissionCtx, apiError, AuthzError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
+import { generateInvoiceSafe } from "@/lib/invoice";
 import {
   applyOrderEdit,
   orderCoreSchema,
@@ -97,6 +98,13 @@ export async function POST(req: Request, { params }: Params) {
       before: request.order,
       after,
     });
+    // SPEC §5: approved edit changed the order → regenerate the invoice as
+    // version N+1, keeping old versions.
+    const hasInvoice = await prisma.invoice.findFirst({
+      where: { orderId: request.orderId },
+      select: { id: true },
+    });
+    if (hasInvoice) await generateInvoiceSafe(request.orderId, session.user.id);
     return NextResponse.json({ ok: true });
   } catch (e) {
     return apiError(e);

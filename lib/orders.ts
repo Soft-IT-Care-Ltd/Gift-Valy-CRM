@@ -67,6 +67,21 @@ export function dhakaMonthStart(date = new Date()): Date {
   return new Date(`${y}-${m}-01T00:00:00+06:00`);
 }
 
+// First moment of the current calendar day in Asia/Dhaka ("today" on the
+// SE dashboard follows office time, not the server's timezone).
+export function dhakaDayStart(date = new Date()): Date {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Dhaka",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const y = parts.find((p) => p.type === "year")!.value;
+  const m = parts.find((p) => p.type === "month")!.value;
+  const d = parts.find((p) => p.type === "day")!.value;
+  return new Date(`${y}-${m}-${d}T00:00:00+06:00`);
+}
+
 export interface OrderListQuery {
   // every non-status filter — tab counts group over these
   baseFilters: Prisma.OrderWhereInput[];
@@ -448,6 +463,7 @@ export type OrderWithRelations = Prisma.OrderGetPayload<{
     payments: true;
     statusHistory: { include: { user: { select: { name: true } } } };
     editRequests: { include: { requester: { select: { name: true } } } };
+    invoices: true;
   };
 }>;
 
@@ -464,6 +480,7 @@ export const orderDetailInclude = {
   payments: true,
   statusHistory: { include: { user: { select: { name: true } } } },
   editRequests: { include: { requester: { select: { name: true } } } },
+  invoices: true,
 } satisfies Prisma.OrderInclude;
 
 // unit_cost_snapshot is a COST field — stripped unless the caller may see
@@ -553,6 +570,15 @@ export function serializeOrderDetail(o: OrderWithRelations, showCosts: boolean) 
         reviewNote: r.reviewNote,
         createdAt: r.createdAt.toISOString(),
         changes: r.changesJson as OrderCorePayload,
+      })),
+    // newest first — [0] is the current invoice (§5 versioning)
+    invoices: o.invoices
+      .slice()
+      .sort((a, b) => b.version - a.version)
+      .map((inv) => ({
+        id: inv.id,
+        version: inv.version,
+        generatedAt: inv.generatedAt.toISOString(),
       })),
   };
 }

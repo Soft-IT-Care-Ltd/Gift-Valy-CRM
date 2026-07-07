@@ -20,6 +20,9 @@
 # production
 /build
 
+# generated invoice PDFs (customer PII — served via authenticated API)
+/storage
+
 # misc
 .DS_Store
 *.pem

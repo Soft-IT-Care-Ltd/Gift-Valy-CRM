@@ -278,6 +278,7 @@ model Order {
   payments       Payment[]
   statusHistory  OrderStatusHistory[]
   editRequests   OrderEditRequest[]
+  invoices       Invoice[]
 
   // List queries filter by scope/status/window and sort by created_at desc —
   // composite indexes keep them fast as data accumulates (SPEC-scale: years).
@@ -370,6 +371,25 @@ model OrderEditRequest {
 
   @@index([status])
   @@map("order_edit_requests")
+}
+
+// SPEC §5 / §14 — one row per generated invoice PDF. An approved edit
+// regenerates as version N+1; older versions and their files are kept.
+// pdf_url is a path under storage/ (NOT public/) — invoices carry customer
+// PII, so files are served only through the authenticated invoice API.
+model Invoice {
+  id          Int      @id @default(autoincrement())
+  orderId     Int      @map("order_id")
+  invoiceNo   String   @map("invoice_no") // = order_no (§5)
+  version     Int
+  pdfUrl      String   @map("pdf_url")
+  generatedAt DateTime @default(now()) @map("generated_at")
+  generatedBy Int?     @map("generated_by")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([orderId, version])
+  @@map("invoices")
 }
 
 // SPEC §14 — key/value settings (edit-window minutes, packaging cost, …).

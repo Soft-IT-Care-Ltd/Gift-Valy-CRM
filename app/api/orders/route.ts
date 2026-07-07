@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requirePermissionCtx, apiError, AuthzError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
+import { generateInvoiceSafe } from "@/lib/invoice";
 import {
   ORDER_PAGE_SIZE,
   buildOrderListFilters,
@@ -236,6 +237,11 @@ export async function POST(req: Request) {
           : {}),
       },
     });
+    // SPEC §5: invoice v1 auto-generated on confirmation. Non-fatal — the
+    // download route regenerates on demand if this fails.
+    if (initialStatus === "CONFIRMED") {
+      await generateInvoiceSafe(created!.id, session.user.id);
+    }
     return NextResponse.json(created, { status: 201 });
   } catch (e) {
     if (
