@@ -8,7 +8,7 @@ ERP/CRM for Gift Valy, built against [GIFT_VALY_SOFTWARE_SPEC.md](./GIFT_VALY_SO
 
 - [x] 1. Scaffold: Next.js + Prisma + Postgres + auth + RBAC (roles/permissions seed)
 - [x] 2. Users/Teams CRUD (Admin) — incl. permission matrix UI, per-user overrides, audit log
-- [ ] 3. Product, category, package + BOM CRUD
+- [x] 3. Product, category, package + BOM CRUD — auto SKU, package cost/margin, available-to-sell
 - [ ] 4. Customer + Order entry
 - [ ] 5. Payments on order
 - [ ] 6. Invoice PDF
@@ -54,9 +54,15 @@ Both Sales Executives belong to **Team Alpha**.
 - **Roles & Permissions** — the SPEC §2 matrix, editable per role. The Admin column is locked (Admin always has everything).
 - **Audit Log** — every sensitive mutation with before/after values (Asia/Dhaka time).
 
+**Admin/Manager — Catalog** (sidebar section *Catalog*):
+- **Categories** — CRUD; deleting a category with products is blocked.
+- **Products** — CRUD with SKU auto-generated on save (`GV-0001`…), unit (pcs/box/set), avg cost, selling price + price floor, low-stock threshold (red *low* badge), stock-tracked toggle (off = perishable/per-order, e.g. cake & flowers), active toggle.
+- **Packages** — CRUD with a BOM editor (add/remove product lines with qty). **Cost** = Σ component avg cost and **Margin** = price − cost are computed live and shown only to cost-visible roles. **Can make** = min over stock-tracked components of ⌊stock ÷ qty⌋ (seeded: Probashi Premium = 8, limited by 8 sarees); per-order components don't constrain it.
+
 **Sales Executive** — log in as Sanjoy or Partho:
 - No Admin section in the sidebar; the dashboard lists only SE-scope access (own leads/orders, invoice, advance entry, own reports/target/attendance).
 - Enforcement is server-side: as an SE, `/admin/users` redirects to `/` and `GET /api/users` returns **403**.
+- **Costs are stripped at the API layer**: `GET /api/products` / `GET /api/packages` return no `avgCost`/`cost`/`margin` keys at all (not just hidden columns); `/catalog/categories` redirects to `/`; catalog writes return **403**. SEs still see selling price, price floor, stock and package availability.
 
 **Manager / Team Leader / Packing / Accounts** — the roles are seeded with their SPEC §2 permission sets; no demo users yet. To test one: log in as Admin → Users → **New user** → pick the role (e.g. Team Leader "Sakib", team leader of Team Alpha via Teams page). New users must change their password on first login — you'll be forced to the change-password screen, then sign in again.
 
@@ -68,14 +74,16 @@ Notes on RBAC behavior:
 ## Project layout
 
 ```
-prisma/schema.prisma      Auth & org tables (users, roles, permissions,
-                          role_permissions, user_permission_overrides, teams, audit_logs)
-prisma/seed.ts            Roles + SPEC §2 matrix + demo users
+prisma/schema.prisma      Auth & org + catalog tables (users, roles, permissions, teams,
+                          audit_logs, categories, products, packages, package_items)
+prisma/seed.ts            Roles + SPEC §2 matrix + demo users + demo catalog
 lib/permissions.ts        Permission catalog + seed matrix (single source of truth)
 lib/rbac.ts               Effective-permission resolution (role → overrides, Admin bypass)
 lib/auth.ts               NextAuth credentials config (JWT sessions)
-lib/authz.ts              API guards: requireUser / requirePermission
+lib/authz.ts              API guards: requireUser / requirePermission(Ctx)
 lib/audit.ts              Audit log writer
-app/(dashboard)/          Signed-in shell + admin pages
-app/api/                  users, teams, roles, account APIs
+lib/catalog.ts            Cost-visibility gate, serializers, SKU/code generation,
+                          package cost & available-to-sell math
+app/(dashboard)/          Signed-in shell + admin + catalog pages
+app/api/                  users, teams, roles, account, categories, products, packages APIs
 ```

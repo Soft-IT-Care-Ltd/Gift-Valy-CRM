@@ -1,6 +1,6 @@
 // Gift Valy ERP — Prisma schema
-// Phase 1, steps 1–2: AUTH & ORG tables (SPEC §14).
-// Naming: snake_case in DB via @map/@@map. Money (later phases) = Decimal(12,2) BDT.
+// Phase 1, steps 1–3: AUTH & ORG + CATALOG tables (SPEC §14).
+// Naming: snake_case in DB via @map/@@map. Money = Decimal(12,2) BDT.
 
 generator client {
   provider = "prisma-client-js"
@@ -94,6 +94,79 @@ model Team {
   members User[] @relation("TeamMembers")
 
   @@map("teams")
+}
+
+// ============ CATALOG (SPEC §6.1 / §6.2 / §14) ============
+
+model Category {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  createdBy Int?     @map("created_by")
+  updatedBy Int?     @map("updated_by")
+
+  products Product[]
+
+  @@map("categories")
+}
+
+model Product {
+  id                Int      @id @default(autoincrement())
+  sku               String   @unique
+  name              String
+  categoryId        Int      @map("category_id")
+  photoUrl          String?  @map("photo_url")
+  unit              String   @default("pcs") // pcs | box | set
+  avgCost           Decimal  @default(0) @map("avg_cost") @db.Decimal(12, 2) // weighted avg, recomputed on purchase (Phase 2)
+  sellingPrice      Decimal  @map("selling_price") @db.Decimal(12, 2)
+  priceFloor        Decimal  @default(0) @map("price_floor") @db.Decimal(12, 2)
+  lowStockThreshold Int      @default(0) @map("low_stock_threshold")
+  isStockTracked    Boolean  @default(true) @map("is_stock_tracked") // false = perishable/per-order (cake, flowers)
+  isActive          Boolean  @default(true) @map("is_active")
+  stockQty          Int      @default(0) @map("stock_qty") // cache; kept in sync with stock_movements in one txn (Phase 2)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+  createdBy         Int?     @map("created_by")
+  updatedBy         Int?     @map("updated_by")
+
+  category     Category      @relation(fields: [categoryId], references: [id])
+  packageItems PackageItem[]
+
+  @@map("products")
+}
+
+model Package {
+  id           Int      @id @default(autoincrement())
+  code         String   @unique
+  name         String
+  photoUrl     String?  @map("photo_url")
+  sellingPrice Decimal  @map("selling_price") @db.Decimal(12, 2)
+  priceFloor   Decimal  @default(0) @map("price_floor") @db.Decimal(12, 2)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  createdBy    Int?     @map("created_by")
+  updatedBy    Int?     @map("updated_by")
+
+  items PackageItem[]
+
+  @@map("packages")
+}
+
+// The BOM. Editing it affects future orders only — order_items freeze
+// unit_cost_snapshot at PACKED (SPEC §6.2 / integrity rule 4).
+model PackageItem {
+  id        Int @id @default(autoincrement())
+  packageId Int @map("package_id")
+  productId Int @map("product_id")
+  qty       Int
+
+  package Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@unique([packageId, productId])
+  @@map("package_items")
 }
 
 model AuditLog {

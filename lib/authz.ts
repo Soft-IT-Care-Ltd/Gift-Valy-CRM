@@ -27,6 +27,19 @@ export async function requirePermission(key: string): Promise<Session> {
   return session;
 }
 
+// Like requirePermission, but also returns the effective permission list —
+// for routes that shape the response by permission (e.g. stripping cost fields).
+export async function requirePermissionCtx(
+  key: string
+): Promise<{ session: Session; permissions: string[] }> {
+  const session = await requireUser();
+  const permissions = await getEffectivePermissions(session.user.id);
+  if (!permissions.includes(key)) {
+    throw new AuthzError(403, `Missing permission: ${key}`);
+  }
+  return { session, permissions };
+}
+
 export function apiError(e: unknown): NextResponse {
   if (e instanceof AuthzError) {
     return NextResponse.json({ error: e.message }, { status: e.status });
