@@ -28,9 +28,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { cn } from "@/lib/utils";
 import { money, formatDate } from "@/lib/format";
 import {
-  ORDER_STATUSES,
   ORDER_STATUS_LABELS,
   type OrderStatusValue,
 } from "@/lib/order-constants";
@@ -72,12 +72,29 @@ export function StatusBadge({ status }: { status: OrderStatusValue }) {
   );
 }
 
+// Tab order mirrors the §1.3 lifecycle, side states last. LEAD/FOLLOW_UP are
+// pre-order stages (Leads module) and never appear here.
+const STATUS_TABS: OrderStatusValue[] = [
+  "CONFIRMED",
+  "PACKED",
+  "HANDED_TO_COURIER",
+  "IN_TRANSIT",
+  "DELIVERED",
+  "COMPLETED",
+  "ON_HOLD",
+  "CANCELLED",
+  "RETURNED",
+  "REFUNDED",
+];
+
 export function OrdersListClient({
   orders,
+  statusCounts,
   seOptions,
   canCreate,
 }: {
   orders: OrderRow[];
+  statusCounts: Partial<Record<OrderStatusValue, number>>; // for current date/SE filters
   seOptions: { id: number; name: string }[]; // empty for own-only scope
   canCreate: boolean;
 }) {
@@ -107,28 +124,48 @@ export function OrdersListClient({
         )}
       </CardHeader>
       <CardContent className="grid gap-4">
+        {/* Status tabs — counts follow the active date/SE filters */}
+        <div className="flex flex-wrap gap-1 border-b pb-2">
+          {(() => {
+            const active = params.get("status") ?? "ALL";
+            const total = STATUS_TABS.reduce(
+              (s, t) => s + (statusCounts[t] ?? 0),
+              0
+            );
+            const tab = (value: string, label: string, count: number) => (
+              <button
+                key={value}
+                onClick={() => setParam("status", value)}
+                className={cn(
+                  "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                  active === value
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                )}
+              >
+                {label}
+                <span
+                  className={cn(
+                    "ml-1.5 text-xs",
+                    active === value
+                      ? "text-primary-foreground/70"
+                      : "text-muted-foreground/70"
+                  )}
+                >
+                  {count}
+                </span>
+              </button>
+            );
+            return [
+              tab("ALL", "All", total),
+              ...STATUS_TABS.map((s) =>
+                tab(s, ORDER_STATUS_LABELS[s], statusCounts[s] ?? 0)
+              ),
+            ];
+          })()}
+        </div>
+
         <div className="flex flex-wrap items-end gap-3">
-          <div className="grid gap-1">
-            <Label className="text-xs">Status</Label>
-            <Select
-              value={params.get("status") ?? "ALL"}
-              onValueChange={(v) => setParam("status", v)}
-            >
-              <SelectTrigger className="w-44">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="ALL">All statuses</SelectItem>
-                {ORDER_STATUSES.filter(
-                  (s) => s !== "LEAD" && s !== "FOLLOW_UP"
-                ).map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {ORDER_STATUS_LABELS[s]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
           <div className="grid gap-1">
             <Label className="text-xs">From</Label>
             <Input
