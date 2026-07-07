@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
@@ -90,23 +91,51 @@ const STATUS_TABS: OrderStatusValue[] = [
 export function OrdersListClient({
   orders,
   statusCounts,
+  total,
+  page,
+  pageSize,
+  q,
+  rangeAll,
   seOptions,
   canCreate,
 }: {
   orders: OrderRow[];
-  statusCounts: Partial<Record<OrderStatusValue, number>>; // for current date/SE filters
+  statusCounts: Partial<Record<OrderStatusValue, number>>; // for current window/search/SE
+  total: number; // active tab's count — drives pagination
+  page: number;
+  pageSize: number;
+  q: string;
+  rangeAll: boolean;
   seOptions: { id: number; name: string }[]; // empty for own-only scope
   canCreate: boolean;
 }) {
   const router = useRouter();
   const params = useSearchParams();
 
+  // Any filter change restarts at page 1 — a page number only means something
+  // within the result set it was computed for.
   function setParam(key: string, value: string) {
     const next = new URLSearchParams(params.toString());
     if (value && value !== "ALL") next.set(key, value);
     else next.delete(key);
+    if (key !== "page") next.delete("page");
     router.push(`/orders?${next.toString()}`);
   }
+
+  // Debounced search — order no, customer name, either phone number.
+  const [search, setSearch] = useState(q);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (search.trim() !== q) setParam("q", search.trim());
+    }, 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
+
+  const hasExplicitDates = !!params.get("from") || !!params.get("to");
+  const from = (page - 1) * pageSize + 1;
+  const to = Math.min(page * pageSize, total);
+  const lastPage = Math.max(1, Math.ceil(total / pageSize));
 
   return (
     <Card>
@@ -114,7 +143,12 @@ export function OrdersListClient({
         <div>
           <CardTitle>Orders</CardTitle>
           <CardDescription>
-            {orders.length} order{orders.length === 1 ? "" : "s"} in view
+            {total} order{total === 1 ? "" : "s"}
+            {q
+              ? " matching your search (all time)"
+              : rangeAll || hasExplicitDates
+                ? " in the selected range"
+                : " this month"}
           </CardDescription>
         </div>
         {canCreate && (
@@ -167,6 +201,45 @@ export function OrdersListClient({
 
         <div className="flex flex-wrap items-end gap-3">
           <div className="grid gap-1">
+            <Label className="text-xs">Search</Label>
+            <Input
+              className="w-56"
+              placeholder="Order #, phone, customer…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          <div className="grid gap-1">
+            <Label className="text-xs">Range</Label>
+            <div className="flex gap-1">
+              <Button
+                variant={
+                  !rangeAll && !hasExplicitDates && !q ? "default" : "outline"
+                }
+                size="sm"
+                onClick={() => {
+                  const next = new URLSearchParams(params.toString());
+                  ["range", "from", "to", "page"].forEach((k) => next.delete(k));
+                  router.push(`/orders?${next.toString()}`);
+                }}
+              >
+                This month
+              </Button>
+              <Button
+                variant={rangeAll && !q ? "default" : "outline"}
+                size="sm"
+                onClick={() => {
+                  const next = new URLSearchParams(params.toString());
+                  next.set("range", "all");
+                  ["from", "to", "page"].forEach((k) => next.delete(k));
+                  router.push(`/orders?${next.toString()}`);
+                }}
+              >
+                All time
+              </Button>
+            </div>
+          </div>
+          <div className="grid gap-1">
             <Label className="text-xs">From</Label>
             <Input
               type="date"
@@ -208,11 +281,17 @@ export function OrdersListClient({
           {(params.get("status") ||
             params.get("from") ||
             params.get("to") ||
-            params.get("seId")) && (
+            params.get("seId") ||
+            params.get("q") ||
+            params.get("range") ||
+            params.get("page")) && (
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => router.push("/orders")}
+              onClick={() => {
+                setSearch("");
+                router.push("/orders");
+              }}
             >
               Clear filters
             </Button>
@@ -286,6 +365,37 @@ export function OrdersListClient({
             )}
           </TableBody>
         </Table>
+
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3 text-sm text-muted-foreground">
+          <span>
+            {total === 0
+              ? "No orders"
+              : `Showing ${from}–${to} of ${total}`}
+          </span>
+          {lastPage > 1 && (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page <= 1}
+                onClick={() => setParam("page", String(page - 1))}
+              >
+                ← Prev
+              </Button>
+              <span>
+                Page {page} of {lastPage}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page >= lastPage}
+                onClick={() => setParam("page", String(page + 1))}
+              >
+                Next →
+              </Button>
+            </div>
+          )}
+        </div>
       </CardContent>
     </Card>
   );

@@ -4,6 +4,8 @@ import { prisma } from "@/lib/db";
 import { requirePermissionCtx, apiError, AuthzError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
 import {
+  ORDER_PAGE_SIZE,
+  buildOrderListFilters,
   createOrderSchema,
   mfsTxnRequired,
   nextOrderNo,
@@ -13,45 +15,37 @@ import {
   resolveItemsAndTotals,
   serializeOrderListRow,
 } from "@/lib/orders";
-import {
-  ORDER_STATUSES,
-  normalizePhone,
-  type OrderStatusValue,
-} from "@/lib/order-constants";
+import { normalizePhone, type OrderStatusValue } from "@/lib/order-constants";
 
-// Order list with filters (status, date range, SE) — SPEC §4 + role scope §2.2.
+// Order list — same filters/window/search/pagination as the Orders page
+// (shared builder in lib/orders.ts). Defaults to the current Dhaka month.
 export async function GET(req: Request) {
   try {
     const { session, permissions } = await requirePermissionCtx("orders.view_own");
     const scope = await orderScopeWhere(session, permissions);
-    const params = new URL(req.url).searchParams;
+    const sp = new URL(req.url).searchParams;
+    const params = Object.fromEntries(sp.entries());
 
-    const filters: Prisma.OrderWhereInput[] = [scope];
-    const status = params.get("status");
-    if (status && ORDER_STATUSES.includes(status as OrderStatusValue)) {
-      filters.push({ status: status as OrderStatusValue });
-    }
-    const from = params.get("from");
-    if (from && /^\d{4}-\d{2}-\d{2}$/.test(from)) {
-      filters.push({ createdAt: { gte: new Date(`${from}T00:00:00+06:00`) } });
-    }
-    const to = params.get("to");
-    if (to && /^\d{4}-\d{2}-\d{2}$/.test(to)) {
-      filters.push({ createdAt: { lte: new Date(`${to}T23:59:59+06:00`) } });
-    }
-    const seId = Number(params.get("seId"));
-    if (seId) filters.push({ salesExecutiveId: seId });
-
-    const orders = await prisma.order.findMany({
-      where: { AND: filters },
-      orderBy: { createdAt: "desc" },
-      take: 200,
-      include: {
-        customer: { select: { name: true, phoneForeign: true, country: true } },
-        salesExecutive: { select: { id: true, name: true } },
-      },
+    const { filters, page } = buildOrderListFilters(params, scope);
+    const [orders, total] = await Promise.all([
+      prisma.order.findMany({
+        where: { AND: filters },
+        orderBy: { createdAt: "desc" },
+        skip: (page - 1) * ORDER_PAGE_SIZE,
+        take: ORDER_PAGE_SIZE,
+        include: {
+          customer: { select: { name: true, phoneForeign: true, country: true } },
+          salesExecutive: { select: { id: true, name: true } },
+        },
+      }),
+      prisma.order.count({ where: { AND: filters } }),
+    ]);
+    return NextResponse.json({
+      rows: orders.map(serializeOrderListRow),
+      total,
+      page,
+      pageSize: ORDER_PAGE_SIZE,
     });
-    return NextResponse.json(orders.map(serializeOrderListRow));
   } catch (e) {
     return apiError(e);
   }

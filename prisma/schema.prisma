@@ -279,9 +279,13 @@ model Order {
   statusHistory  OrderStatusHistory[]
   editRequests   OrderEditRequest[]
 
-  @@index([salesExecutiveId])
-  @@index([status])
+  // List queries filter by scope/status/window and sort by created_at desc —
+  // composite indexes keep them fast as data accumulates (SPEC-scale: years).
+  @@index([status, createdAt])
+  @@index([salesExecutiveId, createdAt])
+  @@index([teamId, createdAt])
   @@index([createdAt])
+  @@index([recipientPhoneBd])
   @@map("orders")
 }
 

@@ -67,7 +67,7 @@ Sakib leads **Team Alpha**; both Sales Executives belong to it.
 
 **Order Management (SPEC §4)** — log in as an SE (Sanjoy):
 - *Sales → New Order*: section A auto-fills repeat customers on phone blur and shows their order history; section C blocks below-floor prices for SEs (TL/Admin can override); section D requires a transaction ID for bKash/Nagad/Rocket and dedups it globally; with ৳0 advance the order starts **ON HOLD** (SPEC: no CONFIRMED without advance — TL/Admin can override with a reason).
-- *Sales → Orders*: SEs see **only their own** orders; TL sees the team; Admin/Manager see all (with an SE filter). Filters: status + date range.
+- *Sales → Orders*: SEs see **only their own** orders; TL sees the team; Admin/Manager see all (with an SE filter). Status tabs with live counts sit above the list. **Scales with data:** defaults to the current month (Asia/Dhaka) with an *All time* toggle and custom date range, paginates 25 per page, and the search box (order #, either phone number, customer name) always searches the full history.
 - Order page: add payments (due recomputes every write; refunds add back), change status along the §1.3 lifecycle (cancel needs a reason, COMPLETED needs due = 0), full status history.
 - **Edit window (§4.2):** the creating SE can edit for 30 min (setting `order_edit_window_minutes`); afterwards the same Edit screen submits an **edit request** which Sakib (TL) approves/rejects under *Sales → Edit Requests* — approval applies the changes and recomputes totals/due.
 

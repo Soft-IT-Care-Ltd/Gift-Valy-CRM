@@ -8,6 +8,7 @@ import {
   CUSTOMER_COUNTRIES,
   MFS_METHODS,
   OCCASIONS,
+  ORDER_STATUSES,
   PAYMENT_METHODS,
   RECIPIENT_RELATIONS,
   type OrderStatusValue,
@@ -47,6 +48,83 @@ export async function orderScopeWhere(
   return {
     OR: [{ salesExecutiveId: session.user.id }, { teamId: { in: teamIds } }],
   };
+}
+
+// ---------- list filters & pagination (shared by page and GET /api/orders) ----------
+
+export const ORDER_PAGE_SIZE = 25;
+
+// First moment of the current calendar month in Asia/Dhaka — the default
+// window that keeps the list (and tab counts) bounded as data grows.
+export function dhakaMonthStart(date = new Date()): Date {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Dhaka",
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(date);
+  const y = parts.find((p) => p.type === "year")!.value;
+  const m = parts.find((p) => p.type === "month")!.value;
+  return new Date(`${y}-${m}-01T00:00:00+06:00`);
+}
+
+export interface OrderListQuery {
+  // every non-status filter — tab counts group over these
+  baseFilters: Prisma.OrderWhereInput[];
+  // baseFilters + status — the visible list
+  filters: Prisma.OrderWhereInput[];
+  page: number;
+  status: OrderStatusValue | null;
+  q: string;
+  rangeAll: boolean;
+}
+
+// URL params → Prisma filters. Defaults to the current Dhaka month unless the
+// caller sets explicit dates, ?range=all, or a search — search always spans
+// all history (finding an old order is its whole point).
+export function buildOrderListFilters(
+  params: Record<string, string | undefined>,
+  scope: Prisma.OrderWhereInput
+): OrderListQuery {
+  const baseFilters: Prisma.OrderWhereInput[] = [scope];
+  const q = (params.q ?? "").trim();
+  const rangeAll = params.range === "all";
+
+  const hasFrom = !!params.from && /^\d{4}-\d{2}-\d{2}$/.test(params.from);
+  const hasTo = !!params.to && /^\d{4}-\d{2}-\d{2}$/.test(params.to);
+  if (hasFrom) {
+    baseFilters.push({ createdAt: { gte: new Date(`${params.from}T00:00:00+06:00`) } });
+  }
+  if (hasTo) {
+    baseFilters.push({ createdAt: { lte: new Date(`${params.to}T23:59:59+06:00`) } });
+  }
+  if (!hasFrom && !hasTo && !rangeAll && !q) {
+    baseFilters.push({ createdAt: { gte: dhakaMonthStart() } });
+  }
+
+  if (q) {
+    const digits = q.replace(/\D/g, "");
+    const or: Prisma.OrderWhereInput[] = [
+      { orderNo: { contains: q, mode: "insensitive" } },
+      { customer: { is: { name: { contains: q, mode: "insensitive" } } } },
+    ];
+    if (digits.length >= 4) {
+      or.push({ recipientPhoneBd: { contains: digits } });
+      or.push({ customer: { is: { phoneForeign: { contains: digits } } } });
+    }
+    baseFilters.push({ OR: or });
+  }
+
+  const seId = Number(params.seId);
+  if (seId) baseFilters.push({ salesExecutiveId: seId });
+
+  const status =
+    params.status && ORDER_STATUSES.includes(params.status as OrderStatusValue)
+      ? (params.status as OrderStatusValue)
+      : null;
+  const filters = status ? [...baseFilters, { status }] : [...baseFilters];
+
+  const page = Math.max(1, Math.floor(Number(params.page)) || 1);
+  return { baseFilters, filters, page, status, q, rangeAll };
 }
 
 // ---------- payload validation (shared by create, edit, edit-request) ----------
