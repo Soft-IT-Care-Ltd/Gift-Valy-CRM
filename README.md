@@ -1,36 +1,81 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Gift Valy — Business Management Software
 
-## Getting Started
+ERP/CRM for Gift Valy, built against [GIFT_VALY_SOFTWARE_SPEC.md](./GIFT_VALY_SOFTWARE_SPEC.md).
 
-First, run the development server:
+**Stack:** Next.js (App Router, TypeScript) · PostgreSQL (Neon) + Prisma · NextAuth (credentials) + RBAC · Tailwind + shadcn/ui
+
+## Build status (SPEC §16 Phase 1)
+
+- [x] 1. Scaffold: Next.js + Prisma + Postgres + auth + RBAC (roles/permissions seed)
+- [x] 2. Users/Teams CRUD (Admin) — incl. permission matrix UI, per-user overrides, audit log
+- [ ] 3. Product, category, package + BOM CRUD
+- [ ] 4. Customer + Order entry
+- [ ] 5. Payments on order
+- [ ] 6. Invoice PDF
+- [ ] 7. SE "my orders / my sales today" view
+
+## Run locally
+
+Requirements: Node 20+ and npm.
 
 ```bash
+npm install
+
+# 1. Environment — .env is already set up for the Neon database.
+#    If starting fresh, copy .env.example to .env and fill in:
+#    DATABASE_URL  (Neon pooled URL), DIRECT_URL (same URL without "-pooler"),
+#    NEXTAUTH_SECRET (openssl rand -base64 32), NEXTAUTH_URL=http://localhost:3000
+
+# 2. Apply migrations + seed (idempotent, safe to re-run)
+npx prisma migrate dev
+npx prisma db seed
+
+# 3. Start
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000 — you'll be redirected to the login page.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Demo logins
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Role | Email | Password |
+|---|---|---|
+| Admin / Owner | `mh.neshad39@gmail.com` | `Admin@GV2026` |
+| Sales Executive | `sanjoy@giftvaly.com` | `Sales@GV2026` |
+| Sales Executive | `partho@giftvaly.com` | `Sales@GV2026` |
 
-## Learn More
+Both Sales Executives belong to **Team Alpha**.
 
-To learn more about Next.js, take a look at the following resources:
+## Testing each role
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+**Admin** — log in as the admin. You get the *Admin* sidebar section:
+- **Users** — create/edit/deactivate users, assign role + team, reset passwords, and set per-user permission overrides (Inherit / Allow / Deny beats the role matrix).
+- **Teams** — create teams, pick a leader.
+- **Roles & Permissions** — the SPEC §2 matrix, editable per role. The Admin column is locked (Admin always has everything).
+- **Audit Log** — every sensitive mutation with before/after values (Asia/Dhaka time).
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+**Sales Executive** — log in as Sanjoy or Partho:
+- No Admin section in the sidebar; the dashboard lists only SE-scope access (own leads/orders, invoice, advance entry, own reports/target/attendance).
+- Enforcement is server-side: as an SE, `/admin/users` redirects to `/` and `GET /api/users` returns **403**.
 
-## Deploy on Vercel
+**Manager / Team Leader / Packing / Accounts** — the roles are seeded with their SPEC §2 permission sets; no demo users yet. To test one: log in as Admin → Users → **New user** → pick the role (e.g. Team Leader "Sakib", team leader of Team Alpha via Teams page). New users must change their password on first login — you'll be forced to the change-password screen, then sign in again.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Notes on RBAC behavior:
+- Permission checks hit the database on every API request, so matrix/override edits apply immediately — no re-login needed.
+- Deactivating a user blocks their login and kicks them out on next page load (soft delete — history preserved).
+- Manager deliberately does **not** have `reports.pnl` seeded (SPEC: "can see P&L if Admin enables") — grant it from the matrix UI or as a per-user override.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Project layout
+
+```
+prisma/schema.prisma      Auth & org tables (users, roles, permissions,
+                          role_permissions, user_permission_overrides, teams, audit_logs)
+prisma/seed.ts            Roles + SPEC §2 matrix + demo users
+lib/permissions.ts        Permission catalog + seed matrix (single source of truth)
+lib/rbac.ts               Effective-permission resolution (role → overrides, Admin bypass)
+lib/auth.ts               NextAuth credentials config (JWT sessions)
+lib/authz.ts              API guards: requireUser / requirePermission
+lib/audit.ts              Audit log writer
+app/(dashboard)/          Signed-in shell + admin pages
+app/api/                  users, teams, roles, account APIs
+```
