@@ -1,8 +1,10 @@
-// Seed: 6 roles + permission matrix (SPEC §2), 1 Admin, 2 demo Sales Executives,
-// demo catalog (8 categories, 10 products, 3 packages — SPEC §6.1/§6.2).
+// Seed: 6 roles + permission matrix (SPEC §2), one login per role (plus a 2nd
+// Sales Executive so own-vs-others scope is testable), demo catalog
+// (8 categories, 10 products, 3 packages — SPEC §6.1/§6.2), demo customers and
+// 15 orders across the status lifecycle with payments.
 // Idempotent — safe to re-run (upserts everywhere; re-running resets demo
-// catalog prices/stock and package BOMs to these values).
-import { PrismaClient } from "@prisma/client";
+// catalog prices/stock, package BOMs, and wipes/recreates the demo orders).
+import { PrismaClient, type OrderStatus, type PaymentType, type PaymentMethod } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import {
   PERMISSION_DEFS,
@@ -83,8 +85,30 @@ async function main() {
       password: "Sales@GV2026",
       teamId: team.id,
     },
+    {
+      name: "Rafiq",
+      email: "manager@giftvaly.com",
+      role: "Manager",
+      password: "Manager@GV2026",
+      teamId: null as number | null,
+    },
+    {
+      name: "Habib",
+      email: "packing@giftvaly.com",
+      role: "Packing",
+      password: "Pack@GV2026",
+      teamId: null as number | null,
+    },
+    {
+      name: "Tania",
+      email: "accounts@giftvaly.com",
+      role: "Accounts",
+      password: "Acc@GV2026",
+      teamId: null as number | null,
+    },
   ];
 
+  const userIdByEmail = new Map<string, number>();
   for (const u of users) {
     const passwordHash = await bcrypt.hash(u.password, 10);
     const saved = await prisma.user.upsert({
@@ -106,6 +130,7 @@ async function main() {
         joinedAt: new Date(),
       },
     });
+    userIdByEmail.set(u.email, saved.id);
     if (u.role === "TeamLeader") {
       await prisma.team.update({
         where: { id: team.id },
@@ -204,6 +229,7 @@ async function main() {
       ],
     },
   ];
+  const packageIdByCode = new Map<string, number>();
   for (const pkg of demoPackages) {
     const { code, items, ...fields } = pkg;
     const saved = await prisma.package.upsert({
@@ -211,6 +237,7 @@ async function main() {
       update: fields,
       create: { code, ...fields },
     });
+    packageIdByCode.set(code, saved.id);
     await prisma.packageItem.deleteMany({ where: { packageId: saved.id } });
     await prisma.packageItem.createMany({
       data: items.map((it) => ({
@@ -221,14 +248,454 @@ async function main() {
     });
   }
 
+  // ============ 8. Demo customers (SPEC §3 — probashi payers) ============
+  const demoCustomers = [
+    { name: "Rahim Uddin", phoneForeign: "+966551234567", country: "KSA" },
+    { name: "Karim Hossain", phoneForeign: "+971501112233", country: "UAE" },
+    { name: "Fatema Begum", phoneForeign: "+97455667788", country: "Qatar" },
+    { name: "Jashim Molla", phoneForeign: "+96599887766", country: "Kuwait" },
+    { name: "Nusrat Jahan", phoneForeign: "+60111222333", country: "Malaysia" },
+    { name: "Abdul Alim", phoneForeign: "+447700900123", country: "UK" },
+    { name: "Sharmin Akter", phoneForeign: "+14165550123", country: "Canada" },
+    { name: "Milon Sheikh", phoneForeign: "+6581234567", country: "Singapore" },
+  ];
+  const customerIdByPhone = new Map<string, number>();
+  for (const c of demoCustomers) {
+    const saved = await prisma.customer.upsert({
+      where: { phoneForeign: c.phoneForeign },
+      update: { name: c.name, country: c.country },
+      create: c,
+    });
+    customerIdByPhone.set(c.phoneForeign, saved.id);
+  }
+
+  // ============ 9. Demo orders — 15 across the lifecycle (SPEC §1.3/§4/§8) ============
+  // Idempotency: every order below belongs to a demo customer, so re-running
+  // wipes exactly those orders (payments first — no cascade on payments) and
+  // recreates them. Orders created via the app use non-demo customers and survive.
+  const demoCustomerIds = [...customerIdByPhone.values()];
+  const oldDemo = await prisma.order.findMany({
+    where: { customerId: { in: demoCustomerIds } },
+    select: { id: true },
+  });
+  const oldIds = oldDemo.map((o) => o.id);
+  await prisma.payment.deleteMany({ where: { orderId: { in: oldIds } } });
+  await prisma.order.deleteMany({ where: { id: { in: oldIds } } });
+
+  const daysAgo = (n: number, hour = 10) => {
+    const d = new Date();
+    d.setDate(d.getDate() - n);
+    d.setHours(hour, 0, 0, 0);
+    return d;
+  };
+  // GV-YYMM- month prefix in Asia/Dhaka — mirrors lib/orders.ts orderNoPrefix
+  // (not imported: lib/orders pulls in next-auth, which the seed CLI can't load).
+  const prefixFor = (date: Date) => {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Dhaka",
+      year: "2-digit",
+      month: "2-digit",
+    }).formatToParts(date);
+    const yy = parts.find((p) => p.type === "year")!.value;
+    const mm = parts.find((p) => p.type === "month")!.value;
+    return `GV-${yy}${mm}-`;
+  };
+  // Per-month sequence continues after any surviving (non-demo) orders.
+  const nextSeqByPrefix = new Map<string, number>();
+  const nextOrderNoFor = async (date: Date) => {
+    const prefix = prefixFor(date);
+    if (!nextSeqByPrefix.has(prefix)) {
+      const last = await prisma.order.findFirst({
+        where: { orderNo: { startsWith: prefix } },
+        orderBy: { orderNo: "desc" },
+        select: { orderNo: true },
+      });
+      nextSeqByPrefix.set(
+        prefix,
+        last ? parseInt(last.orderNo.slice(prefix.length), 10) + 1 : 1
+      );
+    }
+    const seq = nextSeqByPrefix.get(prefix)!;
+    nextSeqByPrefix.set(prefix, seq + 1);
+    return `${prefix}${String(seq).padStart(4, "0")}`;
+  };
+
+  const avgCostBySku = new Map(demoProducts.map((p) => [p.sku, p.avgCost]));
+  const pkgCostByCode = new Map(
+    demoPackages.map((pkg) => [
+      pkg.code,
+      pkg.items.reduce((s, it) => s + it.qty * avgCostBySku.get(it.sku)!, 0),
+    ])
+  );
+  const priceBySku = new Map(demoProducts.map((p) => [p.sku, p.sellingPrice]));
+  const pkgPriceByCode = new Map(demoPackages.map((p) => [p.code, p.sellingPrice]));
+
+  interface DemoLine { sku?: string; pkg?: string; qty: number; unitPrice?: number }
+  interface DemoStatusStep { to: OrderStatus; day: number; byEmail: string; note?: string }
+  interface DemoPayment {
+    type: PaymentType; method: PaymentMethod; amount: number; day: number;
+    txn?: string; sender?: string; verified?: boolean;
+  }
+  interface DemoOrder {
+    customerPhone: string; seEmail: string;
+    recipientName: string; recipientPhoneBd: string; relation: string;
+    address: string; district: string; thana: string; occasion: string | null;
+    items: DemoLine[]; discount?: number; courier?: number;
+    // chain[0] = status at creation (order createdAt = its day)
+    chain: DemoStatusStep[];
+    payments: DemoPayment[];
+    cancelReason?: string;
+    codOverride?: number; // default: max(total − advance, 0); 0 once settled/refund-path
+  }
+
+  const SE1 = "sanjoy@giftvaly.com";
+  const SE2 = "partho@giftvaly.com";
+  const TL = "sakib@giftvaly.com";
+  const MGR = "manager@giftvaly.com";
+  const PCK = "packing@giftvaly.com";
+  const ADM = "mh.neshad39@gmail.com";
+
+  const demoOrders: DemoOrder[] = [
+    { // 1 — COMPLETED, advance + COD collected
+      customerPhone: "+966551234567", seEmail: SE1,
+      recipientName: "Amina Khatun", recipientPhoneBd: "01711000001", relation: "Mother",
+      address: "House 12, Road 3, Dhanmondi", district: "Dhaka", thana: "Dhanmondi", occasion: "Eid",
+      items: [{ pkg: "PKG-001", qty: 1 }], courier: 150,
+      chain: [
+        { to: "CONFIRMED", day: 20, byEmail: SE1 },
+        { to: "PACKED", day: 19, byEmail: PCK },
+        { to: "HANDED_TO_COURIER", day: 18, byEmail: MGR },
+        { to: "IN_TRANSIT", day: 18, byEmail: MGR },
+        { to: "DELIVERED", day: 17, byEmail: MGR },
+        { to: "COMPLETED", day: 16, byEmail: MGR, note: "COD reconciled" },
+      ],
+      payments: [
+        { type: "ADVANCE", method: "BKASH", amount: 2000, day: 20, txn: "DEMO-BK-1001", sender: "+966551234567", verified: true },
+        { type: "COD_COURIER", method: "COURIER_COD", amount: 3650, day: 16, verified: true },
+      ],
+      codOverride: 3650,
+    },
+    { // 2 — COMPLETED, advance + post-delivery MFS
+      customerPhone: "+971501112233", seEmail: SE2,
+      recipientName: "Rina Akter", recipientPhoneBd: "01812000002", relation: "Wife",
+      address: "Vill: Charpara, PO: Mithapukur", district: "Rangpur", thana: "Mithapukur", occasion: "Anniversary",
+      items: [{ sku: "GV-0003", qty: 2 }, { sku: "GV-0009", qty: 1 }], discount: 100, courier: 120,
+      chain: [
+        { to: "CONFIRMED", day: 18, byEmail: SE2 },
+        { to: "PACKED", day: 17, byEmail: PCK },
+        { to: "HANDED_TO_COURIER", day: 16, byEmail: MGR },
+        { to: "DELIVERED", day: 15, byEmail: MGR },
+        { to: "COMPLETED", day: 14, byEmail: MGR },
+      ],
+      payments: [
+        { type: "ADVANCE", method: "NAGAD", amount: 1000, day: 18, txn: "DEMO-NG-1002", sender: "+971501112233", verified: true },
+        { type: "POST_DELIVERY_MFS", method: "BKASH", amount: 1920, day: 15, txn: "DEMO-BK-1003", verified: true },
+      ],
+      codOverride: 0,
+    },
+    { // 3 — COMPLETED, paid in full up-front by bank
+      customerPhone: "+97455667788", seEmail: SE1,
+      recipientName: "Shafiq Islam", recipientPhoneBd: "01913000003", relation: "Father",
+      address: "Holding 45, College Road", district: "Chattogram", thana: "Kotwali", occasion: "Birthday",
+      items: [{ pkg: "PKG-003", qty: 1 }], courier: 100,
+      chain: [
+        { to: "CONFIRMED", day: 15, byEmail: SE1 },
+        { to: "PACKED", day: 14, byEmail: PCK },
+        { to: "HANDED_TO_COURIER", day: 13, byEmail: MGR },
+        { to: "IN_TRANSIT", day: 13, byEmail: MGR },
+        { to: "DELIVERED", day: 12, byEmail: MGR },
+        { to: "COMPLETED", day: 11, byEmail: MGR },
+      ],
+      payments: [
+        { type: "ADVANCE", method: "BANK", amount: 2900, day: 15, txn: "DEMO-BA-1004", verified: true },
+      ],
+      codOverride: 0,
+    },
+    { // 4 — DELIVERED, COD collected, awaiting completion
+      customerPhone: "+96599887766", seEmail: SE2,
+      recipientName: "Salma Begum", recipientPhoneBd: "01714000004", relation: "Mother",
+      address: "Sadar Road 8", district: "Sylhet", thana: "Sylhet Sadar", occasion: "Mother's Day",
+      items: [{ sku: "GV-0005", qty: 1 }], courier: 150,
+      chain: [
+        { to: "CONFIRMED", day: 12, byEmail: SE2 },
+        { to: "PACKED", day: 11, byEmail: PCK },
+        { to: "HANDED_TO_COURIER", day: 10, byEmail: MGR },
+        { to: "IN_TRANSIT", day: 9, byEmail: MGR },
+        { to: "DELIVERED", day: 8, byEmail: MGR },
+      ],
+      payments: [
+        { type: "ADVANCE", method: "BKASH", amount: 1500, day: 12, txn: "DEMO-BK-1005", verified: true },
+        { type: "COD_COURIER", method: "COURIER_COD", amount: 2150, day: 8 },
+      ],
+      codOverride: 2150,
+    },
+    { // 5 — DELIVERED, COD not yet recorded (due outstanding)
+      customerPhone: "+60111222333", seEmail: SE1,
+      recipientName: "Tanvir Ahmed", recipientPhoneBd: "01815000005", relation: "Sibling",
+      address: "Block C, Mirpur 10", district: "Dhaka", thana: "Mirpur", occasion: "Birthday",
+      items: [{ pkg: "PKG-002", qty: 1 }], courier: 100,
+      chain: [
+        { to: "CONFIRMED", day: 6, byEmail: SE1 },
+        { to: "PACKED", day: 5, byEmail: PCK },
+        { to: "HANDED_TO_COURIER", day: 4, byEmail: MGR },
+        { to: "IN_TRANSIT", day: 3, byEmail: MGR },
+        { to: "DELIVERED", day: 1, byEmail: MGR },
+      ],
+      payments: [
+        { type: "ADVANCE", method: "NAGAD", amount: 800, day: 6, txn: "DEMO-NG-1006", verified: true },
+      ],
+    },
+    { // 6 — IN_TRANSIT
+      customerPhone: "+447700900123", seEmail: SE2,
+      recipientName: "Rokeya Sultana", recipientPhoneBd: "01916000006", relation: "Wife",
+      address: "Court Road 22", district: "Cumilla", thana: "Kotwali", occasion: "Just Because",
+      items: [{ sku: "GV-0002", qty: 1 }, { sku: "GV-0009", qty: 1 }, { sku: "GV-0010", qty: 1 }], courier: 110,
+      chain: [
+        { to: "CONFIRMED", day: 5, byEmail: SE2 },
+        { to: "PACKED", day: 4, byEmail: PCK },
+        { to: "HANDED_TO_COURIER", day: 3, byEmail: MGR },
+        { to: "IN_TRANSIT", day: 2, byEmail: MGR },
+      ],
+      payments: [
+        { type: "ADVANCE", method: "BKASH", amount: 500, day: 5, txn: "DEMO-BK-1007", verified: true },
+      ],
+    },
+    { // 7 — HANDED_TO_COURIER, percent discount
+      customerPhone: "+14165550123", seEmail: SE1,
+      recipientName: "Farida Yasmin", recipientPhoneBd: "01717000007", relation: "Mother",
+      address: "Station Road 5", district: "Rajshahi", thana: "Boalia", occasion: "Get Well Soon",
+      items: [{ sku: "GV-0006", qty: 1 }, { sku: "GV-0008", qty: 1 }], discount: 125, courier: 130,
+      chain: [
+        { to: "CONFIRMED", day: 4, byEmail: SE1 },
+        { to: "PACKED", day: 3, byEmail: PCK },
+        { to: "HANDED_TO_COURIER", day: 2, byEmail: MGR },
+      ],
+      payments: [
+        { type: "ADVANCE", method: "ROCKET", amount: 1000, day: 4, txn: "DEMO-RK-1008", verified: true },
+      ],
+    },
+    { // 8 — PACKED
+      customerPhone: "+971501112233", seEmail: SE2,
+      recipientName: "Nazma Khatun", recipientPhoneBd: "01818000008", relation: "Mother",
+      address: "Vill: Baniachong", district: "Habiganj", thana: "Baniachong", occasion: "Eid",
+      items: [{ pkg: "PKG-001", qty: 1 }], courier: 150,
+      chain: [
+        { to: "CONFIRMED", day: 3, byEmail: SE2 },
+        { to: "PACKED", day: 2, byEmail: PCK },
+      ],
+      payments: [
+        { type: "ADVANCE", method: "BKASH", amount: 3000, day: 3, txn: "DEMO-BK-1009", verified: true },
+      ],
+    },
+    { // 9 — PACKED, cake is per-order
+      customerPhone: "+6581234567", seEmail: SE1,
+      recipientName: "Liton Das", recipientPhoneBd: "01919000009", relation: "Friend",
+      address: "New Market Area", district: "Khulna", thana: "Sonadanga", occasion: "Birthday",
+      items: [{ sku: "GV-0001", qty: 2 }, { sku: "GV-0007", qty: 1 }], courier: 100,
+      chain: [
+        { to: "CONFIRMED", day: 2, byEmail: SE1 },
+        { to: "PACKED", day: 1, byEmail: PCK },
+      ],
+      payments: [
+        { type: "ADVANCE", method: "NAGAD", amount: 1200, day: 2, txn: "DEMO-NG-1010" },
+      ],
+    },
+    { // 10 — CONFIRMED (repeat customer of order 1)
+      customerPhone: "+966551234567", seEmail: SE1,
+      recipientName: "Amina Khatun", recipientPhoneBd: "01711000001", relation: "Mother",
+      address: "House 12, Road 3, Dhanmondi", district: "Dhaka", thana: "Dhanmondi", occasion: "Just Because",
+      items: [{ pkg: "PKG-003", qty: 1 }], courier: 120,
+      chain: [{ to: "CONFIRMED", day: 2, byEmail: SE1 }],
+      payments: [
+        { type: "ADVANCE", method: "BKASH", amount: 1000, day: 2, txn: "DEMO-BK-1011" },
+      ],
+    },
+    { // 11 — CONFIRMED
+      customerPhone: "+97455667788", seEmail: SE2,
+      recipientName: "Hasina Begum", recipientPhoneBd: "01711000011", relation: "Relative",
+      address: "Vill: Ramganj", district: "Lakshmipur", thana: "Ramganj", occasion: "Other",
+      items: [{ sku: "GV-0004", qty: 3 }], discount: 150, courier: 100,
+      chain: [{ to: "CONFIRMED", day: 1, byEmail: SE2 }],
+      payments: [
+        { type: "ADVANCE", method: "NAGAD", amount: 700, day: 1, txn: "DEMO-NG-1012" },
+      ],
+    },
+    { // 12 — CONFIRMED, TL-created, cash in full (office pickup)
+      customerPhone: "+96599887766", seEmail: TL,
+      recipientName: "Jashim Molla (self pickup)", recipientPhoneBd: "01712000012", relation: "Other",
+      address: "Office pickup — Gift Valy, Dhaka", district: "Dhaka", thana: "Gulshan", occasion: "Wedding",
+      items: [{ sku: "GV-0002", qty: 1 }, { sku: "GV-0003", qty: 1 }],
+      chain: [{ to: "CONFIRMED", day: 0, byEmail: TL }],
+      payments: [
+        { type: "ADVANCE", method: "CASH", amount: 2600, day: 0 },
+      ],
+      codOverride: 0,
+    },
+    { // 13 — ON_HOLD: zero advance (SPEC §1.3 — no CONFIRMED without advance)
+      customerPhone: "+447700900123", seEmail: SE2,
+      recipientName: "Monira Begum", recipientPhoneBd: "01813000013", relation: "Wife",
+      address: "Housing Estate B-14", district: "Bogura", thana: "Bogura Sadar", occasion: "Anniversary",
+      items: [{ sku: "GV-0006", qty: 1 }], courier: 120,
+      chain: [{ to: "ON_HOLD", day: 1, byEmail: SE2, note: "No advance payment — held until advance is recorded" }],
+      payments: [],
+    },
+    { // 14 — CANCELLED with refund of the advance
+      customerPhone: "+14165550123", seEmail: SE1,
+      recipientName: "Parvin Akter", recipientPhoneBd: "01914000014", relation: "Daughter",
+      address: "Lake Road 7", district: "Barishal", thana: "Barishal Sadar", occasion: "Graduation",
+      items: [{ sku: "GV-0008", qty: 2 }], courier: 100,
+      chain: [
+        { to: "CONFIRMED", day: 3, byEmail: SE1 },
+        { to: "CANCELLED", day: 2, byEmail: ADM, note: "Customer cancelled — recipient travelling" },
+      ],
+      payments: [
+        { type: "ADVANCE", method: "BKASH", amount: 500, day: 3, txn: "DEMO-BK-1013", verified: true },
+        { type: "REFUND", method: "BKASH", amount: 500, day: 2, txn: "DEMO-BK-1014" },
+      ],
+      cancelReason: "Customer cancelled — recipient travelling",
+      codOverride: 0,
+    },
+    { // 15 — RETURNED (refund pending)
+      customerPhone: "+60111222333", seEmail: SE2,
+      recipientName: "Sumon Mia", recipientPhoneBd: "01815000015", relation: "Sibling",
+      address: "Vill: Kaliganj Bazar", district: "Gazipur", thana: "Kaliganj", occasion: "Birthday",
+      items: [{ pkg: "PKG-002", qty: 1 }], courier: 100,
+      chain: [
+        { to: "CONFIRMED", day: 10, byEmail: SE2 },
+        { to: "PACKED", day: 9, byEmail: PCK },
+        { to: "HANDED_TO_COURIER", day: 8, byEmail: MGR },
+        { to: "IN_TRANSIT", day: 7, byEmail: MGR },
+        { to: "RETURNED", day: 5, byEmail: MGR, note: "Recipient unreachable — parcel returned" },
+      ],
+      payments: [
+        { type: "ADVANCE", method: "NAGAD", amount: 900, day: 10, txn: "DEMO-NG-1015", verified: true },
+      ],
+      codOverride: 0,
+    },
+  ];
+
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  const accountsId = userIdByEmail.get("accounts@giftvaly.com")!;
+
+  for (const d of demoOrders) {
+    const seId = userIdByEmail.get(d.seEmail)!;
+    const se = await prisma.user.findUniqueOrThrow({
+      where: { id: seId },
+      select: { teamId: true },
+    });
+    const createdAt = daysAgo(d.chain[0].day, 10);
+    const status = d.chain[d.chain.length - 1].to;
+    const reachedPacked = d.chain.some((s) => s.to === "PACKED");
+
+    const lines = d.items.map((it) => {
+      const unitPrice =
+        it.unitPrice ??
+        (it.sku ? priceBySku.get(it.sku)! : pkgPriceByCode.get(it.pkg!)!);
+      // unit_cost_snapshot freezes at PACKED (integrity rule 4)
+      const unitCost = reachedPacked
+        ? it.sku
+          ? avgCostBySku.get(it.sku)!
+          : pkgCostByCode.get(it.pkg!)!
+        : null;
+      return {
+        itemType: (it.sku ? "PRODUCT" : "PACKAGE") as "PRODUCT" | "PACKAGE",
+        productId: it.sku ? productIdBySku.get(it.sku)! : null,
+        packageId: it.pkg ? packageIdByCode.get(it.pkg)! : null,
+        qty: it.qty,
+        unitPrice,
+        unitCostSnapshot: unitCost,
+        lineTotal: round2(it.qty * unitPrice),
+      };
+    });
+    const subtotal = round2(lines.reduce((s, l) => s + l.lineTotal, 0));
+    const discount = d.discount ?? 0;
+    const courier = d.courier ?? 0;
+    const total = round2(subtotal - discount + courier);
+    const paid = d.payments.reduce(
+      (s, p) => s + (p.type === "REFUND" ? -p.amount : p.amount),
+      0
+    );
+    const due = round2(total - paid);
+    const advance = d.payments.find((p) => p.type === "ADVANCE")?.amount ?? 0;
+    const cod = d.codOverride ?? Math.max(round2(total - advance), 0);
+
+    await prisma.$transaction(async (tx) => {
+      const orderNo = await nextOrderNoFor(createdAt);
+      const order = await tx.order.create({
+        data: {
+          orderNo,
+          customerId: customerIdByPhone.get(d.customerPhone)!,
+          recipientName: d.recipientName,
+          recipientPhoneBd: d.recipientPhoneBd,
+          recipientRelation: d.relation,
+          deliveryAddress: d.address,
+          district: d.district,
+          thana: d.thana,
+          occasion: d.occasion,
+          subtotal,
+          discount,
+          courierChargeCustomer: courier,
+          totalAmount: total,
+          advanceAmount: advance,
+          dueAmount: due,
+          codAmount: cod,
+          status,
+          cancelReason: d.cancelReason ?? null,
+          salesExecutiveId: seId,
+          teamId: se.teamId,
+          createdAt,
+          createdBy: seId,
+          updatedBy: seId,
+        },
+      });
+      await tx.orderItem.createMany({
+        data: lines.map((l) => ({ orderId: order.id, ...l })),
+      });
+      await tx.orderStatusHistory.createMany({
+        data: d.chain.map((step, i) => ({
+          orderId: order.id,
+          fromStatus: i === 0 ? null : d.chain[i - 1].to,
+          toStatus: step.to,
+          byUser: userIdByEmail.get(step.byEmail)!,
+          at: daysAgo(step.day, 10 + Math.min(i, 8)),
+          note: step.note ?? null,
+        })),
+      });
+      if (d.payments.length > 0) {
+        await tx.payment.createMany({
+          data: d.payments.map((p) => ({
+            orderId: order.id,
+            paymentDate: daysAgo(p.day, 11),
+            type: p.type,
+            method: p.method,
+            amount: p.amount,
+            transactionId: p.txn ?? null,
+            senderNumber: p.sender ?? null,
+            isVerified: p.verified ?? false,
+            verifiedBy: p.verified ? accountsId : null,
+            createdBy: seId,
+            updatedBy: seId,
+          })),
+        });
+      }
+    });
+  }
+
+  const orderCount = await prisma.order.count();
+  const paymentCount = await prisma.payment.count();
+
   console.log("Seed complete:");
   console.log(`  ${PERMISSION_DEFS.length} permissions, ${ROLE_NAMES.length} roles (matrix applied)`);
   console.log("  Team: Team Alpha");
   console.log(`  Catalog: ${categoryNames.length} categories, ${demoProducts.length} products, ${demoPackages.length} packages`);
-  console.log("  Admin:  mh.neshad39@gmail.com / Admin@GV2026");
-  console.log("  TL:     sakib@giftvaly.com    / Team@GV2026");
-  console.log("  SE:     sanjoy@giftvaly.com   / Sales@GV2026");
-  console.log("  SE:     partho@giftvaly.com   / Sales@GV2026");
+  console.log(`  Demo data: ${demoCustomers.length} customers, ${demoOrders.length} demo orders (${orderCount} total), ${paymentCount} payments`);
+  console.log("  Admin:    mh.neshad39@gmail.com / Admin@GV2026");
+  console.log("  Manager:  manager@giftvaly.com  / Manager@GV2026");
+  console.log("  TL:       sakib@giftvaly.com    / Team@GV2026");
+  console.log("  SE:       sanjoy@giftvaly.com   / Sales@GV2026");
+  console.log("  SE:       partho@giftvaly.com   / Sales@GV2026");
+  console.log("  Packing:  packing@giftvaly.com  / Pack@GV2026");
+  console.log("  Accounts: accounts@giftvaly.com / Acc@GV2026");
   console.log("  Setting: order_edit_window_minutes = 30");
 }
 

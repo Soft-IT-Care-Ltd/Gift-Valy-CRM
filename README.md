@@ -41,11 +41,21 @@ Open http://localhost:3000 — you'll be redirected to the login page.
 | Role | Email | Password |
 |---|---|---|
 | Admin / Owner | `mh.neshad39@gmail.com` | `Admin@GV2026` |
+| Manager | `manager@giftvaly.com` | `Manager@GV2026` |
 | Team Leader | `sakib@giftvaly.com` | `Team@GV2026` |
 | Sales Executive | `sanjoy@giftvaly.com` | `Sales@GV2026` |
 | Sales Executive | `partho@giftvaly.com` | `Sales@GV2026` |
+| Packing / Operations | `packing@giftvaly.com` | `Pack@GV2026` |
+| Accounts | `accounts@giftvaly.com` | `Acc@GV2026` |
 
 Sakib leads **Team Alpha**; both Sales Executives belong to it.
+
+The seed also creates 8 demo customers and 15 demo orders spread across the
+status lifecycle (confirmed → packed → courier → delivered → completed, plus
+on-hold/cancelled/returned) with realistic payments — advances, partials, COD,
+post-delivery MFS and a refund. Re-running `npx prisma db seed` wipes and
+recreates exactly those demo orders (identified by the demo customers) and
+leaves orders you entered through the app untouched.
 
 ## Testing each role
 
@@ -71,7 +81,7 @@ Sakib leads **Team Alpha**; both Sales Executives belong to it.
 - Order page: add payments (due recomputes every write; refunds add back), change status along the §1.3 lifecycle (cancel needs a reason, COMPLETED needs due = 0), full status history.
 - **Edit window (§4.2):** the creating SE can edit for 30 min (setting `order_edit_window_minutes`); afterwards the same Edit screen submits an **edit request** which Sakib (TL) approves/rejects under *Sales → Edit Requests* — approval applies the changes and recomputes totals/due.
 
-**Manager / Packing / Accounts** — the roles are seeded with their SPEC §2 permission sets; no demo users yet. To test one: log in as Admin → Users → **New user** → pick the role. New users must change their password on first login — you'll be forced to the change-password screen, then sign in again.
+**Manager / Packing / Accounts** — one demo login per role (table above), each seeded with its SPEC §2 permission set. Packing can move CONFIRMED orders to PACKED without any order-view permission; Accounts can record/verify payments on any order. Users created later via Admin → Users must change their password on first login — you'll be forced to the change-password screen, then sign in again.
 
 Notes on RBAC behavior:
 - Permission checks hit the database on every API request, so matrix/override edits apply immediately — no re-login needed.
