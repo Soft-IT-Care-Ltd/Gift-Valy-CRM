@@ -31,6 +31,7 @@ export function CourierReportClient({ report }: { report: CourierReport }) {
     codPending,
     pendingHandoverRows,
     codPendingRows,
+    attentionRows,
     byCourier,
   } = report;
 
@@ -211,6 +212,66 @@ export function CourierReportClient({ report }: { report: CourierReport }) {
           </Table>
         </CardContent>
       </Card>
+
+      {/* Needs attention — courier integration flags (STEADFAST_INTEGRATION.md §3B) */}
+      {attentionRows.length > 0 && (
+        <Card className="border-amber-300">
+          <CardHeader>
+            <CardTitle className="text-amber-800">
+              ⚠ Needs attention ({attentionRows.length})
+            </CardTitle>
+            <CardDescription>
+              Shipments the courier flagged as on-hold or with an unclear status —
+              review manually.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Order</TableHead>
+                  <TableHead>Courier</TableHead>
+                  <TableHead>Recipient</TableHead>
+                  <TableHead>District</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Flag</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {attentionRows.map((r) => (
+                  <TableRow key={r.shipmentId}>
+                    <TableCell>
+                      <Link href={`/orders/${r.orderId}`} className="font-mono text-sm underline">
+                        {r.orderNo}
+                      </Link>
+                    </TableCell>
+                    <TableCell>{r.courier}</TableCell>
+                    <TableCell>{r.recipientName}</TableCell>
+                    <TableCell>{r.district}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {r.steadfastStatus ?? r.status}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap gap-1">
+                        {r.onHold && (
+                          <Badge variant="outline" className="bg-amber-100 text-amber-800">
+                            On hold
+                          </Badge>
+                        )}
+                        {r.needsAttention && (
+                          <Badge variant="outline" className="bg-orange-100 text-orange-800">
+                            Needs review
+                          </Badge>
+                        )}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Per-courier breakdown */}
       <Card>

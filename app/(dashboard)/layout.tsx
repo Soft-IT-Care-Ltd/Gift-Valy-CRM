@@ -103,6 +103,14 @@ export default async function DashboardLayout({
   if (permissions.includes("audit.view")) {
     navItems.push({ href: "/admin/audit", label: "Audit Log", section: "Admin" });
   }
+  // Courier API integration settings (STEADFAST_INTEGRATION.md §1) — admin-only.
+  if (permissions.includes("settings.manage")) {
+    navItems.push({
+      href: "/settings/steadfast",
+      label: "Steadfast Integration",
+      section: "Admin",
+    });
+  }
 
   const roleLabel = ROLE_LABELS[user.role.name as RoleName] ?? user.role.name;
 

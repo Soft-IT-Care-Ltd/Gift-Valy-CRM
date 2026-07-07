@@ -145,6 +145,16 @@ export interface OrderDetail {
     deliveredAt: string | null;
     returnedAt: string | null;
     returnApproved: boolean;
+    consignmentId: number | null;
+    steadfastStatus: string | null;
+    onHold: boolean;
+    needsAttention: boolean;
+    trackingEvents: {
+      id: number;
+      message: string;
+      eventAt: string;
+      source: string;
+    }[];
     courierCostActual?: number;
   } | null;
 }
@@ -432,7 +442,8 @@ export function OrderDetailClient({
           </CardHeader>
           <CardContent className="text-sm">
             {order.shipment ? (
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <div>
                   <div className="text-muted-foreground">Courier</div>
                   <div className="font-medium">{order.shipment.courier}</div>
@@ -508,6 +519,48 @@ export function OrderDetailClient({
                   <div>
                     <div className="text-muted-foreground">Courier cost</div>
                     <div>{money(order.shipment.courierCostActual)}</div>
+                  </div>
+                )}
+                </div>
+
+                {/* Steadfast flags (STEADFAST_INTEGRATION.md §3B) */}
+                {(order.shipment.steadfastStatus ||
+                  order.shipment.onHold ||
+                  order.shipment.needsAttention) && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {order.shipment.steadfastStatus && (
+                      <Badge variant="outline">
+                        Steadfast: {order.shipment.steadfastStatus}
+                      </Badge>
+                    )}
+                    {order.shipment.onHold && (
+                      <Badge variant="outline" className="bg-amber-100 text-amber-800">
+                        ⚠ On hold
+                      </Badge>
+                    )}
+                    {order.shipment.needsAttention && (
+                      <Badge variant="outline" className="bg-orange-100 text-orange-800">
+                        ⚠ Needs attention
+                      </Badge>
+                    )}
+                  </div>
+                )}
+
+                {/* Tracking timeline (§3A payload 2) */}
+                {order.shipment.trackingEvents.length > 0 && (
+                  <div>
+                    <div className="mb-1 text-muted-foreground">Tracking timeline</div>
+                    <ol className="space-y-1.5 border-l pl-4">
+                      {order.shipment.trackingEvents.map((t) => (
+                        <li key={t.id} className="relative">
+                          <span className="absolute -left-[21px] top-1.5 size-2 rounded-full bg-muted-foreground/50" />
+                          <span>{t.message}</span>
+                          <span className="ml-2 text-xs text-muted-foreground">
+                            {formatDateTime(t.eventAt)} · {t.source}
+                          </span>
+                        </li>
+                      ))}
+                    </ol>
                   </div>
                 )}
               </div>

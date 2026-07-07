@@ -516,7 +516,12 @@ export type OrderWithRelations = Prisma.OrderGetPayload<{
     statusHistory: { include: { user: { select: { name: true } } } };
     editRequests: { include: { requester: { select: { name: true } } } };
     invoices: true;
-    shipment: { include: { courier: { select: { name: true } } } };
+    shipment: {
+      include: {
+        courier: { select: { name: true } };
+        trackingEvents: true;
+      };
+    };
   };
 }>;
 
@@ -534,7 +539,12 @@ export const orderDetailInclude = {
   statusHistory: { include: { user: { select: { name: true } } } },
   editRequests: { include: { requester: { select: { name: true } } } },
   invoices: true,
-  shipment: { include: { courier: { select: { name: true } } } },
+  shipment: {
+    include: {
+      courier: { select: { name: true } },
+      trackingEvents: true,
+    },
+  },
 } satisfies Prisma.OrderInclude;
 
 // unit_cost_snapshot is a COST field — stripped unless the caller may see
@@ -658,6 +668,24 @@ export function serializeOrderDetail(o: OrderWithRelations, showCosts: boolean) 
             ? o.shipment.returnedAt.toISOString()
             : null,
           returnApproved: o.shipment.returnApproved,
+          // Steadfast integration (STEADFAST_INTEGRATION.md §3): raw courier
+          // status, operator flags, and the tracking-event timeline (§3A payload 2).
+          consignmentId:
+            o.shipment.consignmentId != null
+              ? Number(o.shipment.consignmentId)
+              : null,
+          steadfastStatus: o.shipment.steadfastStatus,
+          onHold: o.shipment.onHold,
+          needsAttention: o.shipment.needsAttention,
+          trackingEvents: o.shipment.trackingEvents
+            .slice()
+            .sort((a, b) => b.eventAt.getTime() - a.eventAt.getTime())
+            .map((t) => ({
+              id: t.id,
+              message: t.message,
+              eventAt: t.eventAt.toISOString(),
+              source: t.source,
+            })),
           ...(showCosts && o.shipment.courierCostActual != null
             ? { courierCostActual: Number(o.shipment.courierCostActual) }
             : {}),
@@ -682,6 +710,12 @@ export function serializeOrderListRow(o: OrderListRow) {
     customerPhone: o.customer.phoneForeign,
     customerCountry: o.customer.country,
     recipientName: o.recipientName,
+    // Recipient contact + COD — used by the "Send to Steadfast" confirm dialog
+    // on the PACKED tab (STEADFAST_INTEGRATION.md §2). Not cost/profit data.
+    recipientPhone: o.recipientPhoneBd,
+    deliveryAddress: o.deliveryAddress,
+    thana: o.thana,
+    codAmount: Number(o.codAmount),
     district: o.district,
     totalAmount: Number(o.totalAmount),
     dueAmount: Number(o.dueAmount),

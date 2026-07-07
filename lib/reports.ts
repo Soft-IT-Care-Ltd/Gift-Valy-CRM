@@ -223,6 +223,21 @@ export interface CourierPerCompanyRow {
   codPendingAmount: number;
 }
 
+// Shipments the courier integration flagged for a human (STEADFAST_INTEGRATION.md
+// §3B): on_hold or needs_attention (partial / unknown status).
+export interface CourierAttentionRow {
+  shipmentId: number;
+  orderId: number;
+  orderNo: string;
+  courier: string;
+  recipientName: string;
+  district: string;
+  status: string;
+  steadfastStatus: string | null;
+  onHold: boolean;
+  needsAttention: boolean;
+}
+
 export interface CourierReport {
   pendingHandoverCount: number;
   counts: {
@@ -237,6 +252,7 @@ export interface CourierReport {
   codPending: { count: number; amount: number };
   pendingHandoverRows: CourierPendingHandoverRow[];
   codPendingRows: CourierCodPendingRow[];
+  attentionRows: CourierAttentionRow[]; // ⚠ on-hold / needs-attention (§3B)
   byCourier: CourierPerCompanyRow[];
 }
 
@@ -310,9 +326,26 @@ export async function buildCourierReport(): Promise<CourierReport> {
   };
 
   const codPendingRows: CourierCodPendingRow[] = [];
+  const attentionRows: CourierAttentionRow[] = [];
   for (const s of shipments) {
     const row = ensureRow(s.courier.id, s.courier.name);
     row.total += 1;
+
+    // ⚠ integration flags (§3B) — surface anything held or needing review.
+    if (s.onHold || s.needsAttention) {
+      attentionRows.push({
+        shipmentId: s.id,
+        orderId: s.order.id,
+        orderNo: s.order.orderNo,
+        courier: s.courier.name,
+        recipientName: s.order.recipientName,
+        district: s.order.district,
+        status: s.status,
+        steadfastStatus: s.steadfastStatus,
+        onHold: s.onHold,
+        needsAttention: s.needsAttention,
+      });
+    }
     if (s.status === "HANDED_TO_COURIER") {
       counts.handedToCourier += 1;
       row.handedToCourier += 1;
@@ -377,6 +410,7 @@ export async function buildCourierReport(): Promise<CourierReport> {
     codPending,
     pendingHandoverRows,
     codPendingRows,
+    attentionRows,
     byCourier: [...perCourier.values()].sort((a, b) => b.total - a.total),
   };
 }

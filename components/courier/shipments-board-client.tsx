@@ -77,6 +77,11 @@ export interface ActiveShipmentRow {
   codAmount: number;
   status: ShipmentStatusValue;
   codReceived: boolean;
+  // Steadfast integration (STEADFAST_INTEGRATION.md §3B)
+  isSteadfast: boolean;
+  steadfastStatus: string | null;
+  onHold: boolean;
+  needsAttention: boolean;
 }
 
 export function ShipmentStatusBadge({ status }: { status: ShipmentStatusValue }) {
@@ -95,15 +100,38 @@ export function ShipmentsBoardClient({
   recent,
   couriers,
   today,
+  steadfastEnabled,
 }: {
   pending: PendingHandoverOrder[];
   active: ActiveShipmentRow[];
   recent: ActiveShipmentRow[];
   couriers: CourierOptionRow[];
   today: string;
+  steadfastEnabled: boolean;
 }) {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
+
+  // ---- Steadfast poll / "Sync now" (STEADFAST_INTEGRATION.md §3B) ----
+  const [syncing, setSyncing] = useState<number | "all" | null>(null);
+  async function syncNow(shipmentId?: number) {
+    setSyncing(shipmentId ?? "all");
+    const res = await fetch("/api/couriers/steadfast/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(shipmentId ? { shipmentId } : {}),
+    });
+    setSyncing(null);
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      toast.error(data?.error ?? "Sync failed");
+      return;
+    }
+    toast.success(
+      `Synced ${data.polled} shipment${data.polled === 1 ? "" : "s"} — ${data.changed} updated`
+    );
+    router.refresh();
+  }
 
   // ---- handover dialog ----
   const [hoOrder, setHoOrder] = useState<PendingHandoverOrder | null>(null);
@@ -268,11 +296,23 @@ export function ShipmentsBoardClient({
 
       {/* Active shipments */}
       <Card>
-        <CardHeader>
-          <CardTitle>In transit ({active.length})</CardTitle>
-          <CardDescription>
-            Handed over or in transit — advance the status as the courier reports.
-          </CardDescription>
+        <CardHeader className="flex flex-row items-start justify-between gap-2">
+          <div>
+            <CardTitle>In transit ({active.length})</CardTitle>
+            <CardDescription>
+              Handed over or in transit — advance the status as the courier reports.
+            </CardDescription>
+          </div>
+          {steadfastEnabled && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => syncNow()}
+              disabled={syncing !== null}
+            >
+              {syncing === "all" ? "Syncing…" : "Sync now"}
+            </Button>
+          )}
         </CardHeader>
         <CardContent>
           <Table>
@@ -309,10 +349,38 @@ export function ShipmentsBoardClient({
                   </TableCell>
                   <TableCell className="text-right">{money(s.codAmount)}</TableCell>
                   <TableCell>
-                    <ShipmentStatusBadge status={s.status} />
+                    <div className="flex flex-wrap items-center gap-1">
+                      <ShipmentStatusBadge status={s.status} />
+                      {s.onHold && (
+                        <Badge variant="outline" className="bg-amber-100 text-amber-800">
+                          ⚠ On hold
+                        </Badge>
+                      )}
+                      {s.needsAttention && (
+                        <Badge variant="outline" className="bg-orange-100 text-orange-800">
+                          ⚠ Needs attention
+                        </Badge>
+                      )}
+                    </div>
+                    {s.isSteadfast && s.steadfastStatus && (
+                      <div className="mt-0.5 text-xs text-muted-foreground">
+                        Steadfast: {s.steadfastStatus}
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
+                      {s.isSteadfast && steadfastEnabled && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          title="Sync status from Steadfast"
+                          onClick={() => syncNow(s.id)}
+                          disabled={syncing !== null}
+                        >
+                          {syncing === s.id ? "…" : "⟳"}
+                        </Button>
+                      )}
                       {SHIPMENT_NEXT_STATUSES[s.status].map((to) => (
                         <Button
                           key={to}

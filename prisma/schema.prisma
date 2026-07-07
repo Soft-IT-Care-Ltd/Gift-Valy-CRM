@@ -30,14 +30,14 @@ model User {
   createdBy          Int?      @map("created_by")
   updatedBy          Int?      @map("updated_by")
 
-  role        Role                     @relation(fields: [roleId], references: [id])
-  team        Team?                    @relation("TeamMembers", fields: [teamId], references: [id])
-  leaderOf    Team[]                   @relation("TeamLeader")
-  overrides   UserPermissionOverride[]
-  auditLogs   AuditLog[]
-  salesOrders        Order[]              @relation("SalesOrders")
-  orderStatusChanges OrderStatusHistory[] @relation("StatusChanges")
-  orderEditRequests  OrderEditRequest[]   @relation("EditRequests")
+  role               Role                     @relation(fields: [roleId], references: [id])
+  team               Team?                    @relation("TeamMembers", fields: [teamId], references: [id])
+  leaderOf           Team[]                   @relation("TeamLeader")
+  overrides          UserPermissionOverride[]
+  auditLogs          AuditLog[]
+  salesOrders        Order[]                  @relation("SalesOrders")
+  orderStatusChanges OrderStatusHistory[]     @relation("StatusChanges")
+  orderEditRequests  OrderEditRequest[]       @relation("EditRequests")
 
   @@map("users")
 }
@@ -593,17 +593,96 @@ model Shipment {
   returnApprovedBy      Int?           @map("return_approved_by")
   returnCharge          Decimal?       @map("return_charge") @db.Decimal(12, 2)
   returnChargeExpenseId Int?           @map("return_charge_expense_id")
+  // Steadfast API integration (STEADFAST_INTEGRATION.md §4). All nullable/default
+  // so manual (non-API) shipments are unaffected. consignment_id is the Steadfast
+  // side id used to correlate webhook/poll updates back to this shipment;
+  // steadfast_status is the raw courier status (audit); on_hold / needs_attention
+  // are operator flags surfaced in the courier report; last_polled_at gates the
+  // polling fallback (§3B).
+  consignmentId         BigInt?        @unique @map("consignment_id")
+  steadfastStatus       String?        @map("steadfast_status")
+  onHold                Boolean        @default(false) @map("on_hold")
+  needsAttention        Boolean        @default(false) @map("needs_attention")
+  lastPolledAt          DateTime?      @map("last_polled_at")
   createdAt             DateTime       @default(now()) @map("created_at")
   updatedAt             DateTime       @updatedAt @map("updated_at")
   createdBy             Int?           @map("created_by")
   updatedBy             Int?           @map("updated_by")
 
-  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  courier Courier @relation(fields: [courierId], references: [id])
+  order          Order                   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  courier        Courier                 @relation(fields: [courierId], references: [id])
+  statusLogs     ShipmentStatusLog[]
+  trackingEvents ShipmentTrackingEvent[]
 
   @@index([status])
   @@index([courierId])
   @@map("shipments")
+}
+
+// ============ STEADFAST COURIER INTEGRATION (STEADFAST_INTEGRATION.md §4) ============
+
+// Where a raw status update came from: the real-time webhook (primary) or the
+// polling fallback (§3A / §3B). Both go through the SAME status-update code path.
+enum StatusLogSource {
+  WEBHOOK
+  POLL
+}
+
+// Immutable audit trail of every raw status payload Steadfast sends us, via
+// webhook or poll (§3A step 4 / §3B step 4). shipment_id is nullable so a
+// payload for an unknown consignment is still logged (§3A step 1).
+model ShipmentStatusLog {
+  id         Int             @id @default(autoincrement())
+  shipmentId Int?            @map("shipment_id")
+  rawPayload Json            @map("raw_payload")
+  rawStatus  String?         @map("raw_status")
+  source     StatusLogSource
+  receivedAt DateTime        @default(now()) @map("received_at")
+
+  shipment Shipment? @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+
+  @@index([shipmentId])
+  @@map("shipment_status_logs")
+}
+
+// Non-status tracking messages (§3A payload 2, notification_type=tracking_update)
+// rendered as a timeline on the order/shipment detail page.
+model ShipmentTrackingEvent {
+  id         Int      @id @default(autoincrement())
+  shipmentId Int      @map("shipment_id")
+  message    String
+  eventAt    DateTime @map("event_at")
+  source     String // "WEBHOOK" | "POLL"
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@index([shipmentId])
+  @@map("shipment_tracking_events")
+}
+
+// One integration currently: Steadfast. Keys are encrypted at rest (lib/crypto.ts)
+// and only ever used server-side (§5). webhook_token_encrypted authenticates
+// inbound webhooks (Bearer). Timestamps give the Settings page health visibility.
+enum CourierIntegrationType {
+  STEADFAST
+}
+
+model CourierIntegration {
+  id                    Int                    @id @default(autoincrement())
+  courier               CourierIntegrationType @unique
+  apiKeyEncrypted       String?                @map("api_key_encrypted")
+  secretKeyEncrypted    String?                @map("secret_key_encrypted")
+  webhookTokenEncrypted String?                @map("webhook_token_encrypted")
+  isEnabled             Boolean                @default(false) @map("is_enabled")
+  pollingMinutes        Int                    @default(60) @map("polling_minutes")
+  connectedAt           DateTime?              @map("connected_at")
+  lastSyncAt            DateTime?              @map("last_sync_at")
+  lastWebhookAt         DateTime?              @map("last_webhook_at")
+  createdAt             DateTime               @default(now()) @map("created_at")
+  updatedAt             DateTime               @updatedAt @map("updated_at")
+
+  @@map("courier_integrations")
 }
 
 // SPEC §14 — key/value settings (edit-window minutes, packaging cost, …).

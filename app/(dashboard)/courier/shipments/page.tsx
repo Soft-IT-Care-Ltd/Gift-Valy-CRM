@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { requirePagePermission } from "@/lib/page-auth";
+import { getSteadfastIntegration } from "@/lib/steadfast-integration";
 import {
   ShipmentsBoardClient,
   type CourierOptionRow,
@@ -19,7 +20,7 @@ function dhakaToday(): string {
 export default async function ShipmentsPage() {
   await requirePagePermission("courier.manage");
 
-  const [pending, active, recent, couriers] = await Promise.all([
+  const [pending, active, recent, couriers, integration] = await Promise.all([
     prisma.order.findMany({
       where: { status: "PACKED", shipment: { is: null } },
       orderBy: { createdAt: "asc" },
@@ -59,6 +60,7 @@ export default async function ShipmentsPage() {
       orderBy: { name: "asc" },
       select: { id: true, name: true, codFeePercent: true },
     }),
+    getSteadfastIntegration(),
   ]);
 
   const pendingRows: PendingHandoverOrder[] = pending.map((o) => ({
@@ -86,6 +88,12 @@ export default async function ShipmentsPage() {
     codAmount: Number(s.codAmount),
     status: s.status,
     codReceived: s.codReceived,
+    // Steadfast integration flags (STEADFAST_INTEGRATION.md §3B): a live
+    // consignment can be polled/synced, and hold/unknown raise operator flags.
+    isSteadfast: s.consignmentId !== null,
+    steadfastStatus: s.steadfastStatus,
+    onHold: s.onHold,
+    needsAttention: s.needsAttention,
   });
 
   const courierOptions: CourierOptionRow[] = couriers.map((c) => ({
@@ -101,6 +109,7 @@ export default async function ShipmentsPage() {
       recent={recent.map(toActiveRow)}
       couriers={courierOptions}
       today={dhakaToday()}
+      steadfastEnabled={integration?.isEnabled ?? false}
     />
   );
 }

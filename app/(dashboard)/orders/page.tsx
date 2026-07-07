@@ -9,6 +9,7 @@ import {
   serializeOrderListRow,
 } from "@/lib/orders";
 import { type OrderStatusValue } from "@/lib/order-constants";
+import { getSteadfastIntegration } from "@/lib/steadfast-integration";
 import { OrdersListClient } from "@/components/orders/orders-list-client";
 
 export const dynamic = "force-dynamic";
@@ -54,6 +55,13 @@ export default async function OrdersPage({
     ? (statusCounts[status] ?? 0)
     : Object.values(statusCounts).reduce((s, n) => s + (n ?? 0), 0);
 
+  // "Send to Steadfast" on the PACKED tab needs courier.manage + an enabled
+  // integration (STEADFAST_INTEGRATION.md §2).
+  const canManageCourier = permissions.includes("courier.manage");
+  const steadfastEnabled = canManageCourier
+    ? ((await getSteadfastIntegration())?.isEnabled ?? false)
+    : false;
+
   // SE filter dropdown only for team/all scopes — an SE never sees other SEs.
   const scopeLevel = orderViewScope(permissions);
   let seOptions: { id: number; name: string }[] = [];
@@ -90,6 +98,8 @@ export default async function OrdersPage({
       rangeAll={rangeAll}
       seOptions={seOptions}
       canCreate={permissions.includes("orders.create")}
+      canManageCourier={canManageCourier}
+      steadfastEnabled={steadfastEnabled}
     />
   );
 }

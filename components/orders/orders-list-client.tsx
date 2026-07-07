@@ -3,10 +3,12 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Card,
   CardContent,
@@ -22,6 +24,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -44,12 +54,27 @@ export interface OrderRow {
   customerPhone: string;
   customerCountry: string;
   recipientName: string;
+  recipientPhone: string;
+  deliveryAddress: string;
+  thana: string;
+  codAmount: number;
   district: string;
   totalAmount: number;
   dueAmount: number;
   status: OrderStatusValue;
   salesExecutive: string;
   salesExecutiveId: number;
+}
+
+// Per-order result of a "Send to Steadfast" call (§2 step 3).
+interface SendResult {
+  orderId: number;
+  orderNo: string;
+  ok: boolean;
+  skipped?: boolean;
+  trackingCode?: string;
+  consignmentId?: number;
+  error?: string;
 }
 
 const STATUS_BADGE: Partial<Record<OrderStatusValue, string>> = {
@@ -98,6 +123,8 @@ export function OrdersListClient({
   rangeAll,
   seOptions,
   canCreate,
+  canManageCourier,
+  steadfastEnabled,
 }: {
   orders: OrderRow[];
   statusCounts: Partial<Record<OrderStatusValue, number>>; // for current window/search/SE
@@ -108,9 +135,90 @@ export function OrdersListClient({
   rangeAll: boolean;
   seOptions: { id: number; name: string }[]; // empty for own-only scope
   canCreate: boolean;
+  canManageCourier: boolean; // courier.manage — may send to Steadfast
+  steadfastEnabled: boolean; // integration on
 }) {
   const router = useRouter();
   const params = useSearchParams();
+
+  // ---- Send to Steadfast (§2): selection is offered only on the PACKED tab,
+  // to a courier.manage user, when the integration is enabled. ----
+  const activeStatus = params.get("status");
+  const showSend =
+    canManageCourier && steadfastEnabled && activeStatus === "PACKED";
+
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [results, setResults] = useState<SendResult[] | null>(null);
+
+  // Selection is meaningful only within one page of PACKED orders — reset it
+  // whenever the tab or page changes so stale ids never leak into a send. Done
+  // during render (React's "reset state on prop change" pattern) rather than in
+  // an effect, so it applies before paint without a cascading re-render.
+  const selCtx = `${activeStatus}:${page}`;
+  const [prevSelCtx, setPrevSelCtx] = useState(selCtx);
+  if (prevSelCtx !== selCtx) {
+    setPrevSelCtx(selCtx);
+    setSelected(new Set());
+  }
+
+  function toggleOne(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  const allOnPageSelected =
+    orders.length > 0 && orders.every((o) => selected.has(o.id));
+  function toggleAll() {
+    setSelected((prev) => {
+      if (orders.length > 0 && orders.every((o) => prev.has(o.id))) {
+        const next = new Set(prev);
+        orders.forEach((o) => next.delete(o.id));
+        return next;
+      }
+      const next = new Set(prev);
+      orders.forEach((o) => next.add(o.id));
+      return next;
+    });
+  }
+
+  const selectedOrders = orders.filter((o) => selected.has(o.id));
+
+  async function sendToSteadfast() {
+    if (selectedOrders.length === 0) return;
+    setSending(true);
+    setResults(null);
+    const res = await fetch("/api/couriers/steadfast/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orderIds: selectedOrders.map((o) => o.id) }),
+    });
+    setSending(false);
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      toast.error(data?.error ?? "Failed to send to Steadfast");
+      return;
+    }
+    const rows = (data.results ?? []) as SendResult[];
+    setResults(rows);
+    const okCount = rows.filter((r) => r.ok).length;
+    if (okCount > 0) {
+      toast.success(`${okCount} order${okCount === 1 ? "" : "s"} sent to Steadfast`);
+      setSelected(new Set());
+      router.refresh();
+    } else {
+      toast.error("No orders were sent — see details");
+    }
+  }
+
+  function closeSendDialog() {
+    setConfirmOpen(false);
+    setResults(null);
+  }
 
   // Any filter change restarts at page 1 — a page number only means something
   // within the result set it was computed for.
@@ -298,9 +406,39 @@ export function OrdersListClient({
           )}
         </div>
 
+        {/* Send to Steadfast bar — PACKED tab only (§2) */}
+        {showSend && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/40 px-3 py-2">
+            <span className="text-sm text-muted-foreground">
+              {selected.size > 0
+                ? `${selected.size} order${selected.size === 1 ? "" : "s"} selected`
+                : "Select packed orders to hand over via Steadfast."}
+            </span>
+            <Button
+              size="sm"
+              disabled={selected.size === 0}
+              onClick={() => {
+                setResults(null);
+                setConfirmOpen(true);
+              }}
+            >
+              Send to Steadfast{selected.size > 0 ? ` (${selected.size})` : ""}
+            </Button>
+          </div>
+        )}
+
         <Table>
           <TableHeader>
             <TableRow>
+              {showSend && (
+                <TableHead className="w-8">
+                  <Checkbox
+                    checked={allOnPageSelected}
+                    onCheckedChange={toggleAll}
+                    aria-label="Select all on page"
+                  />
+                </TableHead>
+              )}
               <TableHead>Order #</TableHead>
               <TableHead>Date</TableHead>
               <TableHead>Customer</TableHead>
@@ -319,6 +457,15 @@ export function OrdersListClient({
                 className="cursor-pointer"
                 onClick={() => router.push(`/orders/${o.id}`)}
               >
+                {showSend && (
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    <Checkbox
+                      checked={selected.has(o.id)}
+                      onCheckedChange={() => toggleOne(o.id)}
+                      aria-label={`Select ${o.orderNo}`}
+                    />
+                  </TableCell>
+                )}
                 <TableCell className="font-mono text-xs">
                   <Link
                     href={`/orders/${o.id}`}
@@ -356,7 +503,7 @@ export function OrdersListClient({
             {orders.length === 0 && (
               <TableRow>
                 <TableCell
-                  colSpan={9}
+                  colSpan={showSend ? 10 : 9}
                   className="text-center text-muted-foreground"
                 >
                   No orders match the current filters.
@@ -396,6 +543,106 @@ export function OrdersListClient({
             </div>
           )}
         </div>
+
+        {/* Send to Steadfast — confirm (§2) then per-order result table (§2 step 3) */}
+        <Dialog open={confirmOpen} onOpenChange={(o) => !o && closeSendDialog()}>
+          <DialogContent className="sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>
+                {results ? "Steadfast results" : "Send to Steadfast"}
+              </DialogTitle>
+              <DialogDescription>
+                {results
+                  ? "Orders that succeeded have moved to “Handed to courier”."
+                  : `Review ${selectedOrders.length} order${
+                      selectedOrders.length === 1 ? "" : "s"
+                    } — a consignment is created for each and the order is handed over.`}
+              </DialogDescription>
+            </DialogHeader>
+
+            {!results ? (
+              <div className="max-h-[50vh] overflow-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Order</TableHead>
+                      <TableHead>Recipient</TableHead>
+                      <TableHead>Phone (BD)</TableHead>
+                      <TableHead>Address</TableHead>
+                      <TableHead className="text-right">COD</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {selectedOrders.map((o) => (
+                      <TableRow key={o.id}>
+                        <TableCell className="font-mono text-xs">{o.orderNo}</TableCell>
+                        <TableCell>{o.recipientName}</TableCell>
+                        <TableCell className="font-mono text-xs">{o.recipientPhone}</TableCell>
+                        <TableCell className="max-w-[220px] truncate text-xs text-muted-foreground">
+                          {o.deliveryAddress}, {o.thana}, {o.district}
+                        </TableCell>
+                        <TableCell className="text-right">{money(o.codAmount)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            ) : (
+              <div className="max-h-[50vh] overflow-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Order</TableHead>
+                      <TableHead>Result</TableHead>
+                      <TableHead>Details</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {results.map((r) => (
+                      <TableRow key={r.orderId}>
+                        <TableCell className="font-mono text-xs">{r.orderNo}</TableCell>
+                        <TableCell>
+                          {r.ok ? (
+                            <Badge className="bg-green-100 text-green-800">✓ Sent</Badge>
+                          ) : (
+                            <Badge variant="outline" className="bg-red-100 text-red-800">
+                              ✗ {r.skipped ? "Skipped" : "Failed"}
+                            </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {r.ok
+                            ? `Tracking ${r.trackingCode ?? r.consignmentId}`
+                            : r.error}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+
+            <DialogFooter>
+              {!results ? (
+                <>
+                  <Button variant="outline" onClick={closeSendDialog} disabled={sending}>
+                    Cancel
+                  </Button>
+                  <Button
+                    onClick={sendToSteadfast}
+                    disabled={sending || selectedOrders.length === 0}
+                  >
+                    {sending
+                      ? "Sending…"
+                      : `Confirm & send ${selectedOrders.length}`}
+                  </Button>
+                </>
+              ) : (
+                <Button onClick={closeSendDialog}>Close</Button>
+              )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </CardContent>
     </Card>
   );
