@@ -1,6 +1,7 @@
 import path from "path";
 import { mkdir, writeFile } from "fs/promises";
 import PDFDocument from "pdfkit";
+import sharp from "sharp";
 import { Prisma, type Invoice } from "@prisma/client";
 import { prisma } from "./db";
 import { logAudit } from "./audit";
@@ -71,8 +72,8 @@ const invoiceOrderInclude = {
   customer: true,
   items: {
     include: {
-      product: { select: { name: true, sku: true } },
-      package: { select: { name: true, code: true } },
+      product: { select: { name: true, sku: true, photoUrl: true } },
+      package: { select: { name: true, code: true, photoUrl: true } },
     },
   },
   payments: true,
@@ -101,10 +102,59 @@ function drawLogoPlaceholder(doc: Doc, x: number, y: number, size: number) {
 // Bottom edge where flowing content must stop before we add a page.
 const BOTTOM = PAGE_H - MARGIN - 30;
 
-export function renderInvoicePdf(
+// Rendered size of the item-photo thumbnail in the table (pt).
+const THUMB = 26;
+
+// photoUrl → small square JPEG via sharp. Normalizing is required, not just
+// nice: uploads may be WebP (pdfkit can't embed it) or multi-MB (would bloat
+// every invoice PDF). Unreadable/missing photos fall back to the placeholder.
+async function loadThumbnails(order: InvoiceOrder): Promise<Map<string, Buffer>> {
+  const urls = [
+    ...new Set(
+      order.items
+        .map((it) => it.product?.photoUrl ?? it.package?.photoUrl)
+        .filter((u): u is string => !!u)
+    ),
+  ];
+  const thumbs = new Map<string, Buffer>();
+  await Promise.all(
+    urls.map(async (url) => {
+      try {
+        const file = path.join(process.cwd(), "public", url.replace(/^\//, ""));
+        const buf = await sharp(file)
+          .resize(96, 96, { fit: "cover" })
+          .jpeg({ quality: 75 })
+          .toBuffer();
+        thumbs.set(url, buf);
+      } catch {
+        // fall through to the no-photo placeholder
+      }
+    })
+  );
+  return thumbs;
+}
+
+function drawItemThumb(doc: Doc, thumb: Buffer | undefined, x: number, y: number) {
+  if (thumb) {
+    doc.save();
+    doc.roundedRect(x, y, THUMB, THUMB, 3).clip();
+    doc.image(thumb, x, y, { width: THUMB, height: THUMB });
+    doc.restore();
+  } else {
+    doc
+      .font("bn")
+      .fontSize(4.5)
+      .fillColor(MUTED)
+      .text("NO PHOTO", x, y + THUMB / 2 - 3, { width: THUMB, align: "center" });
+  }
+  doc.roundedRect(x, y, THUMB, THUMB, 3).lineWidth(0.5).stroke(BORDER);
+}
+
+export async function renderInvoicePdf(
   order: InvoiceOrder,
   version: number
 ): Promise<Buffer> {
+  const thumbs = await loadThumbnails(order);
   return new Promise((resolve, reject) => {
     // font in the constructor: skips pdfkit's default Helvetica (AFM) load,
     // so Noto Sans Bengali is the only font ever touched.
@@ -243,7 +293,6 @@ export function renderInvoicePdf(
     };
     drawTableHeader();
 
-    doc.fontSize(9.5);
     order.items.forEach((it, i) => {
       const name = it.product?.name ?? it.package?.name ?? it.customName ?? "(custom)";
       const code = it.product?.sku ?? it.package?.code;
@@ -251,23 +300,31 @@ export function renderInvoicePdf(
         name +
         (it.itemType === "PACKAGE" ? "  [Package]" : "") +
         (code ? `  ·  ${code}` : "");
-      doc.font("bn");
-      const rowH =
-        Math.max(doc.heightOfString(label, { width: col.item.w - cellPad }), 12) + 9;
+      // text sits to the right of the photo thumbnail
+      const textX = col.item.x + THUMB + 8;
+      const textW = col.item.w - THUMB - 8 - cellPad;
+      doc.font("bn").fontSize(9.5);
+      const rowH = Math.max(
+        Math.max(doc.heightOfString(label, { width: textW }), 12) + 9,
+        THUMB + 8
+      );
 
       if (y + rowH > BOTTOM) {
         doc.addPage();
         y = MARGIN;
         drawTableHeader();
-        doc.fontSize(9.5);
       }
       if (i % 2 === 1) doc.rect(MARGIN, y, CONTENT_W, rowH).fill(ZEBRA);
 
+      const photoUrl = it.product?.photoUrl ?? it.package?.photoUrl;
+      drawItemThumb(doc, photoUrl ? thumbs.get(photoUrl) : undefined, col.item.x, y + 4);
+
       const ty = y + 4;
+      doc.font("bn").fontSize(9.5);
       doc.fillColor(MUTED).text(String(i + 1), col.no.x + cellPad, ty, {
         width: col.no.w - cellPad,
       });
-      doc.fillColor(INK).text(label, col.item.x, ty, { width: col.item.w - cellPad });
+      doc.fillColor(INK).text(label, textX, ty, { width: textW });
       doc.text(String(it.qty), col.qty.x, ty, { width: col.qty.w - cellPad, align: "right" });
       doc.text(bdt(Number(it.unitPrice)), col.unit.x, ty, {
         width: col.unit.w - cellPad,
