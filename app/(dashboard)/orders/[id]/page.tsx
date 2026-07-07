@@ -15,6 +15,7 @@ import {
   ALLOWED_TRANSITIONS,
   EDITABLE_STATUSES,
 } from "@/lib/order-constants";
+import { COURIER_STAGE_STATUSES } from "@/lib/courier-constants";
 import { OrderDetailClient } from "@/components/orders/order-detail-client";
 
 export const dynamic = "force-dynamic";
@@ -53,8 +54,13 @@ export default async function OrderDetailPage({
       ? `Edit window (${editWindowMinutes} min) has expired — changes need TL/Manager approval.`
       : null;
 
-  const allowedTransitions = ALLOWED_TRANSITIONS[order.status].filter((to) =>
-    statusChangePermitted(to, permissions)
+  // Courier-stage moves (handover → transit → delivered/returned) belong to the
+  // Courier module (a shipment is the single source of truth), so they are not
+  // offered as generic status buttons here (SPEC §7).
+  const allowedTransitions = ALLOWED_TRANSITIONS[order.status].filter(
+    (to) =>
+      statusChangePermitted(to, permissions) &&
+      !COURIER_STAGE_STATUSES.includes(to)
   );
 
   return (

@@ -65,6 +65,18 @@ export default async function DashboardLayout({
   if (permissions.includes("purchases.create")) {
     navItems.push({ href: "/purchases", label: "Purchases", section: "Inventory" });
   }
+  // Courier & delivery (SPEC §7). courier.manage covers companies, handover,
+  // shipment status and COD reconciliation; return approval is a step above.
+  if (permissions.includes("courier.manage")) {
+    navItems.push(
+      { href: "/courier/companies", label: "Courier Companies", section: "Courier" },
+      { href: "/courier/shipments", label: "Shipments", section: "Courier" },
+      { href: "/courier/cod", label: "COD Reconciliation", section: "Courier" }
+    );
+  }
+  if (permissions.includes("courier.approve_return")) {
+    navItems.push({ href: "/courier/returns", label: "Returns", section: "Courier" });
+  }
   // Reports (SPEC §12). R4/R5 are inventory reports gated on stock.view — the
   // same read scope as the Stock screen (Admin, Manager, Accounts, Packing).
   if (permissions.includes("stock.view")) {
@@ -76,6 +88,10 @@ export default async function DashboardLayout({
         section: "Reports",
       }
     );
+  }
+  // R6 — Courier report (SPEC §7 / §12), for courier.manage roles.
+  if (permissions.includes("courier.manage")) {
+    navItems.push({ href: "/reports/courier", label: "Courier Report", section: "Reports" });
   }
   if (permissions.includes("users.manage")) {
     navItems.push(

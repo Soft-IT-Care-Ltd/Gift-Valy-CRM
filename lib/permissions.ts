@@ -59,6 +59,7 @@ export const PERMISSION_DEFS: PermissionDef[] = [
   { key: "stock.adjust", label: "Adjust stock", group: "Stock" },
   // Courier
   { key: "courier.manage", label: "Manage courier & shipments", group: "Courier" },
+  { key: "courier.approve_return", label: "Approve returns (stock restore)", group: "Courier" },
   // Reports
   { key: "reports.own", label: "Own reports", group: "Reports" },
   { key: "reports.team", label: "Team reports", group: "Reports" },
@@ -95,7 +96,7 @@ export const ROLE_MATRIX: Record<RoleName, string[]> = {
     "payments.create", "payments.verify", "expenses.create", "purchases.create",
     "catalog.view", "catalog.manage",
     "stock.view", "stock.adjust",
-    "courier.manage",
+    "courier.manage", "courier.approve_return",
     "reports.own", "reports.team", "reports.all",
     "targets.view_own", "targets.view_team", "targets.manage",
     "attendance.own", "attendance.view_all",

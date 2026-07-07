@@ -4,7 +4,7 @@
 // 15 orders across the status lifecycle with payments.
 // Idempotent — safe to re-run (upserts everywhere; re-running resets demo
 // catalog prices/stock, package BOMs, and wipes/recreates the demo orders).
-import { PrismaClient, type OrderStatus, type PaymentType, type PaymentMethod } from "@prisma/client";
+import { PrismaClient, type OrderStatus, type PaymentType, type PaymentMethod, type ShipmentStatus } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import {
   PERMISSION_DEFS,
@@ -145,6 +145,33 @@ async function main() {
     update: {},
     create: { key: "order_edit_window_minutes", value: 30 },
   });
+
+  // 4c. Couriers (SPEC §7) — COD fee % + a few per-district zone charges.
+  const demoCouriers = [
+    { name: "Steadfast", contact: "16460", codFeePercent: 1.0, zones: [["Dhaka", 60], ["Chattogram", 100], ["Sylhet", 120], ["Rangpur", 130]] },
+    { name: "Pathao", contact: "09678100800", codFeePercent: 1.0, zones: [["Dhaka", 70], ["Gazipur", 80], ["Cumilla", 110]] },
+    { name: "RedX", contact: "09610990880", codFeePercent: 0.8, zones: [["Dhaka", 65], ["Khulna", 120], ["Barishal", 130]] },
+    { name: "Sundarban", contact: "09610002000", codFeePercent: 0.5, zones: [["Dhaka", 60], ["Rajshahi", 120]] },
+  ] as const;
+  const courierIdByName = new Map<string, number>();
+  const courierFeeByName = new Map<string, number>();
+  for (const c of demoCouriers) {
+    const saved = await prisma.courier.upsert({
+      where: { name: c.name },
+      update: { contact: c.contact, codFeePercent: c.codFeePercent, isActive: true },
+      create: { name: c.name, contact: c.contact, codFeePercent: c.codFeePercent },
+    });
+    courierIdByName.set(c.name, saved.id);
+    courierFeeByName.set(c.name, c.codFeePercent);
+    await prisma.courierZoneCharge.deleteMany({ where: { courierId: saved.id } });
+    await prisma.courierZoneCharge.createMany({
+      data: c.zones.map(([district, charge]) => ({
+        courierId: saved.id,
+        district: district as string,
+        charge: charge as number,
+      })),
+    });
+  }
 
   // 5. Categories (SPEC §6.1 — editable list)
   const categoryNames = [
@@ -585,6 +612,23 @@ async function main() {
   const round2 = (n: number) => Math.round(n * 100) / 100;
   const accountsId = userIdByEmail.get("accounts@giftvaly.com")!;
   const adminId = userIdByEmail.get(ADM)!;
+  const mgrId = userIdByEmail.get(MGR)!;
+
+  // Which ShipmentStatus an order's current status implies (SPEC §7). Orders that
+  // never reached handover return null (no shipment). COMPLETED shows as DELIVERED.
+  const courierStageOf = (s: OrderStatus): ShipmentStatus | null => {
+    if (s === "HANDED_TO_COURIER" || s === "IN_TRANSIT" || s === "DELIVERED" || s === "RETURNED") {
+      return s;
+    }
+    if (s === "COMPLETED") return "DELIVERED";
+    return null;
+  };
+  // Auto-created "Courier Charge" category (§9.1) for seeded COD-fee expenses.
+  const courierCategory = await prisma.expenseCategory.upsert({
+    where: { name: "Courier Charge" },
+    update: {},
+    create: { name: "Courier Charge", costType: "VARIABLE" },
+  });
 
   // Opening stock (SPEC §14 "current stock = SUM(movements)"): one ADJUST_PLUS
   // baseline per tracked product so the ledger reconciles with the seeded
@@ -619,7 +663,7 @@ async function main() {
     return need;
   };
 
-  for (const d of demoOrders) {
+  for (const [idx, d] of demoOrders.entries()) {
     const seId = userIdByEmail.get(d.seEmail)!;
     const se = await prisma.user.findUniqueOrThrow({
       where: { id: seId },
@@ -747,12 +791,70 @@ async function main() {
           }
         }
       }
+
+      // SPEC §7 — shipment for any order that reached courier handover. Status
+      // mirrors the order's courier stage; COD-received orders (a COD_COURIER
+      // payment exists) also carry the auto COD-fee expense, and a RETURNED
+      // shipment stays unapproved so it shows in the returns queue.
+      const shipmentStatus = courierStageOf(status);
+      if (shipmentStatus) {
+        const courierName = demoCouriers[idx % demoCouriers.length].name;
+        const courierId = courierIdByName.get(courierName)!;
+        const feePercent = courierFeeByName.get(courierName)!;
+        const handoverDay =
+          d.chain.find((s) => s.to === "HANDED_TO_COURIER")?.day ??
+          d.chain[d.chain.length - 1].day;
+        const deliveredStep = d.chain.find((s) => s.to === "DELIVERED");
+        const returnedStep = d.chain.find((s) => s.to === "RETURNED");
+        const codPaymentDay = d.payments.find((p) => p.type === "COD_COURIER")?.day;
+        const codReceived = codPaymentDay !== undefined;
+
+        const shipment = await tx.shipment.create({
+          data: {
+            orderId: order.id,
+            courierId,
+            trackingNo: `TRK-${1000 + idx}`,
+            handoverDate: daysAgo(handoverDay, 9),
+            codAmount: cod,
+            expectedDelivery: daysAgo(Math.max(handoverDay - 2, 0), 9),
+            status: shipmentStatus,
+            deliveredAt: deliveredStep ? daysAgo(deliveredStep.day, 14) : null,
+            returnedAt: returnedStep ? daysAgo(returnedStep.day, 14) : null,
+            courierCostActual: shipmentStatus === "DELIVERED" ? (d.courier ?? 0) : null,
+            codReceived,
+            codReceivedAt: codReceived ? daysAgo(codPaymentDay!, 12) : null,
+            createdBy: mgrId,
+            updatedBy: mgrId,
+          },
+        });
+
+        const codFee = round2((cod * feePercent) / 100);
+        if (codReceived && codFee > 0) {
+          const feeExpense = await tx.expense.create({
+            data: {
+              expenseDate: daysAgo(codPaymentDay!, 12),
+              categoryId: courierCategory.id,
+              amount: codFee,
+              notes: `COD fee — ${courierName} — ${order.orderNo}`,
+              refTable: "shipments",
+              refId: shipment.id,
+              createdBy: accountsId,
+              updatedBy: accountsId,
+            },
+          });
+          await tx.shipment.update({
+            where: { id: shipment.id },
+            data: { codFeeExpenseId: feeExpense.id },
+          });
+        }
+      }
     });
   }
 
   const orderCount = await prisma.order.count();
   const paymentCount = await prisma.payment.count();
   const movementCount = await prisma.stockMovement.count();
+  const shipmentCount = await prisma.shipment.count();
 
   console.log("Seed complete:");
   console.log(`  ${PERMISSION_DEFS.length} permissions, ${ROLE_NAMES.length} roles (matrix applied)`);
@@ -760,6 +862,7 @@ async function main() {
   console.log(`  Catalog: ${categoryNames.length} categories, ${demoProducts.length} products, ${demoPackages.length} packages`);
   console.log(`  Demo data: ${demoCustomers.length} customers, ${demoOrders.length} demo orders (${orderCount} total), ${paymentCount} payments`);
   console.log(`  Stock: ${movementCount} movements (opening balances + confirmed-order reservations)`);
+  console.log(`  Courier: ${demoCouriers.length} couriers, ${shipmentCount} shipments (incl. delivered, in-transit, COD-pending, returned)`);
   console.log("  Admin:    mh.neshad39@gmail.com / Admin@GV2026");
   console.log("  Manager:  manager@giftvaly.com  / Manager@GV2026");
   console.log("  TL:       sakib@giftvaly.com    / Team@GV2026");

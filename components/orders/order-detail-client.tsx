@@ -55,6 +55,10 @@ import {
   type PaymentMethodValue,
   type PaymentTypeValue,
 } from "@/lib/order-constants";
+import {
+  SHIPMENT_STATUS_LABELS,
+  type ShipmentStatusValue,
+} from "@/lib/courier-constants";
 
 export interface OrderDetail {
   id: number;
@@ -128,6 +132,21 @@ export interface OrderDetail {
     version: number;
     generatedAt: string;
   }[];
+  shipment: {
+    id: number;
+    courier: string;
+    trackingNo: string | null;
+    status: ShipmentStatusValue;
+    handoverDate: string;
+    expectedDelivery: string | null;
+    codAmount: number;
+    codReceived: boolean;
+    codReceivedAt: string | null;
+    deliveredAt: string | null;
+    returnedAt: string | null;
+    returnApproved: boolean;
+    courierCostActual?: number;
+  } | null;
 }
 
 export function OrderDetailClient({
@@ -400,6 +419,107 @@ export function OrderDetailClient({
           </CardContent>
         </Card>
       </div>
+
+      {(order.shipment || order.status === "PACKED") && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Courier / Shipment</CardTitle>
+            <CardDescription>
+              {order.shipment
+                ? "Managed under the Courier module — status here mirrors the shipment."
+                : "Packed and ready — hand over to a courier from the Courier module."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="text-sm">
+            {order.shipment ? (
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div>
+                  <div className="text-muted-foreground">Courier</div>
+                  <div className="font-medium">{order.shipment.courier}</div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground">Tracking no</div>
+                  <div className="font-mono text-xs">
+                    {order.shipment.trackingNo ?? "—"}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground">Status</div>
+                  <Badge
+                    variant={
+                      order.shipment.status === "DELIVERED"
+                        ? "secondary"
+                        : order.shipment.status === "RETURNED"
+                          ? "destructive"
+                          : "outline"
+                    }
+                  >
+                    {SHIPMENT_STATUS_LABELS[order.shipment.status]}
+                  </Badge>
+                </div>
+                <div>
+                  <div className="text-muted-foreground">Handover</div>
+                  <div>{formatDate(order.shipment.handoverDate)}</div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground">Expected delivery</div>
+                  <div>
+                    {order.shipment.expectedDelivery
+                      ? formatDate(order.shipment.expectedDelivery)
+                      : "—"}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground">COD with courier</div>
+                  <div>
+                    {money(order.shipment.codAmount)}{" "}
+                    {order.shipment.codAmount > 0 &&
+                      (order.shipment.codReceived ? (
+                        <Badge variant="secondary" className="ml-1">
+                          Received
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="ml-1">
+                          Pending
+                        </Badge>
+                      ))}
+                  </div>
+                </div>
+                {order.shipment.deliveredAt && (
+                  <div>
+                    <div className="text-muted-foreground">Delivered</div>
+                    <div>{formatDateTime(order.shipment.deliveredAt)}</div>
+                  </div>
+                )}
+                {order.shipment.returnedAt && (
+                  <div>
+                    <div className="text-muted-foreground">Returned</div>
+                    <div>
+                      {formatDateTime(order.shipment.returnedAt)}
+                      {!order.shipment.returnApproved && (
+                        <Badge variant="outline" className="ml-1">
+                          Approval pending
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {order.shipment.courierCostActual != null && (
+                  <div>
+                    <div className="text-muted-foreground">Courier cost</div>
+                    <div>{money(order.shipment.courierCostActual)}</div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-muted-foreground">
+                No shipment yet. It appears in the Courier module&apos;s pending-handover
+                queue.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">

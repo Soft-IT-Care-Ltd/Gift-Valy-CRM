@@ -83,6 +83,15 @@ leaves orders you entered through the app untouched.
 
 **Manager / Packing / Accounts** — one demo login per role (table above), each seeded with its SPEC §2 permission set. Packing can move CONFIRMED orders to PACKED without any order-view permission; Accounts can record/verify payments on any order. Users created later via Admin → Users must change their password on first login — you'll be forced to the change-password screen, then sign in again.
 
+**Courier & Delivery (SPEC §7)** — log in as Admin, Manager or Accounts (the `courier.manage` roles); the sidebar gains a *Courier* section:
+- **Courier Companies** — CRUD couriers (Steadfast, Pathao, RedX, Sundarban seeded) with a **COD fee %** and **per-district zone charges**. Deleting a courier with shipments is blocked (deactivate instead).
+- **Shipments** — the operations board. *Pending handover* lists PACKED orders; **Hand over** picks a courier, tracking no, handover date, COD (prefilled from the order) and expected delivery — this creates the shipment and moves the order to **HANDED_TO_COURIER**. *In transit* advances each shipment (**→ In transit / Delivered / Returned**); the change syncs the order status and is logged in the order status history.
+- **COD Reconciliation** — delivered orders whose COD the courier still owes (order-wise, aging). Tick the remitted orders and **Mark COD received**: the COD is recorded as a payment (settling the order's due) and the courier's **COD fee posts automatically as a "Courier Charge" expense**. Seeded demo: order with COD ৳1,600 pending on Steadfast.
+- **Returns** (Admin/Manager, `courier.approve_return`) — returned parcels wait here; **Approve & restore stock** runs the `IN_RETURN` restore and records the **return courier charge** as an expense. Stock is *not* restored until approval (SPEC §1.3). Refund any advance from the order page.
+- **Reports → Courier Report (R6)** — pending handover, handed-over, in-transit, delivered %, returned %, and COD pending with courier (aging), plus a per-courier breakdown, all CSV-exportable.
+
+Each order's detail page shows a read-only **Courier / Shipment** card; courier-stage status buttons are intentionally removed from the order page since a shipment is the single source of truth for those moves.
+
 Notes on RBAC behavior:
 - Permission checks hit the database on every API request, so matrix/override edits apply immediately — no re-login needed.
 - Deactivating a user blocks their login and kicks them out on next page load (soft delete — history preserved).
@@ -107,6 +116,12 @@ lib/orders.ts             Order scope (own/team/all), totals + price-floor check
                           edit application, serializers (cost fields stripped)
 lib/order-constants.ts    Status lifecycle + transitions, payment types/methods,
                           BD districts, countries, occasions (client-safe)
+lib/courier.ts            Courier engine (SPEC §7): handover, shipment status sync,
+                          COD reconciliation (payment + fee expense), return approval
+                          (stock restore + return charge), serializers, COD-pending build
+lib/courier-constants.ts  Shipment statuses + labels, courier-stage set, next-status map,
+                          courier-fee expense category (client-safe)
+lib/reports.ts            Report builders — R4 (stock), R5 (packages), R6 (courier)
 lib/settings.ts           settings table reader (edit-window minutes)
 app/(dashboard)/          Signed-in shell + admin + catalog + orders pages
 app/api/                  users, teams, roles, account, categories, products, packages,

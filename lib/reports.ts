@@ -180,3 +180,203 @@ export async function buildPackageReport(
 
   return { rows };
 }
+
+// ============ R6 — Courier report (SPEC §7 / §12) ============
+// Operational, not costing: pending handover, in-transit, delivered %,
+// returned %, and COD pending with courier (order-wise, aging). Visible to
+// courier.manage roles (Admin, Manager, Accounts) — no cost fields.
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export interface CourierPendingHandoverRow {
+  orderId: number;
+  orderNo: string;
+  recipientName: string;
+  district: string;
+  packedAt: string | null; // ISO — when the order was marked PACKED
+  ageDays: number; // days waiting for handover
+  codAmount: number;
+  salesExecutive: string;
+}
+
+export interface CourierCodPendingRow {
+  shipmentId: number;
+  orderId: number;
+  orderNo: string;
+  courier: string;
+  recipientName: string;
+  district: string;
+  deliveredAt: string | null; // ISO
+  codAmount: number;
+  ageDays: number; // since delivery — the aging metric (SPEC §7)
+}
+
+export interface CourierPerCompanyRow {
+  courierId: number;
+  name: string;
+  handedToCourier: number;
+  inTransit: number;
+  delivered: number;
+  returned: number;
+  total: number;
+  codPendingCount: number;
+  codPendingAmount: number;
+}
+
+export interface CourierReport {
+  pendingHandoverCount: number;
+  counts: {
+    handedToCourier: number;
+    inTransit: number;
+    delivered: number;
+    returned: number;
+    total: number; // all shipments ever dispatched
+  };
+  deliveredPct: number; // delivered ÷ total dispatched
+  returnedPct: number; // returned ÷ total dispatched
+  codPending: { count: number; amount: number };
+  pendingHandoverRows: CourierPendingHandoverRow[];
+  codPendingRows: CourierCodPendingRow[];
+  byCourier: CourierPerCompanyRow[];
+}
+
+export async function buildCourierReport(): Promise<CourierReport> {
+  const now = Date.now();
+  const ageInDays = (from: Date | null) =>
+    from ? Math.max(0, Math.floor((now - from.getTime()) / DAY_MS)) : 0;
+
+  const [pendingHandover, shipments, couriers] = await Promise.all([
+    // PACKED orders with no shipment yet = awaiting handover (SPEC §7).
+    prisma.order.findMany({
+      where: { status: "PACKED", shipment: { is: null } },
+      orderBy: { createdAt: "asc" },
+      include: {
+        salesExecutive: { select: { name: true } },
+        statusHistory: {
+          where: { toStatus: "PACKED" },
+          orderBy: { at: "desc" },
+          take: 1,
+          select: { at: true },
+        },
+      },
+    }),
+    prisma.shipment.findMany({
+      include: {
+        courier: { select: { id: true, name: true } },
+        order: { select: { id: true, orderNo: true, recipientName: true, district: true } },
+      },
+    }),
+    prisma.courier.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
+  ]);
+
+  const counts = {
+    handedToCourier: 0,
+    inTransit: 0,
+    delivered: 0,
+    returned: 0,
+    total: shipments.length,
+  };
+  const perCourier = new Map<number, CourierPerCompanyRow>();
+  for (const c of couriers) {
+    perCourier.set(c.id, {
+      courierId: c.id,
+      name: c.name,
+      handedToCourier: 0,
+      inTransit: 0,
+      delivered: 0,
+      returned: 0,
+      total: 0,
+      codPendingCount: 0,
+      codPendingAmount: 0,
+    });
+  }
+  const ensureRow = (id: number, name: string) => {
+    let row = perCourier.get(id);
+    if (!row) {
+      row = {
+        courierId: id,
+        name,
+        handedToCourier: 0,
+        inTransit: 0,
+        delivered: 0,
+        returned: 0,
+        total: 0,
+        codPendingCount: 0,
+        codPendingAmount: 0,
+      };
+      perCourier.set(id, row);
+    }
+    return row;
+  };
+
+  const codPendingRows: CourierCodPendingRow[] = [];
+  for (const s of shipments) {
+    const row = ensureRow(s.courier.id, s.courier.name);
+    row.total += 1;
+    if (s.status === "HANDED_TO_COURIER") {
+      counts.handedToCourier += 1;
+      row.handedToCourier += 1;
+    } else if (s.status === "IN_TRANSIT") {
+      counts.inTransit += 1;
+      row.inTransit += 1;
+    } else if (s.status === "DELIVERED") {
+      counts.delivered += 1;
+      row.delivered += 1;
+    } else if (s.status === "RETURNED") {
+      counts.returned += 1;
+      row.returned += 1;
+    }
+
+    // COD pending with courier = delivered, has a COD amount, not yet received.
+    const cod = Number(s.codAmount);
+    if (s.status === "DELIVERED" && cod > 0 && !s.codReceived) {
+      row.codPendingCount += 1;
+      row.codPendingAmount = round2(row.codPendingAmount + cod);
+      codPendingRows.push({
+        shipmentId: s.id,
+        orderId: s.order.id,
+        orderNo: s.order.orderNo,
+        courier: s.courier.name,
+        recipientName: s.order.recipientName,
+        district: s.order.district,
+        deliveredAt: s.deliveredAt ? s.deliveredAt.toISOString() : null,
+        codAmount: cod,
+        ageDays: ageInDays(s.deliveredAt ?? s.handoverDate),
+      });
+    }
+  }
+  codPendingRows.sort((a, b) => b.ageDays - a.ageDays); // oldest first (SPEC §7 aging)
+
+  const pendingHandoverRows: CourierPendingHandoverRow[] = pendingHandover.map((o) => {
+    const packedAt = o.statusHistory[0]?.at ?? null;
+    return {
+      orderId: o.id,
+      orderNo: o.orderNo,
+      recipientName: o.recipientName,
+      district: o.district,
+      packedAt: packedAt ? packedAt.toISOString() : null,
+      ageDays: ageInDays(packedAt),
+      codAmount: Number(o.codAmount),
+      salesExecutive: o.salesExecutive.name,
+    };
+  });
+
+  const codPending = {
+    count: codPendingRows.length,
+    amount: round2(codPendingRows.reduce((s, r) => s + r.codAmount, 0)),
+  };
+
+  const pct = (n: number) =>
+    counts.total > 0 ? round2((n / counts.total) * 100) : 0;
+
+  return {
+    pendingHandoverCount: pendingHandoverRows.length,
+    counts,
+    deliveredPct: pct(counts.delivered),
+    returnedPct: pct(counts.returned),
+    codPending,
+    pendingHandoverRows,
+    codPendingRows,
+    byCourier: [...perCourier.values()].sort((a, b) => b.total - a.total),
+  };
+}

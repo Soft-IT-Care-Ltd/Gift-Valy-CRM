@@ -3,8 +3,9 @@ import type { Session } from "next-auth";
 import { z } from "zod";
 import { prisma } from "./db";
 import { AuthzError } from "./authz";
-import { syncReservations } from "./stock";
+import { syncReservations, syncStockForStatus } from "./stock";
 import {
+  ALLOWED_TRANSITIONS,
   BD_DISTRICTS,
   CUSTOMER_COUNTRIES,
   MFS_METHODS,
@@ -392,6 +393,45 @@ export function statusChangePermitted(
   return permissions.includes("orders.edit");
 }
 
+// Core status mutation shared by the order-status route and the courier module
+// (SPEC §1.3): validate the transition, update the order, log to
+// order_status_history (§4.2), and run the stock lifecycle hook (§6.3). The
+// courier RETURNED flow passes skipStockSync so the stock restore waits for the
+// separate Admin approval (§1.3). Caller owns permission/precondition checks and
+// the audit log entry.
+export async function applyStatusTransition(
+  tx: Prisma.TransactionClient,
+  order: { id: number; status: OrderStatusValue; cancelReason: string | null },
+  to: OrderStatusValue,
+  userId: number,
+  note: string | null,
+  opts: { skipStockSync?: boolean } = {}
+) {
+  if (!ALLOWED_TRANSITIONS[order.status].includes(to)) {
+    throw new AuthzError(400, `Cannot move from ${order.status} to ${to}`);
+  }
+  await tx.order.update({
+    where: { id: order.id },
+    data: {
+      status: to,
+      cancelReason: to === "CANCELLED" ? note : order.cancelReason,
+      updatedBy: userId,
+    },
+  });
+  await tx.orderStatusHistory.create({
+    data: {
+      orderId: order.id,
+      fromStatus: order.status,
+      toStatus: to,
+      byUser: userId,
+      note,
+    },
+  });
+  if (!opts.skipStockSync) {
+    await syncStockForStatus(tx, order.id, to, userId, note);
+  }
+}
+
 // ---------- edit window (§4.2) ----------
 
 export function withinEditWindow(createdAt: Date, minutes: number): boolean {
@@ -476,6 +516,7 @@ export type OrderWithRelations = Prisma.OrderGetPayload<{
     statusHistory: { include: { user: { select: { name: true } } } };
     editRequests: { include: { requester: { select: { name: true } } } };
     invoices: true;
+    shipment: { include: { courier: { select: { name: true } } } };
   };
 }>;
 
@@ -493,6 +534,7 @@ export const orderDetailInclude = {
   statusHistory: { include: { user: { select: { name: true } } } },
   editRequests: { include: { requester: { select: { name: true } } } },
   invoices: true,
+  shipment: { include: { courier: { select: { name: true } } } },
 } satisfies Prisma.OrderInclude;
 
 // unit_cost_snapshot is a COST field — stripped unless the caller may see
@@ -592,6 +634,35 @@ export function serializeOrderDetail(o: OrderWithRelations, showCosts: boolean) 
         version: inv.version,
         generatedAt: inv.generatedAt.toISOString(),
       })),
+    // SPEC §7 — the courier shipment, if handed over. courier_cost_actual is a
+    // COST field, so it is only included for cost-visible roles.
+    shipment: o.shipment
+      ? {
+          id: o.shipment.id,
+          courier: o.shipment.courier.name,
+          trackingNo: o.shipment.trackingNo,
+          status: o.shipment.status,
+          handoverDate: o.shipment.handoverDate.toISOString().slice(0, 10),
+          expectedDelivery: o.shipment.expectedDelivery
+            ? o.shipment.expectedDelivery.toISOString().slice(0, 10)
+            : null,
+          codAmount: Number(o.shipment.codAmount),
+          codReceived: o.shipment.codReceived,
+          codReceivedAt: o.shipment.codReceivedAt
+            ? o.shipment.codReceivedAt.toISOString()
+            : null,
+          deliveredAt: o.shipment.deliveredAt
+            ? o.shipment.deliveredAt.toISOString()
+            : null,
+          returnedAt: o.shipment.returnedAt
+            ? o.shipment.returnedAt.toISOString()
+            : null,
+          returnApproved: o.shipment.returnApproved,
+          ...(showCosts && o.shipment.courierCostActual != null
+            ? { courierCostActual: Number(o.shipment.courierCostActual) }
+            : {}),
+        }
+      : null,
   };
 }
 
