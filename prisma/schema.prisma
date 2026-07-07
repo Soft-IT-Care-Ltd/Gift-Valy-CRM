@@ -1,5 +1,5 @@
 // Gift Valy ERP — Prisma schema
-// Phase 1, steps 1–3: AUTH & ORG + CATALOG tables (SPEC §14).
+// Phase 1: AUTH & ORG + CATALOG + CUSTOMERS & ORDERS + PAYMENTS (SPEC §14).
 // Naming: snake_case in DB via @map/@@map. Money = Decimal(12,2) BDT.
 
 generator client {
@@ -34,6 +34,9 @@ model User {
   leaderOf    Team[]                   @relation("TeamLeader")
   overrides   UserPermissionOverride[]
   auditLogs   AuditLog[]
+  salesOrders        Order[]              @relation("SalesOrders")
+  orderStatusChanges OrderStatusHistory[] @relation("StatusChanges")
+  orderEditRequests  OrderEditRequest[]   @relation("EditRequests")
 
   @@map("users")
 }
@@ -90,8 +93,9 @@ model Team {
   createdBy    Int?     @map("created_by")
   updatedBy    Int?     @map("updated_by")
 
-  leader  User?  @relation("TeamLeader", fields: [leaderUserId], references: [id])
-  members User[] @relation("TeamMembers")
+  leader  User?   @relation("TeamLeader", fields: [leaderUserId], references: [id])
+  members User[]  @relation("TeamMembers")
+  orders  Order[]
 
   @@map("teams")
 }
@@ -132,6 +136,7 @@ model Product {
 
   category     Category      @relation(fields: [categoryId], references: [id])
   packageItems PackageItem[]
+  orderItems   OrderItem[]
 
   @@map("products")
 }
@@ -149,7 +154,8 @@ model Package {
   createdBy    Int?     @map("created_by")
   updatedBy    Int?     @map("updated_by")
 
-  items PackageItem[]
+  items      PackageItem[]
+  orderItems OrderItem[]
 
   @@map("packages")
 }
@@ -167,6 +173,207 @@ model PackageItem {
 
   @@unique([packageId, productId])
   @@map("package_items")
+}
+
+// ============ CUSTOMERS & ORDERS (SPEC §4 / §14) ============
+
+// SPEC §1.3 — LEAD/FOLLOW_UP exist in the lifecycle but orders are entered at
+// CONFIRMED (§4.1 E); pre-order stages live in the Leads module (Phase 3).
+enum OrderStatus {
+  LEAD
+  FOLLOW_UP
+  CONFIRMED
+  PACKED
+  HANDED_TO_COURIER
+  IN_TRANSIT
+  DELIVERED
+  COMPLETED
+  ON_HOLD
+  CANCELLED
+  RETURNED
+  REFUNDED
+}
+
+enum OrderItemType {
+  PRODUCT
+  PACKAGE
+}
+
+enum PaymentType {
+  ADVANCE
+  PARTIAL
+  COD_COURIER
+  POST_DELIVERY_MFS
+  REFUND
+}
+
+enum PaymentMethod {
+  BKASH
+  NAGAD
+  ROCKET
+  BANK
+  CASH
+  COURIER_COD
+  OTHER
+}
+
+enum EditRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// The probashi payer — phone_foreign is the repeat-customer lookup key (§4.1 A).
+model Customer {
+  id           Int      @id @default(autoincrement())
+  name         String
+  phoneForeign String   @unique @map("phone_foreign")
+  country      String
+  fbLink       String?  @map("fb_link")
+  notes        String?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  createdBy    Int?     @map("created_by")
+  updatedBy    Int?     @map("updated_by")
+
+  orders Order[]
+
+  @@map("customers")
+}
+
+model Order {
+  id                    Int         @id @default(autoincrement())
+  orderNo               String      @unique @map("order_no") // GV-YYMM-XXXX (§4.2)
+  leadId                Int?        @map("lead_id") // FK once Leads module lands (Phase 3)
+  customerId            Int         @map("customer_id")
+  recipientName         String      @map("recipient_name")
+  recipientPhoneBd      String      @map("recipient_phone_bd") // number 2 of 2 (§1.2)
+  recipientRelation     String?     @map("recipient_relation")
+  deliveryAddress       String      @map("delivery_address")
+  district              String
+  thana                 String
+  occasion              String?
+  requestedDeliveryDate DateTime?   @map("requested_delivery_date") @db.Date
+  subtotal              Decimal     @db.Decimal(12, 2)
+  discount              Decimal     @default(0) @db.Decimal(12, 2)
+  courierChargeCustomer Decimal     @default(0) @map("courier_charge_customer") @db.Decimal(12, 2)
+  totalAmount           Decimal     @map("total_amount") @db.Decimal(12, 2) // subtotal − discount + courier (§4.1 C)
+  advanceAmount         Decimal     @default(0) @map("advance_amount") @db.Decimal(12, 2) // initial advance at confirmation (snapshot)
+  dueAmount             Decimal     @map("due_amount") @db.Decimal(12, 2) // recomputed on every payment write (integrity rule 1)
+  codAmount             Decimal     @default(0) @map("cod_amount") @db.Decimal(12, 2)
+  status                OrderStatus @default(CONFIRMED)
+  cancelReason          String?     @map("cancel_reason")
+  notes                 String?
+  salesExecutiveId      Int         @map("sales_executive_id")
+  teamId                Int?        @map("team_id")
+  createdAt             DateTime    @default(now()) @map("created_at")
+  updatedAt             DateTime    @updatedAt @map("updated_at")
+  createdBy             Int?        @map("created_by")
+  updatedBy             Int?        @map("updated_by")
+
+  customer       Customer             @relation(fields: [customerId], references: [id])
+  salesExecutive User                 @relation("SalesOrders", fields: [salesExecutiveId], references: [id])
+  team           Team?                @relation(fields: [teamId], references: [id])
+  items          OrderItem[]
+  payments       Payment[]
+  statusHistory  OrderStatusHistory[]
+  editRequests   OrderEditRequest[]
+
+  @@index([salesExecutiveId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("orders")
+}
+
+model OrderItem {
+  id               Int           @id @default(autoincrement())
+  orderId          Int           @map("order_id")
+  itemType         OrderItemType @map("item_type")
+  productId        Int?          @map("product_id")
+  packageId        Int?          @map("package_id")
+  customName       String?       @map("custom_name") // ad-hoc package lines (§4.1 C)
+  qty              Int
+  unitPrice        Decimal       @map("unit_price") @db.Decimal(12, 2)
+  unitCostSnapshot Decimal?      @map("unit_cost_snapshot") @db.Decimal(12, 2) // frozen at PACKED (integrity rule 4, Phase 2)
+  lineTotal        Decimal       @map("line_total") @db.Decimal(12, 2)
+
+  order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id])
+  package Package? @relation(fields: [packageId], references: [id])
+
+  @@map("order_items")
+}
+
+// Every status change timestamped → SLA reports (§4.2).
+model OrderStatusHistory {
+  id         Int          @id @default(autoincrement())
+  orderId    Int          @map("order_id")
+  fromStatus OrderStatus? @map("from_status") // null = order creation
+  toStatus   OrderStatus  @map("to_status")
+  byUser     Int          @map("by_user")
+  at         DateTime     @default(now())
+  note       String?
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user  User  @relation("StatusChanges", fields: [byUser], references: [id])
+
+  @@map("order_status_history")
+}
+
+// SPEC §8 — multiple payments per order; transaction_id unique blocks
+// double-entry of the same bKash/Nagad txn (integrity rule 3).
+// REFUND amounts are stored positive and added back to due (integrity rule 1).
+model Payment {
+  id            Int           @id @default(autoincrement())
+  orderId       Int           @map("order_id")
+  paymentDate   DateTime      @default(now()) @map("payment_date")
+  type          PaymentType
+  method        PaymentMethod
+  amount        Decimal       @db.Decimal(12, 2)
+  transactionId String?       @unique @map("transaction_id")
+  senderNumber  String?       @map("sender_number")
+  screenshotUrl String?       @map("screenshot_url")
+  walletId      Int?          @map("wallet_id") // FK once wallets land (Phase 2)
+  isVerified    Boolean       @default(false) @map("is_verified") // Accounts verification (Phase 2)
+  verifiedBy    Int?          @map("verified_by")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+  createdBy     Int?          @map("created_by")
+  updatedBy     Int?          @map("updated_by")
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+  @@map("payments")
+}
+
+// SPEC §4.2 — after the edit window, SE edits go through TL/Manager approval.
+// changes_json holds the proposed order payload; applied verbatim on approval.
+model OrderEditRequest {
+  id          Int               @id @default(autoincrement())
+  orderId     Int               @map("order_id")
+  requestedBy Int               @map("requested_by")
+  changesJson Json              @map("changes_json")
+  reason      String?
+  status      EditRequestStatus @default(PENDING)
+  reviewedBy  Int?              @map("reviewed_by")
+  reviewedAt  DateTime?         @map("reviewed_at")
+  reviewNote  String?           @map("review_note")
+  createdAt   DateTime          @default(now()) @map("created_at")
+
+  order     Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  requester User  @relation("EditRequests", fields: [requestedBy], references: [id])
+
+  @@index([status])
+  @@map("order_edit_requests")
+}
+
+// SPEC §14 — key/value settings (edit-window minutes, packaging cost, …).
+model Setting {
+  key   String @id
+  value Json
+
+  @@map("settings")
 }
 
 model AuditLog {

@@ -99,7 +99,7 @@ export async function DELETE(req: Request, { params }: Params) {
     const id = Number((await params).id);
     const product = await prisma.product.findUnique({
       where: { id },
-      include: { _count: { select: { packageItems: true } } },
+      include: { _count: { select: { packageItems: true, orderItems: true } } },
     });
     if (!product) {
       return NextResponse.json({ error: "Product not found" }, { status: 404 });
@@ -109,6 +109,15 @@ export async function DELETE(req: Request, { params }: Params) {
         {
           error:
             "Product is part of a package BOM — remove it from packages or deactivate it instead",
+        },
+        { status: 400 }
+      );
+    }
+    if (product._count.orderItems > 0) {
+      return NextResponse.json(
+        {
+          error:
+            "Product appears on orders — deactivate it instead so history stays intact",
         },
         { status: 400 }
       );

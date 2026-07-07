@@ -51,7 +51,7 @@ async function main() {
     create: { name: "Team Alpha" },
   });
 
-  // 4. Users — Admin (owner) + 2 demo Sales Executives.
+  // 4. Users — Admin (owner) + TL (Sakib, SPEC §2.1) + 2 demo Sales Executives.
   // Demo passwords documented in README; mustChangePassword=false so role
   // testing works out of the box. Users created later via Admin UI default to true.
   const users = [
@@ -61,6 +61,13 @@ async function main() {
       role: "Admin",
       password: "Admin@GV2026",
       teamId: null as number | null,
+    },
+    {
+      name: "Sakib",
+      email: "sakib@giftvaly.com",
+      role: "TeamLeader",
+      password: "Team@GV2026",
+      teamId: team.id,
     },
     {
       name: "Sanjoy",
@@ -80,7 +87,7 @@ async function main() {
 
   for (const u of users) {
     const passwordHash = await bcrypt.hash(u.password, 10);
-    await prisma.user.upsert({
+    const saved = await prisma.user.upsert({
       where: { email: u.email },
       update: {
         roleId: roleIdByName.get(u.role)!,
@@ -99,7 +106,20 @@ async function main() {
         joinedAt: new Date(),
       },
     });
+    if (u.role === "TeamLeader") {
+      await prisma.team.update({
+        where: { id: team.id },
+        data: { leaderUserId: saved.id },
+      });
+    }
   }
+
+  // 4b. Settings — SE order edit window (§4.2), default 30 minutes.
+  await prisma.setting.upsert({
+    where: { key: "order_edit_window_minutes" },
+    update: {},
+    create: { key: "order_edit_window_minutes", value: 30 },
+  });
 
   // 5. Categories (SPEC §6.1 — editable list)
   const categoryNames = [
@@ -206,8 +226,10 @@ async function main() {
   console.log("  Team: Team Alpha");
   console.log(`  Catalog: ${categoryNames.length} categories, ${demoProducts.length} products, ${demoPackages.length} packages`);
   console.log("  Admin:  mh.neshad39@gmail.com / Admin@GV2026");
+  console.log("  TL:     sakib@giftvaly.com    / Team@GV2026");
   console.log("  SE:     sanjoy@giftvaly.com   / Sales@GV2026");
   console.log("  SE:     partho@giftvaly.com   / Sales@GV2026");
+  console.log("  Setting: order_edit_window_minutes = 30");
 }
 
 main()

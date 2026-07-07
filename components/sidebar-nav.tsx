@@ -12,13 +12,14 @@ export interface NavItem {
 
 export function SidebarNav({ items }: { items: NavItem[] }) {
   const pathname = usePathname();
-  let lastSection: string | undefined;
 
   return (
     <nav className="flex flex-col gap-1 p-2">
-      {items.map((item) => {
+      {items.map((item, i) => {
+        // Items arrive grouped by section, so a header renders whenever the
+        // section differs from the previous item's.
         const sectionHeader =
-          item.section && item.section !== lastSection ? (
+          item.section && item.section !== items[i - 1]?.section ? (
             <div
               key={`section-${item.section}`}
               className="mt-4 mb-1 px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground"
@@ -26,7 +27,6 @@ export function SidebarNav({ items }: { items: NavItem[] }) {
               {item.section}
             </div>
           ) : null;
-        lastSection = item.section ?? lastSection;
         const active =
           item.href === "/"
             ? pathname === "/"

@@ -121,10 +121,19 @@ export async function DELETE(req: Request, { params }: Params) {
     const id = Number((await params).id);
     const pkg = await prisma.package.findUnique({
       where: { id },
-      include: { items: true },
+      include: { items: true, _count: { select: { orderItems: true } } },
     });
     if (!pkg) {
       return NextResponse.json({ error: "Package not found" }, { status: 404 });
+    }
+    if (pkg._count.orderItems > 0) {
+      return NextResponse.json(
+        {
+          error:
+            "Package appears on orders — deactivate it instead so history stays intact",
+        },
+        { status: 400 }
+      );
     }
     await prisma.package.delete({ where: { id } }); // items cascade
     await logAudit({

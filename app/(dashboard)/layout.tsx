@@ -28,6 +28,19 @@ export default async function DashboardLayout({
   const permissions = await getEffectivePermissions(user.id);
 
   const navItems: NavItem[] = [{ href: "/", label: "Dashboard" }];
+  if (permissions.includes("orders.view_own")) {
+    navItems.push({ href: "/orders", label: "Orders", section: "Sales" });
+  }
+  if (permissions.includes("orders.create")) {
+    navItems.push({ href: "/orders/new", label: "New Order", section: "Sales" });
+  }
+  if (permissions.includes("orders.approve_edit")) {
+    navItems.push({
+      href: "/orders/edit-requests",
+      label: "Edit Requests",
+      section: "Sales",
+    });
+  }
   if (permissions.includes("catalog.view")) {
     navItems.push(
       { href: "/catalog/products", label: "Products", section: "Catalog" },
