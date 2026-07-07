@@ -1,0 +1,112 @@
+// Gift Valy ERP — Prisma schema
+// Phase 1, steps 1–2: AUTH & ORG tables (SPEC §14).
+// Naming: snake_case in DB via @map/@@map. Money (later phases) = Decimal(12,2) BDT.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id                 Int       @id @default(autoincrement())
+  name               String
+  email              String    @unique
+  phone              String?
+  passwordHash       String    @map("password_hash")
+  roleId             Int       @map("role_id")
+  teamId             Int?      @map("team_id")
+  isActive           Boolean   @default(true) @map("is_active")
+  isOnboarding       Boolean   @default(false) @map("is_onboarding")
+  mustChangePassword Boolean   @default(true) @map("must_change_password")
+  joinedAt           DateTime? @map("joined_at") @db.Date
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+  createdBy          Int?      @map("created_by")
+  updatedBy          Int?      @map("updated_by")
+
+  role        Role                     @relation(fields: [roleId], references: [id])
+  team        Team?                    @relation("TeamMembers", fields: [teamId], references: [id])
+  leaderOf    Team[]                   @relation("TeamLeader")
+  overrides   UserPermissionOverride[]
+  auditLogs   AuditLog[]
+
+  @@map("users")
+}
+
+model Role {
+  id   Int    @id @default(autoincrement())
+  name String @unique
+
+  users           User[]
+  rolePermissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id  Int    @id @default(autoincrement())
+  key String @unique
+
+  rolePermissions RolePermission[]
+  userOverrides   UserPermissionOverride[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       Int @map("role_id")
+  permissionId Int @map("permission_id")
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserPermissionOverride {
+  userId       Int     @map("user_id")
+  permissionId Int     @map("permission_id")
+  allow        Boolean
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([userId, permissionId])
+  @@map("user_permission_overrides")
+}
+
+model Team {
+  id           Int      @id @default(autoincrement())
+  name         String   @unique
+  leaderUserId Int?     @map("leader_user_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  createdBy    Int?     @map("created_by")
+  updatedBy    Int?     @map("updated_by")
+
+  leader  User?  @relation("TeamLeader", fields: [leaderUserId], references: [id])
+  members User[] @relation("TeamMembers")
+
+  @@map("teams")
+}
+
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  userId     Int      @map("user_id")
+  action     String
+  entity     String
+  entityId   String?  @map("entity_id")
+  beforeJson Json?    @map("before_json")
+  afterJson  Json?    @map("after_json")
+  at         DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("audit_logs")
+}
