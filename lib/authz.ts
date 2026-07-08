@@ -27,6 +27,18 @@ export async function requirePermission(key: string): Promise<Session> {
   return session;
 }
 
+// Passes when the user holds ANY of the given permission keys — for shared
+// endpoints usable by several roles (e.g. file uploads: catalog photos,
+// payment screenshots, expense receipts).
+export async function requireAnyPermission(keys: string[]): Promise<Session> {
+  const session = await requireUser();
+  const permissions = await getEffectivePermissions(session.user.id);
+  if (!keys.some((k) => permissions.includes(k))) {
+    throw new AuthzError(403, `Missing permission: one of ${keys.join(", ")}`);
+  }
+  return session;
+}
+
 // Like requirePermission, but also returns the effective permission list —
 // for routes that shape the response by permission (e.g. stripping cost fields).
 export async function requirePermissionCtx(

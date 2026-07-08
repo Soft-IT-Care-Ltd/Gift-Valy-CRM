@@ -89,6 +89,17 @@ export default async function DashboardLayout({
       section: "Money",
     });
   }
+  // Expenses (SPEC §9.1). Daily entry + category management for Accounts/Admin/Manager.
+  if (permissions.includes("expenses.create")) {
+    navItems.push(
+      { href: "/money/expenses", label: "Expenses", section: "Money" },
+      {
+        href: "/money/expense-categories",
+        label: "Expense Categories",
+        section: "Money",
+      }
+    );
+  }
   // Reports (SPEC §12). R4/R5 are inventory reports gated on stock.view — the
   // same read scope as the Stock screen (Admin, Manager, Accounts, Packing).
   if (permissions.includes("stock.view")) {
@@ -110,6 +121,14 @@ export default async function DashboardLayout({
     navItems.push({
       href: "/reports/collection",
       label: "Collection Report",
+      section: "Reports",
+    });
+  }
+  // R8 — Expense report (SPEC §9.1 / §12), for expenses.create roles.
+  if (permissions.includes("expenses.create")) {
+    navItems.push({
+      href: "/reports/expenses",
+      label: "Expense Report",
       section: "Reports",
     });
   }

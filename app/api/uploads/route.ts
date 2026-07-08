@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { mkdir, writeFile } from "fs/promises";
 import path from "path";
 import { NextResponse } from "next/server";
-import { requirePermission, apiError } from "@/lib/authz";
+import { requireAnyPermission, apiError } from "@/lib/authz";
 
 // SPEC §15: local /uploads first, S3-compatible (R2) later — swap the write
 // here when that happens; callers only ever see the returned URL.
@@ -17,7 +17,14 @@ const EXT_BY_TYPE: Record<string, string> = {
 
 export async function POST(req: Request) {
   try {
-    await requirePermission("catalog.manage");
+    // Any role that can attach a file: catalog photos, payment screenshots (SEs)
+    // or expense receipts (Accounts). Files land in the same public bucket.
+    await requireAnyPermission([
+      "catalog.manage",
+      "expenses.create",
+      "payments.create",
+      "purchases.create",
+    ]);
     const form = await req.formData();
     const file = form.get("file");
     if (!(file instanceof File)) {

@@ -103,6 +103,23 @@ Build the courier module:
 Commit and tell me how to test.
 ```
 
+### Prompt 8.5 — Steadfast API Integration
+```
+Read STEADFAST_INTEGRATION.md fully and implement the complete Steadfast integration:
+1. Settings page: encrypted API key + secret, Test Connection via /get_balance,
+   webhook Callback URL display + Bearer token generate/copy/regenerate,
+   "last webhook received" indicator
+2. Send to Steadfast from the PACKED tab (single + bulk, per spec section 2)
+3. Webhook receiver POST /api/webhooks/steadfast per spec section 3A:
+   Bearer auth, both notification types, case-insensitive status mapping,
+   idempotent handling, tracking timeline
+4. Polling fallback per section 3B + manual Sync Now
+5. Schema additions per section 4
+Write tests that simulate webhook payloads (including replayed duplicates and
+wrong tokens). Commit and walk me through the acceptance checklist in section 6.
+```
+> ⚠ এটা Prompt 8 (Courier module)-এর **পরে** দিতে হবে — shipments table লাগে। Webhook-এর live test deploy-এর পরে হবে; বাকি সব localhost-এই test করা যায়।
+
 ### Prompt 9 — Wallets + Payment Verification + Collection
 ```
 Read GIFT_VALY_SOFTWARE_SPEC.md section 8 and report R7.

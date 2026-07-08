@@ -6,6 +6,13 @@ import type {
   PaymentTypeValue,
 } from "@/lib/order-constants";
 import type { WalletTypeValue } from "@/lib/wallet";
+import {
+  serializeExpense,
+  EXPENSE_INCLUDE,
+  AD_COST_CATEGORY,
+  type ExpenseRow,
+  type CostTypeValue,
+} from "@/lib/expense-constants";
 
 // Report data builders for SPEC §12 Module 10 — R4 (Stock) and R5 (Package
 // availability). Cost/value fields (avg cost, stock value, package cost/margin)
@@ -774,5 +781,161 @@ export async function buildWalletBalances(): Promise<WalletBalances> {
     rows,
     totalBalance: round2(rows.reduce((s, r) => s + r.balance, 0)),
     unassignedCollected: round2(Number(unassignedAgg._sum.amount ?? 0)),
+  };
+}
+
+// ============ R8 — Expense report (SPEC §9.1 / §12) ============
+// By category, fixed vs variable split, and the ad-cost daily trend. Covers both
+// manual entries and the auto-expenses posted by the purchase (§6.3) and courier
+// (§7) modules — every expense row lives in one table, so the report is complete.
+
+export interface ExpenseCategoryTotal {
+  categoryId: number;
+  name: string;
+  costType: CostTypeValue;
+  amount: number;
+  count: number;
+  share: number; // % of grand total (0 when total is 0)
+}
+
+export interface AdCostDay {
+  date: string; // YYYY-MM-DD (Asia/Dhaka)
+  amount: number;
+}
+
+export interface AdCostCampaign {
+  campaign: string; // "(unnamed)" when no campaign was tagged
+  amount: number;
+  count: number;
+}
+
+export interface ExpenseReport {
+  range: { from: string; to: string };
+  total: number;
+  count: number;
+  fixedTotal: number;
+  variableTotal: number;
+  manualTotal: number; // hand-entered on the expense screen
+  autoTotal: number; // from purchase/courier modules
+  byCategory: ExpenseCategoryTotal[];
+  adCost: {
+    total: number;
+    daily: AdCostDay[]; // continuous series when the range is ≤120 days
+    dailyContinuous: boolean; // false = only days with spend (long ranges)
+    peak: number; // largest single-day spend (chart y-scale + KPI)
+    byCampaign: AdCostCampaign[];
+  };
+  expenses: ExpenseRow[]; // detail rows, newest first
+}
+
+// YYYY-MM-DD for a Date in Asia/Dhaka (en-CA renders ISO date order).
+function dhakaYmd(d: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Dhaka",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+}
+
+const AD_TREND_MAX_DAYS = 120;
+
+export async function buildExpenseReport(opts: {
+  from?: Date;
+  to?: Date;
+}): Promise<ExpenseReport> {
+  // Default window = current Dhaka month → end of today (matches R7).
+  const from = opts.from ?? dhakaMonthStart();
+  const to = opts.to ?? new Date(dhakaDayStart().getTime() + DAY_MS - 1);
+
+  const raw = await prisma.expense.findMany({
+    where: { expenseDate: { gte: from, lte: to } },
+    include: EXPENSE_INCLUDE,
+    orderBy: [{ expenseDate: "desc" }, { id: "desc" }],
+  });
+  const expenses = raw.map(serializeExpense);
+
+  const total = round2(expenses.reduce((s, e) => s + e.amount, 0));
+  const fixedTotal = round2(
+    expenses.filter((e) => e.costType === "FIXED").reduce((s, e) => s + e.amount, 0)
+  );
+  const variableTotal = round2(total - fixedTotal);
+  const autoTotal = round2(
+    expenses.filter((e) => e.isAuto).reduce((s, e) => s + e.amount, 0)
+  );
+  const manualTotal = round2(total - autoTotal);
+
+  // By category.
+  const catMap = new Map<number, ExpenseCategoryTotal>();
+  for (const e of expenses) {
+    const row =
+      catMap.get(e.categoryId) ??
+      {
+        categoryId: e.categoryId,
+        name: e.categoryName,
+        costType: e.costType,
+        amount: 0,
+        count: 0,
+        share: 0,
+      };
+    row.amount = round2(row.amount + e.amount);
+    row.count += 1;
+    catMap.set(e.categoryId, row);
+  }
+  const byCategory = [...catMap.values()]
+    .map((r) => ({ ...r, share: total > 0 ? round2((r.amount / total) * 100) : 0 }))
+    .sort((a, b) => b.amount - a.amount);
+
+  // Ad-cost daily trend (SPEC §9.1 "Ad Cost (daily, per campaign optional)").
+  const adRows = expenses.filter((e) => e.categoryName === AD_COST_CATEGORY);
+  const adTotal = round2(adRows.reduce((s, e) => s + e.amount, 0));
+
+  const perDay = new Map<string, number>();
+  const perCampaign = new Map<string, { amount: number; count: number }>();
+  for (const e of adRows) {
+    const key = dhakaYmd(new Date(e.expenseDate));
+    perDay.set(key, round2((perDay.get(key) ?? 0) + e.amount));
+    const camp = e.campaignName?.trim() || "(unnamed)";
+    const c = perCampaign.get(camp) ?? { amount: 0, count: 0 };
+    c.amount = round2(c.amount + e.amount);
+    c.count += 1;
+    perCampaign.set(camp, c);
+  }
+
+  // Continuous daily series so the chart shows zero-spend days too — but only for
+  // ranges up to AD_TREND_MAX_DAYS; longer filters fall back to days with spend.
+  const startDay = dhakaDayStart(from);
+  const endDay = dhakaDayStart(to);
+  const dayCount = Math.floor((endDay.getTime() - startDay.getTime()) / DAY_MS) + 1;
+  const dailyContinuous = dayCount > 0 && dayCount <= AD_TREND_MAX_DAYS;
+  let daily: AdCostDay[];
+  if (dailyContinuous) {
+    daily = [];
+    for (let i = 0; i < dayCount; i++) {
+      const key = dhakaYmd(new Date(startDay.getTime() + i * DAY_MS));
+      daily.push({ date: key, amount: perDay.get(key) ?? 0 });
+    }
+  } else {
+    daily = [...perDay.entries()]
+      .map(([date, amount]) => ({ date, amount }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }
+  const peak = daily.reduce((m, d) => Math.max(m, d.amount), 0);
+
+  const byCampaign = [...perCampaign.entries()]
+    .map(([campaign, v]) => ({ campaign, amount: v.amount, count: v.count }))
+    .sort((a, b) => b.amount - a.amount);
+
+  return {
+    range: { from: from.toISOString(), to: to.toISOString() },
+    total,
+    count: expenses.length,
+    fixedTotal,
+    variableTotal,
+    manualTotal,
+    autoTotal,
+    byCategory,
+    adCost: { total: adTotal, daily, dailyContinuous, peak, byCampaign },
+    expenses,
   };
 }

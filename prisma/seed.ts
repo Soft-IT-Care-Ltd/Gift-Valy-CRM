@@ -11,6 +11,7 @@ import {
   ROLE_MATRIX,
   ROLE_NAMES,
 } from "../lib/permissions";
+import { SEED_EXPENSE_CATEGORIES, AD_COST_CATEGORY } from "../lib/expense-constants";
 
 const prisma = new PrismaClient();
 
@@ -347,6 +348,19 @@ async function main() {
   await prisma.stockMovement.deleteMany({});
   await prisma.expense.deleteMany({});
   await prisma.purchase.deleteMany({}); // cascades purchase_items
+
+  // Expense categories (SPEC §9.1), each flagged Fixed/Variable. Upserted (never
+  // wiped) so the auto categories ("Product Purchase"/"Courier Charge") created by
+  // the modules survive alongside these. Captured by name for the demo expenses.
+  const expenseCategoryIdByName = new Map<string, number>();
+  for (const c of SEED_EXPENSE_CATEGORIES) {
+    const saved = await prisma.expenseCategory.upsert({
+      where: { name: c.name },
+      update: { costType: c.costType },
+      create: { name: c.name, costType: c.costType },
+    });
+    expenseCategoryIdByName.set(c.name, saved.id);
+  }
 
   const daysAgo = (n: number, hour = 10) => {
     const d = new Date();
@@ -884,10 +898,76 @@ async function main() {
     });
   }
 
+  // Demo manual expenses (SPEC §9.1) so the R8 report + ad-cost trend have data.
+  // Ad cost is a near-daily entry over the last ~5 weeks (a few zero-spend days),
+  // plus a handful of fixed/variable costs landing in the current month.
+  const bkashWalletId = walletIdByType.get("BKASH")!;
+  const cashWalletId = walletIdByType.get("CASH")!;
+  const adCostCategoryId = expenseCategoryIdByName.get(AD_COST_CATEGORY)!;
+  const adCampaigns = ["Eid FB Ad", "Boishakh Boost", "Retargeting", "New Reels"];
+  const demoExpenses: {
+    expenseDate: Date;
+    categoryId: number;
+    amount: number;
+    walletId: number | null;
+    campaignName: string | null;
+    notes: string | null;
+  }[] = [];
+
+  for (let day = 0; day < 35; day++) {
+    if (day % 8 === 5) continue; // occasional zero-spend day (visible in the chart)
+    const amount = round2(900 + (day % 5) * 420 + (day % 3) * 260);
+    demoExpenses.push({
+      expenseDate: daysAgo(day, 11),
+      categoryId: adCostCategoryId,
+      amount,
+      walletId: bkashWalletId,
+      campaignName: adCampaigns[day % adCampaigns.length],
+      notes: null,
+    });
+  }
+
+  const fixedAndOther: {
+    name: string;
+    amount: number;
+    day: number;
+    walletId: number | null;
+    notes: string | null;
+  }[] = [
+    { name: "Salary", amount: 45000, day: 5, walletId: bankWalletId, notes: "June salaries" },
+    { name: "Rent", amount: 18000, day: 4, walletId: bankWalletId, notes: "Office rent" },
+    { name: "Utilities", amount: 4200, day: 3, walletId: cashWalletId, notes: "Electricity + internet" },
+    { name: "Packaging Materials", amount: 6500, day: 6, walletId: cashWalletId, notes: "Boxes + wrap" },
+    { name: "Office", amount: 2300, day: 2, walletId: cashWalletId, notes: "Stationery" },
+    { name: "Other", amount: 1500, day: 1, walletId: cashWalletId, notes: "Misc" },
+  ];
+  for (const f of fixedAndOther) {
+    const categoryId = expenseCategoryIdByName.get(f.name);
+    if (!categoryId) continue;
+    demoExpenses.push({
+      expenseDate: daysAgo(f.day, 12),
+      categoryId,
+      amount: f.amount,
+      walletId: f.walletId,
+      campaignName: null,
+      notes: f.notes,
+    });
+  }
+
+  await prisma.expense.createMany({
+    data: demoExpenses.map((e) => ({
+      ...e,
+      createdBy: accountsId,
+      updatedBy: accountsId,
+    })),
+  });
+
   const orderCount = await prisma.order.count();
   const paymentCount = await prisma.payment.count();
   const movementCount = await prisma.stockMovement.count();
   const shipmentCount = await prisma.shipment.count();
+  const expenseCategoryCount = await prisma.expenseCategory.count();
+  const expenseCount = await prisma.expense.count();
 
   console.log("Seed complete:");
   console.log(`  ${PERMISSION_DEFS.length} permissions, ${ROLE_NAMES.length} roles (matrix applied)`);
@@ -897,6 +977,7 @@ async function main() {
   console.log(`  Stock: ${movementCount} movements (opening balances + confirmed-order reservations)`);
   console.log(`  Courier: ${demoCouriers.length} couriers, ${shipmentCount} shipments (incl. delivered, in-transit, COD-pending, returned)`);
   console.log(`  Money: ${demoWallets.length} wallets (bKash/Nagad/Rocket/Bank/Cash), payments attributed by method`);
+  console.log(`  Expenses: ${expenseCategoryCount} categories (fixed/variable), ${expenseCount} expenses (ad-cost trend + fixed costs + auto COD fees)`);
   console.log("  Admin:    mh.neshad39@gmail.com / Admin@GV2026");
   console.log("  Manager:  manager@giftvaly.com  / Manager@GV2026");
   console.log("  TL:       sakib@giftvaly.com    / Team@GV2026");
