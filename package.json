@@ -9,7 +9,8 @@
     "lint": "eslint",
     "verify:stock": "tsx scripts/verify-stock.ts",
     "verify:steadfast": "tsx scripts/verify-steadfast.ts",
-    "verify:lifecycle": "tsx scripts/verify-lifecycle.ts"
+    "verify:lifecycle": "tsx scripts/verify-lifecycle.ts",
+    "verify:purchase-dues": "tsx scripts/verify-purchase-dues.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",

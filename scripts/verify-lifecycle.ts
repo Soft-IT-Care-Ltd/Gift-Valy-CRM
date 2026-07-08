@@ -158,7 +158,6 @@ async function main() {
         const purchase = await applyPurchase(tx, {
           supplierName: "Verify Supplier Ltd",
           purchaseDate: new Date(),
-          paymentStatus: "PAID",
           notes: "lifecycle verification purchase",
           lines: [{ productId: teddy.id, qty: 20, unitCost: 500 }, ...componentLines],
           userId: admin.id,

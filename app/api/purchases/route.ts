@@ -5,10 +5,20 @@ import { requirePermission, apiError, AuthzError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
 import { applyPurchase } from "@/lib/stock";
 
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
 const bodySchema = z.object({
   supplierName: z.string().trim().min(1, "Supplier name is required"),
   purchaseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  paymentStatus: z.enum(["PAID", "DUE", "PARTIAL"]).default("PAID"),
+  // Cash paid at entry (SPEC §6.3 supplier credit): the full total for a Paid
+  // purchase, a portion for Partial, 0 for Due. Cost is expensed only for this.
+  paidAmount: z.number().min(0).default(0),
+  walletId: z.number().int().positive().nullable().optional(), // required when paidAmount > 0
+  dueDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .nullable()
+    .optional(), // required when not fully paid
   notes: z
     .string()
     .nullable()
@@ -49,11 +59,39 @@ export async function POST(req: Request) {
       }
     }
 
+    // Payment validation (SPEC §6.3 supplier credit). Total is authoritative
+    // server-side; paidAmount must fit within it. Any unpaid balance needs a
+    // due date; any cash paid needs an active receiving wallet.
+    const total = round2(data.items.reduce((s, l) => s + l.qty * l.unitCost, 0));
+    const paidAmount = round2(data.paidAmount);
+    if (paidAmount > total) {
+      throw new AuthzError(400, "Amount paid cannot exceed the purchase total");
+    }
+    if (paidAmount > 0) {
+      if (!data.walletId) {
+        throw new AuthzError(400, "Select the wallet the payment came from");
+      }
+      const wallet = await prisma.wallet.findUnique({
+        where: { id: data.walletId },
+        select: { isActive: true },
+      });
+      if (!wallet) throw new AuthzError(400, "Paying wallet not found");
+      if (!wallet.isActive) throw new AuthzError(400, "Paying wallet is inactive");
+    }
+    if (paidAmount < total && !data.dueDate) {
+      throw new AuthzError(400, "Set the date the remaining balance is due");
+    }
+
     const purchase = await prisma.$transaction((tx) =>
       applyPurchase(tx, {
         supplierName: data.supplierName,
         purchaseDate: new Date(`${data.purchaseDate}T00:00:00+06:00`),
-        paymentStatus: data.paymentStatus,
+        paidAmount,
+        walletId: paidAmount > 0 ? data.walletId ?? null : null,
+        dueDate:
+          paidAmount < total && data.dueDate
+            ? new Date(`${data.dueDate}T00:00:00+06:00`)
+            : null,
         notes: data.notes,
         lines: data.items,
         userId: session.user.id,
@@ -69,6 +107,10 @@ export async function POST(req: Request) {
         supplier: data.supplierName,
         date: data.purchaseDate,
         total: Number(purchase.totalAmount),
+        paid: paidAmount,
+        paymentStatus: purchase.paymentStatus,
+        walletId: paidAmount > 0 ? data.walletId ?? null : null,
+        dueDate: paidAmount < total ? data.dueDate ?? null : null,
         items: data.items,
       },
     });

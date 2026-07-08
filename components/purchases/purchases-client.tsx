@@ -39,6 +39,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { money, formatDate } from "@/lib/format";
+import type { WalletOption } from "@/lib/wallet";
+import type { PurchaseDues, PurchaseDueRow } from "@/lib/purchases";
 import {
   PURCHASE_PAYMENT_STATUSES,
   PURCHASE_PAYMENT_STATUS_LABELS,
@@ -58,7 +60,10 @@ export interface PurchaseRow {
   id: number;
   supplierName: string;
   purchaseDate: string;
+  dueDate: string | null;
   totalAmount: number;
+  paidAmount: number;
+  dueAmount: number;
   paymentStatus: string;
   notes: string | null;
   items: {
@@ -85,12 +90,26 @@ const todayDhaka = () =>
     day: "2-digit",
   }).format(new Date());
 
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+function PaymentBadge({ status }: { status: string }) {
+  const label =
+    PURCHASE_PAYMENT_STATUS_LABELS[status as PurchasePaymentStatusValue] ?? status;
+  const variant =
+    status === "PAID" ? "secondary" : status === "PARTIAL" ? "outline" : "destructive";
+  return <Badge variant={variant}>{label}</Badge>;
+}
+
 export function PurchasesClient({
   purchases,
   products,
+  wallets,
+  dues,
 }: {
   purchases: PurchaseRow[];
   products: ProductOption[];
+  wallets: WalletOption[];
+  dues: PurchaseDues;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -98,6 +117,9 @@ export function PurchasesClient({
   const [purchaseDate, setPurchaseDate] = useState(todayDhaka());
   const [paymentStatus, setPaymentStatus] =
     useState<PurchasePaymentStatusValue>("PAID");
+  const [walletId, setWalletId] = useState("");
+  const [partialAmount, setPartialAmount] = useState("");
+  const [dueDate, setDueDate] = useState("");
   const [notes, setNotes] = useState("");
   const [lines, setLines] = useState<DraftLine[]>([
     { productId: "", qty: "", unitCost: "" },
@@ -115,10 +137,24 @@ export function PurchasesClient({
     return s + (q > 0 && c >= 0 ? q * c : 0);
   }, 0);
 
+  // Cash paid now depends on the chosen status; the rest becomes a supplier due.
+  const payingNow =
+    paymentStatus === "PAID"
+      ? total
+      : paymentStatus === "PARTIAL"
+        ? Math.min(Math.max(Number(partialAmount) || 0, 0), total)
+        : 0;
+  const remainingDue = round2(Math.max(total - payingNow, 0));
+  const needsWallet = payingNow > 0;
+  const needsDueDate = remainingDue > 0;
+
   function reset() {
     setSupplierName("");
     setPurchaseDate(todayDhaka());
     setPaymentStatus("PAID");
+    setWalletId("");
+    setPartialAmount("");
+    setDueDate("");
     setNotes("");
     setLines([{ productId: "", qty: "", unitCost: "" }]);
   }
@@ -157,6 +193,14 @@ export function PurchasesClient({
     const ids = new Set(items.map((i) => i.productId));
     if (ids.size !== items.length)
       return toast.error("Duplicate product — merge into one line");
+    if (paymentStatus === "PARTIAL" && !(Number(partialAmount) > 0))
+      return toast.error("Enter the amount you are paying now");
+    if (paymentStatus === "PARTIAL" && payingNow >= total)
+      return toast.error("Partial payment must be less than the total — use Paid instead");
+    if (needsWallet && !walletId)
+      return toast.error("Select the wallet the payment came from");
+    if (needsDueDate && !dueDate)
+      return toast.error("Set the date the remaining balance is due");
 
     setSaving(true);
     const res = await fetch("/api/purchases", {
@@ -165,7 +209,9 @@ export function PurchasesClient({
       body: JSON.stringify({
         supplierName: supplierName.trim(),
         purchaseDate,
-        paymentStatus,
+        paidAmount: round2(payingNow),
+        walletId: needsWallet ? Number(walletId) : null,
+        dueDate: needsDueDate ? dueDate : null,
         notes: notes.trim() || null,
         items,
       }),
@@ -189,8 +235,9 @@ export function PurchasesClient({
           <div>
             <CardTitle>Purchases</CardTitle>
             <CardDescription>
-              Supplier purchases increase stock, update weighted-avg cost, and
-              auto-create the expense record (SPEC §6.3).
+              Supplier purchases increase stock and update weighted-avg cost. The
+              cost is expensed as it is paid — a Due purchase posts no expense until
+              you pay it down (SPEC §6.3).
             </CardDescription>
           </div>
           <Button
@@ -210,6 +257,8 @@ export function PurchasesClient({
                 <TableHead>Supplier</TableHead>
                 <TableHead>Items</TableHead>
                 <TableHead className="text-right">Total</TableHead>
+                <TableHead className="text-right">Paid</TableHead>
+                <TableHead className="text-right">Due</TableHead>
                 <TableHead>Payment</TableHead>
               </TableRow>
             </TableHeader>
@@ -228,20 +277,26 @@ export function PurchasesClient({
                   <TableCell className="text-right font-medium">
                     {money(p.totalAmount)}
                   </TableCell>
+                  <TableCell className="text-right text-muted-foreground">
+                    {money(p.paidAmount)}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {p.dueAmount > 0 ? (
+                      <span className="font-medium text-destructive">
+                        {money(p.dueAmount)}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
                   <TableCell>
-                    <Badge
-                      variant={p.paymentStatus === "PAID" ? "secondary" : "destructive"}
-                    >
-                      {PURCHASE_PAYMENT_STATUS_LABELS[
-                        p.paymentStatus as PurchasePaymentStatusValue
-                      ] ?? p.paymentStatus}
-                    </Badge>
+                    <PaymentBadge status={p.paymentStatus} />
                   </TableCell>
                 </TableRow>
               ))}
               {purchases.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground">
+                  <TableCell colSpan={7} className="text-center text-muted-foreground">
                     No purchases recorded yet.
                   </TableCell>
                 </TableRow>
@@ -250,6 +305,8 @@ export function PurchasesClient({
           </Table>
         </CardContent>
       </Card>
+
+      <SupplierDues dues={dues} wallets={wallets} />
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
@@ -369,6 +426,70 @@ export function PurchasesClient({
               </Button>
             </div>
 
+            {/* Payment details — conditional on the status (SPEC §6.3). */}
+            <div className="grid gap-3 rounded-md border p-3 sm:grid-cols-3">
+              {paymentStatus === "PARTIAL" && (
+                <div className="grid gap-2">
+                  <Label>Paying now</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    placeholder="Amount"
+                    value={partialAmount}
+                    onChange={(e) => setPartialAmount(e.target.value)}
+                  />
+                </div>
+              )}
+              {needsWallet && (
+                <div className="grid gap-2">
+                  <Label>Paid from wallet</Label>
+                  <Select value={walletId} onValueChange={setWalletId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select wallet" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {wallets.map((w) => (
+                        <SelectItem key={w.id} value={String(w.id)}>
+                          {w.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              {needsDueDate && (
+                <div className="grid gap-2">
+                  <Label>Balance due date</Label>
+                  <Input
+                    type="date"
+                    value={dueDate}
+                    onChange={(e) => setDueDate(e.target.value)}
+                  />
+                </div>
+              )}
+              <div className="col-span-full flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-foreground">
+                <span>
+                  Paying now:{" "}
+                  <span className="font-medium text-foreground">
+                    {money(round2(payingNow))}
+                  </span>
+                </span>
+                <span>
+                  Remaining due:{" "}
+                  <span
+                    className={
+                      remainingDue > 0
+                        ? "font-medium text-destructive"
+                        : "font-medium text-foreground"
+                    }
+                  >
+                    {money(remainingDue)}
+                  </span>
+                </span>
+              </div>
+            </div>
+
             <div className="grid gap-2">
               <Label>Notes (optional)</Label>
               <Textarea
@@ -395,5 +516,216 @@ export function PurchasesClient({
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+// ---------- Supplier dues (outstanding bills + pay action) ----------
+
+function SupplierDues({
+  dues,
+  wallets,
+}: {
+  dues: PurchaseDues;
+  wallets: WalletOption[];
+}) {
+  const router = useRouter();
+  const [target, setTarget] = useState<PurchaseDueRow | null>(null);
+  const [amount, setAmount] = useState("");
+  const [walletId, setWalletId] = useState("");
+  const [payDate, setPayDate] = useState(todayDhaka());
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  function openPay(row: PurchaseDueRow) {
+    setTarget(row);
+    setAmount(String(row.due));
+    setWalletId("");
+    setPayDate(todayDhaka());
+    setNotes("");
+  }
+
+  async function pay() {
+    if (!target) return;
+    const amt = Number(amount);
+    if (!(amt > 0)) return toast.error("Enter a payment amount");
+    if (amt > target.due)
+      return toast.error(`Amount exceeds the outstanding due of ${money(target.due)}`);
+    if (!walletId) return toast.error("Select the wallet the payment came from");
+
+    setSaving(true);
+    const res = await fetch(`/api/purchases/${target.id}/payments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        amount: amt,
+        walletId: Number(walletId),
+        paymentDate: payDate,
+        notes: notes.trim() || null,
+      }),
+    });
+    setSaving(false);
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      toast.error(data?.error ?? "Failed to record payment");
+      return;
+    }
+    toast.success("Payment recorded — wallet and expense updated");
+    setTarget(null);
+    router.refresh();
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <CardTitle>Supplier dues</CardTitle>
+            <CardDescription>
+              Outstanding purchase bills. Paying one records the expense on the pay
+              date and reduces the chosen wallet (SPEC §6.3 / §9.1).
+            </CardDescription>
+          </div>
+          <div className="flex flex-wrap gap-2 text-sm">
+            <Badge variant="outline">
+              Outstanding: {money(dues.totalOutstanding)}
+            </Badge>
+            {dues.overdueCount > 0 && (
+              <Badge variant="destructive">
+                {dues.overdueCount} overdue · {money(dues.overdueTotal)}
+              </Badge>
+            )}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Supplier</TableHead>
+              <TableHead>Purchased</TableHead>
+              <TableHead>Due date</TableHead>
+              <TableHead className="text-right">Total</TableHead>
+              <TableHead className="text-right">Paid</TableHead>
+              <TableHead className="text-right">Due</TableHead>
+              <TableHead className="text-right">Action</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {dues.rows.map((r) => (
+              <TableRow key={r.id}>
+                <TableCell className="font-medium">
+                  {r.supplierName}
+                  <div className="max-w-xs truncate text-xs text-muted-foreground">
+                    {r.itemsSummary}
+                  </div>
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  {formatDate(r.purchaseDate)}
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  {r.dueDate ? (
+                    r.overdue ? (
+                      <Badge variant="destructive">
+                        {formatDate(r.dueDate)} · {r.ageDays}d overdue
+                      </Badge>
+                    ) : (
+                      formatDate(r.dueDate)
+                    )
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
+                </TableCell>
+                <TableCell className="text-right">{money(r.total)}</TableCell>
+                <TableCell className="text-right text-muted-foreground">
+                  {money(r.paid)}
+                </TableCell>
+                <TableCell className="text-right font-medium text-destructive">
+                  {money(r.due)}
+                </TableCell>
+                <TableCell className="text-right">
+                  <Button size="sm" variant="outline" onClick={() => openPay(r)}>
+                    Pay
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+            {dues.rows.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={7} className="text-center text-muted-foreground">
+                  No outstanding supplier dues. 🎉
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </CardContent>
+
+      <Dialog open={target !== null} onOpenChange={(o) => !o && setTarget(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Pay supplier due</DialogTitle>
+            <DialogDescription>
+              {target
+                ? `${target.supplierName} · outstanding ${money(target.due)}`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <div className="grid gap-2">
+              <Label>Amount</Label>
+              <Input
+                type="number"
+                min={0}
+                step="0.01"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Pay the full due or enter a smaller amount for a partial payment.
+              </p>
+            </div>
+            <div className="grid gap-2">
+              <Label>Paid from wallet</Label>
+              <Select value={walletId} onValueChange={setWalletId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select wallet" />
+                </SelectTrigger>
+                <SelectContent>
+                  {wallets.map((w) => (
+                    <SelectItem key={w.id} value={String(w.id)}>
+                      {w.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-2">
+              <Label>Payment date</Label>
+              <Input
+                type="date"
+                value={payDate}
+                onChange={(e) => setPayDate(e.target.value)}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label>Notes (optional)</Label>
+              <Input
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Reference, cheque no., etc."
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTarget(null)}>
+              Cancel
+            </Button>
+            <Button onClick={pay} disabled={saving}>
+              {saving ? "Saving…" : "Record payment"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
   );
 }

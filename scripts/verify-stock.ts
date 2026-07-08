@@ -99,7 +99,6 @@ async function main() {
         await applyPurchase(tx, {
           supplierName: "Verify Supplier Ltd",
           purchaseDate: new Date(),
-          paymentStatus: "PAID",
           notes: "verification purchase",
           lines: [{ productId: teddy.id, qty: 20, unitCost: 500 }],
           userId: admin.id,

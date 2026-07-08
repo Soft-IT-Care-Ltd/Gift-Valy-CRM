@@ -27,6 +27,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/orders/orders-list-client";
+import { SupplierDuesAlert } from "@/components/purchases/supplier-dues-alert";
 import type { OrderStatus } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
@@ -292,6 +293,8 @@ export default async function HomePage() {
           </CardContent>
         )}
       </Card>
+
+      {permissions.includes("purchases.create") && <SupplierDuesAlert />}
 
       {permissions.includes("stock.view") && (
         <InventorySummary showCosts={canSeeCosts(permissions)} />

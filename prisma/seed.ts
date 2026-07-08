@@ -690,6 +690,85 @@ async function main() {
     })),
   });
 
+  // Demo purchases (SPEC §6.3 supplier credit) — a paid, a partial, and an
+  // overdue-due bill so the purchase history, the due list, and the dashboard
+  // alert all have data. Each restocks on top of the opening baseline at the
+  // product's current avg cost (so the weighted average is unchanged), and the
+  // cost is expensed only for the cash actually paid. Purchases/expenses were
+  // wiped above, so this is idempotent.
+  const purchaseCategory = await prisma.expenseCategory.upsert({
+    where: { name: "Product Purchase" },
+    update: {},
+    create: { name: "Product Purchase", costType: "VARIABLE" },
+  });
+  const cashWallet = walletIdByType.get("CASH")!;
+  const demoPurchases: {
+    supplier: string;
+    date: Date;
+    sku: string;
+    qty: number;
+    paid: number; // cash paid at entry
+    walletId: number | null;
+    dueDate: Date | null;
+  }[] = [
+    // Fully paid from Cash — expenses the full total on the purchase date.
+    { supplier: "Dhaka Wholesale Ltd", date: daysAgo(15), sku: "GV-0004", qty: 20, paid: round2(20 * avgCostBySku.get("GV-0004")!), walletId: cashWallet, dueDate: null },
+    // Partially paid — rest due in 5 days; only the paid part is an expense now.
+    { supplier: "Chittagong Traders", date: daysAgo(10), sku: "GV-0006", qty: 10, paid: 6000, walletId: cashWallet, dueDate: daysAgo(-5) },
+    // Bought on credit, nothing paid, already overdue — no expense until paid.
+    { supplier: "Bogura Suppliers", date: daysAgo(20), sku: "GV-0003", qty: 15, paid: 0, walletId: null, dueDate: daysAgo(3) },
+  ];
+  for (const dp of demoPurchases) {
+    const productId = productIdBySku.get(dp.sku)!;
+    const unitCost = avgCostBySku.get(dp.sku)!;
+    const total = round2(dp.qty * unitCost);
+    const paid = round2(Math.min(dp.paid, total));
+    const status = paid >= total ? "PAID" : paid <= 0 ? "DUE" : "PARTIAL";
+    const purchase = await prisma.purchase.create({
+      data: {
+        supplierName: dp.supplier,
+        purchaseDate: dp.date,
+        totalAmount: total,
+        paymentStatus: status,
+        dueDate: status === "PAID" ? null : dp.dueDate,
+        createdBy: accountsId,
+        updatedBy: accountsId,
+        items: { create: [{ productId, qty: dp.qty, unitCost, lineTotal: total }] },
+      },
+    });
+    // Restock at the current avg cost — weighted average is unchanged.
+    await prisma.stockMovement.create({
+      data: {
+        productId,
+        type: "IN_PURCHASE",
+        qty: dp.qty,
+        refTable: "purchases",
+        refId: purchase.id,
+        at: dp.date,
+        createdBy: accountsId,
+      },
+    });
+    await prisma.product.update({
+      where: { id: productId },
+      data: { stockQty: { increment: dp.qty } },
+    });
+    if (paid > 0) {
+      await prisma.expense.create({
+        data: {
+          expenseDate: dp.date,
+          categoryId: purchaseCategory.id,
+          amount: paid,
+          walletId: dp.walletId,
+          notes: `Purchase from ${dp.supplier}`,
+          refTable: "purchases",
+          refId: purchase.id,
+          createdBy: accountsId,
+          updatedBy: accountsId,
+        },
+      });
+    }
+  }
+
   // BOM-expanded stock requirement per tracked product for an order's lines
   // (PRODUCT lines count themselves; PACKAGE lines expand their BOM).
   const isTrackedBySku = new Map(demoProducts.map((p) => [p.sku, p.isStockTracked]));

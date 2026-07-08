@@ -352,14 +352,43 @@ export interface PurchaseLineInput {
 // Auto-created expense category for purchase entries (SPEC §6.3/§9.1).
 export const PURCHASE_EXPENSE_CATEGORY = "Product Purchase";
 
-// Purchase entry: stock in + weighted-avg recompute + IN_PURCHASE rows +
-// auto-expense, all in the caller's transaction.
+// Get-or-create the "Product Purchase" expense category. Shared by the purchase
+// entry and the later due-payment path (lib/purchases.ts) so both file into the
+// same category the R8 report groups on.
+export async function ensurePurchaseExpenseCategory(tx: Tx): Promise<number> {
+  const category = await tx.expenseCategory.upsert({
+    where: { name: PURCHASE_EXPENSE_CATEGORY },
+    update: {},
+    create: { name: PURCHASE_EXPENSE_CATEGORY, costType: "VARIABLE" },
+  });
+  return category.id;
+}
+
+// Derive the cached payment status from money paid vs. billed (SPEC §6.3).
+export function purchasePaymentStatus(
+  total: number,
+  paid: number
+): "PAID" | "DUE" | "PARTIAL" {
+  if (paid >= total) return "PAID";
+  if (paid <= 0) return "DUE";
+  return "PARTIAL";
+}
+
+// Purchase entry: stock in + weighted-avg recompute + IN_PURCHASE rows, always
+// (goods are received now even on supplier credit). The COST is recognised as an
+// expense only for the cash actually paid at entry — a Due purchase posts nothing
+// until it is paid down later (lib/purchases.ts recordPurchasePayment). Expenses
+// carry the paying wallet so the wallet balance (lib/reports.ts) reflects the outflow.
 export async function applyPurchase(
   tx: Tx,
   opts: {
     supplierName: string;
     purchaseDate: Date;
-    paymentStatus: "PAID" | "DUE" | "PARTIAL";
+    // Cash paid at entry. Defaults to the full total (fully-paid) when omitted,
+    // so legacy callers that never bought on credit keep their behaviour.
+    paidAmount?: number;
+    walletId?: number | null; // wallet the paidAmount came from (SPEC §8)
+    dueDate?: Date | null; // when the remaining balance is due (null when paid in full)
     notes: string | null;
     lines: PurchaseLineInput[];
     userId: number;
@@ -368,12 +397,17 @@ export async function applyPurchase(
   const totalAmount = round2(
     opts.lines.reduce((s, l) => s + l.qty * l.unitCost, 0)
   );
+  const paidNow = round2(Math.min(Math.max(opts.paidAmount ?? totalAmount, 0), totalAmount));
+  const status = purchasePaymentStatus(totalAmount, paidNow);
+
   const purchase = await tx.purchase.create({
     data: {
       supplierName: opts.supplierName,
       purchaseDate: opts.purchaseDate,
       totalAmount,
-      paymentStatus: opts.paymentStatus,
+      paymentStatus: status,
+      // Only a not-fully-paid purchase carries a due date.
+      dueDate: status === "PAID" ? null : opts.dueDate ?? null,
       notes: opts.notes,
       createdBy: opts.userId,
       updatedBy: opts.userId,
@@ -420,25 +454,25 @@ export async function applyPurchase(
     );
   }
 
-  // SPEC §6.3: the purchase auto-creates its expense record (product
-  // purchase cost), linked via ref so it is never double-entered.
-  const category = await tx.expenseCategory.upsert({
-    where: { name: PURCHASE_EXPENSE_CATEGORY },
-    update: {},
-    create: { name: PURCHASE_EXPENSE_CATEGORY, costType: "VARIABLE" },
-  });
-  await tx.expense.create({
-    data: {
-      expenseDate: opts.purchaseDate,
-      categoryId: category.id,
-      amount: totalAmount,
-      notes: `Purchase from ${opts.supplierName}`,
-      refTable: "purchases",
-      refId: purchase.id,
-      createdBy: opts.userId,
-      updatedBy: opts.userId,
-    },
-  });
+  // SPEC §6.3: recognise the expense for cash paid at entry only, on the purchase
+  // date, linked via ref (never double-entered). A Due purchase (paidNow = 0)
+  // posts no expense here — it is recognised when the bill is paid down later.
+  if (paidNow > 0) {
+    const categoryId = await ensurePurchaseExpenseCategory(tx);
+    await tx.expense.create({
+      data: {
+        expenseDate: opts.purchaseDate,
+        categoryId,
+        amount: paidNow,
+        walletId: opts.walletId ?? null,
+        notes: `Purchase from ${opts.supplierName}`,
+        refTable: "purchases",
+        refId: purchase.id,
+        createdBy: opts.userId,
+        updatedBy: opts.userId,
+      },
+    });
+  }
 
   return purchase;
 }

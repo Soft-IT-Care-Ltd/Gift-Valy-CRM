@@ -199,6 +199,10 @@ model Purchase {
   purchaseDate  DateTime              @map("purchase_date") @db.Date
   totalAmount   Decimal               @map("total_amount") @db.Decimal(12, 2)
   paymentStatus PurchasePaymentStatus @default(PAID) @map("payment_status")
+  // When the outstanding balance is due (supplier credit, SPEC §6.3). Null when
+  // fully paid at purchase. Amount paid = Σ linked "Product Purchase" expenses;
+  // due = total_amount − paid, recognised as expense only when cash is paid.
+  dueDate       DateTime?             @map("due_date") @db.Date
   notes         String?
   createdAt     DateTime              @default(now()) @map("created_at")
   updatedAt     DateTime              @updatedAt @map("updated_at")
