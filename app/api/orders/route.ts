@@ -67,6 +67,17 @@ export async function POST(req: Request) {
     if (adv.amount > 0 && !adv.method) {
       throw new AuthzError(400, "Payment method is required for the advance");
     }
+    if (adv.amount > 0 && !adv.walletId) {
+      throw new AuthzError(400, "Receiving wallet is required for the advance");
+    }
+    if (adv.amount > 0 && adv.walletId) {
+      const wallet = await prisma.wallet.findUnique({
+        where: { id: adv.walletId },
+        select: { isActive: true },
+      });
+      if (!wallet) throw new AuthzError(400, "Receiving wallet not found");
+      if (!wallet.isActive) throw new AuthzError(400, "Receiving wallet is inactive");
+    }
     if (adv.amount > 0 && mfsTxnRequired(adv.method) && !adv.transactionId) {
       throw new AuthzError(400, `Transaction ID is required for ${adv.method}`);
     }
@@ -194,6 +205,7 @@ export async function POST(req: Request) {
                 type: "ADVANCE",
                 method: adv.method!,
                 amount: adv.amount,
+                walletId: adv.walletId ?? null,
                 transactionId: adv.transactionId,
                 senderNumber: adv.senderNumber,
                 screenshotUrl: adv.screenshotUrl,

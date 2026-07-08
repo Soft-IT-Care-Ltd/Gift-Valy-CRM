@@ -23,22 +23,34 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { money, formatDate } from "@/lib/format";
 import { toCsv, downloadCsv, csvDateStamp } from "@/lib/csv";
+import { WALLET_TYPE_LABELS, type WalletOption } from "@/lib/wallet";
 import type { CodPendingRow } from "@/lib/courier";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
+const UNASSIGNED = "none";
 
 export function CodReconcileClient({
   rows,
   today,
+  wallets,
 }: {
   rows: CodPendingRow[];
   today: string;
+  wallets: WalletOption[];
 }) {
   const router = useRouter();
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [receivedDate, setReceivedDate] = useState(today);
+  const [walletId, setWalletId] = useState<string>(UNASSIGNED);
   const [saving, setSaving] = useState(false);
 
   const allSelected = rows.length > 0 && selected.size === rows.length;
@@ -79,6 +91,7 @@ export function CodReconcileClient({
       body: JSON.stringify({
         shipmentIds: [...selected],
         receivedDate,
+        walletId: walletId === UNASSIGNED ? null : Number(walletId),
       }),
     });
     setSaving(false);
@@ -168,7 +181,7 @@ export function CodReconcileClient({
                 Select the orders the courier has remitted, then mark received.
               </CardDescription>
             </div>
-            <div className="flex items-end gap-2">
+            <div className="flex flex-wrap items-end gap-2">
               <div className="grid gap-1">
                 <Label className="text-xs">Received date</Label>
                 <Input
@@ -177,6 +190,22 @@ export function CodReconcileClient({
                   onChange={(e) => setReceivedDate(e.target.value)}
                   className="w-40"
                 />
+              </div>
+              <div className="grid gap-1">
+                <Label className="text-xs">Received in wallet</Label>
+                <Select value={walletId} onValueChange={setWalletId}>
+                  <SelectTrigger className="w-48">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
+                    {wallets.map((w) => (
+                      <SelectItem key={w.id} value={String(w.id)}>
+                        {w.name} · {WALLET_TYPE_LABELS[w.type]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <Button
                 onClick={markReceived}

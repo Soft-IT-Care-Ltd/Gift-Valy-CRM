@@ -37,6 +37,16 @@ export default async function OrderDetailPage({
   });
   if (!order) notFound();
 
+  // Active wallets for the "record payment" dialog — every payment records its
+  // receiving account (SPEC §8). Anyone who can add a payment needs the list.
+  const wallets = permissions.includes("payments.create")
+    ? await prisma.wallet.findMany({
+        where: { isActive: true },
+        orderBy: { name: "asc" },
+        select: { id: true, name: true, type: true },
+      })
+    : [];
+
   // §4.2 edit rule: privileged roles edit anytime (while editable); the
   // creator edits inside the window, then must request approval.
   const editWindowMinutes = await getOrderEditWindowMinutes();
@@ -70,8 +80,10 @@ export default async function OrderDetailPage({
       editBlockedReason={editBlockedReason}
       canRequestEdit={canRequestEdit}
       canAddPayment={permissions.includes("payments.create")}
+      canVerifyPayment={permissions.includes("payments.verify")}
       canApprove={permissions.includes("orders.approve_edit")}
       allowedTransitions={allowedTransitions}
+      wallets={wallets}
     />
   );
 }

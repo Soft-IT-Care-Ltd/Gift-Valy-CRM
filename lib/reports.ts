@@ -1,5 +1,11 @@
 import { prisma } from "@/lib/db";
 import { packageAvailable, packageCost } from "@/lib/catalog";
+import { dhakaDayStart, dhakaMonthStart } from "@/lib/orders";
+import type {
+  PaymentMethodValue,
+  PaymentTypeValue,
+} from "@/lib/order-constants";
+import type { WalletTypeValue } from "@/lib/wallet";
 
 // Report data builders for SPEC §12 Module 10 — R4 (Stock) and R5 (Package
 // availability). Cost/value fields (avg cost, stock value, package cost/margin)
@@ -412,5 +418,347 @@ export async function buildCourierReport(): Promise<CourierReport> {
     codPendingRows,
     attentionRows,
     byCourier: [...perCourier.values()].sort((a, b) => b.total - a.total),
+  };
+}
+
+// ============ R7 — Collection report (SPEC §8 / §12) ============
+// By date range: total collected, by method, by wallet, verified vs unverified,
+// plus total dues outstanding with an order-wise aging list. Not a costing
+// report — visible to payments.verify roles (Accounts, Manager, Admin).
+// REFUND payments are money OUT: they reduce net collection and never count as
+// "collected". Dues outstanding is a live snapshot, independent of the range.
+
+export interface CollectionPaymentRow {
+  id: number;
+  paymentDate: string; // ISO
+  orderId: number;
+  orderNo: string;
+  customerName: string;
+  type: PaymentTypeValue;
+  method: PaymentMethodValue;
+  walletId: number | null;
+  walletName: string | null;
+  amount: number; // positive; REFUND rows are money out (flagged by type)
+  isVerified: boolean;
+  transactionId: string | null;
+}
+
+export interface CollectionByMethodRow {
+  method: PaymentMethodValue;
+  collected: number; // non-refund inflow
+  refunded: number; // refund outflow
+  net: number; // collected − refunded
+  count: number; // payment rows (all types)
+}
+
+export interface CollectionByWalletRow {
+  walletId: number | null; // null = unassigned (e.g. un-remitted courier COD)
+  walletName: string; // "— Unassigned" for null
+  walletType: WalletTypeValue | null;
+  collected: number;
+  refunded: number;
+  net: number;
+  count: number;
+}
+
+export interface DueAgingRow {
+  orderId: number;
+  orderNo: string;
+  customerName: string;
+  salesExecutive: string;
+  status: string;
+  createdAt: string; // ISO
+  totalAmount: number;
+  paid: number; // total − due
+  dueAmount: number;
+  ageDays: number; // since order creation
+  bucket: string; // aging band label
+}
+
+export interface CollectionReport {
+  range: { from: string; to: string }; // ISO bounds actually applied
+  totalCollected: number; // Σ non-refund amounts in range
+  totalRefunded: number; // Σ refund amounts in range
+  netCollected: number; // collected − refunded
+  paymentCount: number; // all payment rows in range
+  verified: { amount: number; count: number }; // over non-refund inflow
+  unverified: { amount: number; count: number };
+  byMethod: CollectionByMethodRow[];
+  byWallet: CollectionByWalletRow[];
+  payments: CollectionPaymentRow[]; // detail rows, newest first
+  dues: {
+    totalOutstanding: number;
+    orderCount: number;
+    buckets: { label: string; count: number; amount: number }[];
+    rows: DueAgingRow[]; // oldest first
+  };
+}
+
+const DUE_BUCKETS: { label: string; max: number }[] = [
+  { label: "0–7 days", max: 7 },
+  { label: "8–15 days", max: 15 },
+  { label: "16–30 days", max: 30 },
+  { label: "31+ days", max: Infinity },
+];
+
+function dueBucket(ageDays: number): string {
+  return (DUE_BUCKETS.find((b) => ageDays <= b.max) ?? DUE_BUCKETS.at(-1)!).label;
+}
+
+export async function buildCollectionReport(opts: {
+  from?: Date;
+  to?: Date;
+}): Promise<CollectionReport> {
+  // Default window = current Dhaka month → end of today (Asia/Dhaka).
+  const from = opts.from ?? dhakaMonthStart();
+  const to =
+    opts.to ?? new Date(dhakaDayStart().getTime() + DAY_MS - 1); // 23:59:59.999 today
+  const now = Date.now();
+
+  const [payments, dueOrders] = await Promise.all([
+    prisma.payment.findMany({
+      where: { paymentDate: { gte: from, lte: to } },
+      orderBy: { paymentDate: "desc" },
+      include: {
+        wallet: { select: { id: true, name: true, type: true } },
+        order: {
+          select: {
+            id: true,
+            orderNo: true,
+            customer: { select: { name: true } },
+          },
+        },
+      },
+    }),
+    // Live dues snapshot — outstanding on any order still owing, excluding
+    // cancelled/refunded (those carry no collectable due).
+    prisma.order.findMany({
+      where: {
+        dueAmount: { gt: 0 },
+        status: { notIn: ["CANCELLED", "REFUNDED"] },
+      },
+      orderBy: { createdAt: "asc" },
+      select: {
+        id: true,
+        orderNo: true,
+        status: true,
+        createdAt: true,
+        totalAmount: true,
+        dueAmount: true,
+        customer: { select: { name: true } },
+        salesExecutive: { select: { name: true } },
+      },
+    }),
+  ]);
+
+  const rows: CollectionPaymentRow[] = [];
+  const byMethod = new Map<PaymentMethodValue, CollectionByMethodRow>();
+  const byWallet = new Map<string, CollectionByWalletRow>();
+  let totalCollected = 0;
+  let totalRefunded = 0;
+  let verifiedAmount = 0;
+  let verifiedCount = 0;
+  let unverifiedAmount = 0;
+  let unverifiedCount = 0;
+
+  for (const p of payments) {
+    const amount = Number(p.amount);
+    const isRefund = p.type === "REFUND";
+    const method = p.method as PaymentMethodValue;
+
+    rows.push({
+      id: p.id,
+      paymentDate: p.paymentDate.toISOString(),
+      orderId: p.order.id,
+      orderNo: p.order.orderNo,
+      customerName: p.order.customer.name,
+      type: p.type as PaymentTypeValue,
+      method,
+      walletId: p.walletId,
+      walletName: p.wallet?.name ?? null,
+      amount,
+      isVerified: p.isVerified,
+      transactionId: p.transactionId,
+    });
+
+    if (isRefund) totalRefunded = round2(totalRefunded + amount);
+    else {
+      totalCollected = round2(totalCollected + amount);
+      // Verified split is about collected inflow (what Accounts signs off).
+      if (p.isVerified) {
+        verifiedAmount = round2(verifiedAmount + amount);
+        verifiedCount += 1;
+      } else {
+        unverifiedAmount = round2(unverifiedAmount + amount);
+        unverifiedCount += 1;
+      }
+    }
+
+    const m = byMethod.get(method) ?? {
+      method,
+      collected: 0,
+      refunded: 0,
+      net: 0,
+      count: 0,
+    };
+    if (isRefund) m.refunded = round2(m.refunded + amount);
+    else m.collected = round2(m.collected + amount);
+    m.net = round2(m.collected - m.refunded);
+    m.count += 1;
+    byMethod.set(method, m);
+
+    const wkey = p.walletId === null ? "none" : String(p.walletId);
+    const w = byWallet.get(wkey) ?? {
+      walletId: p.walletId,
+      walletName: p.wallet?.name ?? "— Unassigned",
+      walletType: (p.wallet?.type as WalletTypeValue | undefined) ?? null,
+      collected: 0,
+      refunded: 0,
+      net: 0,
+      count: 0,
+    };
+    if (isRefund) w.refunded = round2(w.refunded + amount);
+    else w.collected = round2(w.collected + amount);
+    w.net = round2(w.collected - w.refunded);
+    w.count += 1;
+    byWallet.set(wkey, w);
+  }
+
+  const dueRows: DueAgingRow[] = dueOrders.map((o) => {
+    const ageDays = Math.max(
+      0,
+      Math.floor((now - o.createdAt.getTime()) / DAY_MS)
+    );
+    const total = Number(o.totalAmount);
+    const due = Number(o.dueAmount);
+    return {
+      orderId: o.id,
+      orderNo: o.orderNo,
+      customerName: o.customer.name,
+      salesExecutive: o.salesExecutive.name,
+      status: o.status,
+      createdAt: o.createdAt.toISOString(),
+      totalAmount: total,
+      paid: round2(total - due),
+      dueAmount: due,
+      ageDays,
+      bucket: dueBucket(ageDays),
+    };
+  });
+  dueRows.sort((a, b) => b.ageDays - a.ageDays); // oldest first
+
+  const buckets = DUE_BUCKETS.map((b) => {
+    const inBucket = dueRows.filter((r) => r.bucket === b.label);
+    return {
+      label: b.label,
+      count: inBucket.length,
+      amount: round2(inBucket.reduce((s, r) => s + r.dueAmount, 0)),
+    };
+  });
+
+  return {
+    range: { from: from.toISOString(), to: to.toISOString() },
+    totalCollected,
+    totalRefunded,
+    netCollected: round2(totalCollected - totalRefunded),
+    paymentCount: rows.length,
+    verified: { amount: verifiedAmount, count: verifiedCount },
+    unverified: { amount: unverifiedAmount, count: unverifiedCount },
+    byMethod: [...byMethod.values()].sort((a, b) => b.net - a.net),
+    byWallet: [...byWallet.values()].sort((a, b) => b.net - a.net),
+    payments: rows,
+    dues: {
+      totalOutstanding: round2(dueRows.reduce((s, r) => s + r.dueAmount, 0)),
+      orderCount: dueRows.length,
+      buckets,
+      rows: dueRows,
+    },
+  };
+}
+
+// ============ Per-wallet running balance (SPEC §9.3) ============
+// balance = collections in − (refunds + expenses) out, over all time. Every
+// active wallet is listed even at zero; inactive wallets appear only if they
+// still carry a non-zero balance (money to move out before retiring them).
+
+export interface WalletBalanceRow {
+  walletId: number;
+  name: string;
+  type: WalletTypeValue;
+  isActive: boolean;
+  collectionsIn: number; // Σ non-refund payments received
+  refundsOut: number; // Σ refund payments paid back
+  expensesOut: number; // Σ expenses paid from this wallet
+  balance: number; // collectionsIn − refundsOut − expensesOut
+}
+
+export interface WalletBalances {
+  rows: WalletBalanceRow[];
+  totalBalance: number;
+  // Collected COD (or other) not yet attributed to a wallet — money that exists
+  // but has no running balance until it is assigned.
+  unassignedCollected: number;
+}
+
+export async function buildWalletBalances(): Promise<WalletBalances> {
+  const [wallets, payAgg, refundAgg, expenseAgg, unassignedAgg] =
+    await Promise.all([
+      prisma.wallet.findMany({ orderBy: [{ isActive: "desc" }, { name: "asc" }] }),
+      // Inflow: everything except refunds, grouped by wallet.
+      prisma.payment.groupBy({
+        by: ["walletId"],
+        where: { walletId: { not: null }, type: { not: "REFUND" } },
+        _sum: { amount: true },
+      }),
+      prisma.payment.groupBy({
+        by: ["walletId"],
+        where: { walletId: { not: null }, type: "REFUND" },
+        _sum: { amount: true },
+      }),
+      prisma.expense.groupBy({
+        by: ["walletId"],
+        where: { walletId: { not: null } },
+        _sum: { amount: true },
+      }),
+      prisma.payment.aggregate({
+        where: { walletId: null, type: { not: "REFUND" } },
+        _sum: { amount: true },
+      }),
+    ]);
+
+  const inflow = new Map(payAgg.map((r) => [r.walletId!, Number(r._sum.amount ?? 0)]));
+  const refunds = new Map(
+    refundAgg.map((r) => [r.walletId!, Number(r._sum.amount ?? 0)])
+  );
+  const expenses = new Map(
+    expenseAgg.map((r) => [r.walletId!, Number(r._sum.amount ?? 0)])
+  );
+
+  const rows: WalletBalanceRow[] = [];
+  for (const w of wallets) {
+    const collectionsIn = round2(inflow.get(w.id) ?? 0);
+    const refundsOut = round2(refunds.get(w.id) ?? 0);
+    const expensesOut = round2(expenses.get(w.id) ?? 0);
+    const balance = round2(collectionsIn - refundsOut - expensesOut);
+    // Skip inactive wallets that are fully drained — keeps the list to what matters.
+    if (!w.isActive && collectionsIn === 0 && refundsOut === 0 && expensesOut === 0) {
+      continue;
+    }
+    rows.push({
+      walletId: w.id,
+      name: w.name,
+      type: w.type as WalletTypeValue,
+      isActive: w.isActive,
+      collectionsIn,
+      refundsOut,
+      expensesOut,
+      balance,
+    });
+  }
+
+  return {
+    rows,
+    totalBalance: round2(rows.reduce((s, r) => s + r.balance, 0)),
+    unassignedCollected: round2(Number(unassignedAgg._sum.amount ?? 0)),
   };
 }

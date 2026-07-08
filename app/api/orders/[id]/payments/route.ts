@@ -13,6 +13,8 @@ const bodySchema = z.object({
   type: z.enum(PAYMENT_TYPES),
   method: z.enum(PAYMENT_METHODS),
   amount: z.number().positive("Amount must be greater than 0"),
+  // SPEC §8 — every payment records the wallet/account that received it.
+  walletId: z.number().int().positive("Select the receiving wallet"),
   transactionId: z
     .string()
     .nullable()
@@ -76,6 +78,12 @@ export async function POST(req: Request, { params }: Params) {
     if (mfsTxnRequired(data.method) && !data.transactionId) {
       throw new AuthzError(400, `Transaction ID is required for ${data.method}`);
     }
+    const wallet = await prisma.wallet.findUnique({
+      where: { id: data.walletId },
+      select: { id: true, isActive: true },
+    });
+    if (!wallet) throw new AuthzError(400, "Receiving wallet not found");
+    if (!wallet.isActive) throw new AuthzError(400, "Receiving wallet is inactive");
     if (data.transactionId) {
       const dup = await prisma.payment.findUnique({
         where: { transactionId: data.transactionId },
@@ -96,6 +104,7 @@ export async function POST(req: Request, { params }: Params) {
           type: data.type,
           method: data.method,
           amount: data.amount,
+          walletId: data.walletId,
           transactionId: data.transactionId,
           senderNumber: data.senderNumber,
           screenshotUrl: data.screenshotUrl,
@@ -120,6 +129,7 @@ export async function POST(req: Request, { params }: Params) {
         type: data.type,
         method: data.method,
         amount: data.amount,
+        walletId: data.walletId,
         transactionId: data.transactionId,
         newDue: due,
       },

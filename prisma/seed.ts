@@ -173,6 +173,37 @@ async function main() {
     });
   }
 
+  // 4d. Wallets (SPEC §8) — company receiving accounts. Payments are attributed
+  // to one by method; courier COD is settled into the bank account.
+  const demoWallets = [
+    { name: "bKash — Merchant", type: "BKASH" as const, accountNo: "01700-000001" },
+    { name: "Nagad — Merchant", type: "NAGAD" as const, accountNo: "01800-000002" },
+    { name: "Rocket — Agent", type: "ROCKET" as const, accountNo: "01900-000003" },
+    { name: "City Bank — Current", type: "BANK" as const, accountNo: "1502-XXXX-9931" },
+    { name: "Office cash box", type: "CASH" as const, accountNo: null },
+  ];
+  const walletIdByType = new Map<string, number>();
+  for (const w of demoWallets) {
+    const saved = await prisma.wallet.upsert({
+      where: { name: w.name },
+      update: { type: w.type, accountNo: w.accountNo, isActive: true },
+      create: { name: w.name, type: w.type, accountNo: w.accountNo },
+    });
+    walletIdByType.set(w.type, saved.id);
+  }
+  // Receiving wallet per payment method (COURIER_COD lands in the bank; OTHER
+  // has no dedicated account and stays unassigned).
+  const bankWalletId = walletIdByType.get("BANK")!;
+  const walletIdByMethod = new Map<string, number | null>([
+    ["BKASH", walletIdByType.get("BKASH")!],
+    ["NAGAD", walletIdByType.get("NAGAD")!],
+    ["ROCKET", walletIdByType.get("ROCKET")!],
+    ["BANK", bankWalletId],
+    ["CASH", walletIdByType.get("CASH")!],
+    ["COURIER_COD", bankWalletId],
+    ["OTHER", null],
+  ]);
+
   // 5. Categories (SPEC §6.1 — editable list)
   const categoryNames = [
     "Teddy", "Chocolate", "Saree", "Cosmetics",
@@ -755,6 +786,7 @@ async function main() {
             type: p.type,
             method: p.method,
             amount: p.amount,
+            walletId: walletIdByMethod.get(p.method) ?? null, // receiving account (§8)
             transactionId: p.txn ?? null,
             senderNumber: p.sender ?? null,
             isVerified: p.verified ?? false,
@@ -835,6 +867,7 @@ async function main() {
               expenseDate: daysAgo(codPaymentDay!, 12),
               categoryId: courierCategory.id,
               amount: codFee,
+              walletId: bankWalletId, // fee netted from the COD settled to the bank (§9.3)
               notes: `COD fee — ${courierName} — ${order.orderNo}`,
               refTable: "shipments",
               refId: shipment.id,
@@ -863,6 +896,7 @@ async function main() {
   console.log(`  Demo data: ${demoCustomers.length} customers, ${demoOrders.length} demo orders (${orderCount} total), ${paymentCount} payments`);
   console.log(`  Stock: ${movementCount} movements (opening balances + confirmed-order reservations)`);
   console.log(`  Courier: ${demoCouriers.length} couriers, ${shipmentCount} shipments (incl. delivered, in-transit, COD-pending, returned)`);
+  console.log(`  Money: ${demoWallets.length} wallets (bKash/Nagad/Rocket/Bank/Cash), payments attributed by method`);
   console.log("  Admin:    mh.neshad39@gmail.com / Admin@GV2026");
   console.log("  Manager:  manager@giftvaly.com  / Manager@GV2026");
   console.log("  TL:       sakib@giftvaly.com    / Team@GV2026");

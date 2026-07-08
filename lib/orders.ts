@@ -211,6 +211,7 @@ export const createOrderSchema = z.object({
   advance: z.object({
     amount: z.number().min(0),
     method: z.enum(PAYMENT_METHODS).optional(),
+    walletId: z.number().int().positive().nullable().optional(), // required only when amount > 0 (checked in the route)
     transactionId: z
       .string()
       .nullable()
@@ -512,7 +513,7 @@ export type OrderWithRelations = Prisma.OrderGetPayload<{
         package: { select: { name: true; code: true } };
       };
     };
-    payments: true;
+    payments: { include: { wallet: { select: { name: true } } } };
     statusHistory: { include: { user: { select: { name: true } } } };
     editRequests: { include: { requester: { select: { name: true } } } };
     invoices: true;
@@ -535,7 +536,7 @@ export const orderDetailInclude = {
       package: { select: { name: true, code: true } },
     },
   },
-  payments: true,
+  payments: { include: { wallet: { select: { name: true } } } },
   statusHistory: { include: { user: { select: { name: true } } } },
   editRequests: { include: { requester: { select: { name: true } } } },
   invoices: true,
@@ -610,6 +611,8 @@ export function serializeOrderDetail(o: OrderWithRelations, showCosts: boolean) 
         transactionId: p.transactionId,
         senderNumber: p.senderNumber,
         screenshotUrl: p.screenshotUrl,
+        walletId: p.walletId,
+        walletName: p.wallet?.name ?? null,
         isVerified: p.isVerified,
       })),
     statusHistory: o.statusHistory

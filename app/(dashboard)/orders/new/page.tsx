@@ -12,7 +12,7 @@ export default async function NewOrderPage() {
   const session = await requirePagePermission("orders.create");
   const permissions = await getEffectivePermissions(session.user.id);
 
-  const [user, products, packages] = await Promise.all([
+  const [user, products, packages, wallets] = await Promise.all([
     prisma.user.findUniqueOrThrow({
       where: { id: session.user.id },
       select: { name: true, team: { select: { name: true } } },
@@ -25,6 +25,11 @@ export default async function NewOrderPage() {
       where: { isActive: true },
       orderBy: { name: "asc" },
       include: { items: { include: { product: true } } },
+    }),
+    prisma.wallet.findMany({
+      where: { isActive: true },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true, type: true },
     }),
   ]);
 
@@ -50,6 +55,7 @@ export default async function NewOrderPage() {
       canOverrideFloor={permissions.includes("orders.approve_edit")}
       seName={user.name}
       teamName={user.team?.name ?? null}
+      wallets={wallets}
     />
   );
 }

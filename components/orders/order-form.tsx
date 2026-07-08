@@ -35,6 +35,7 @@ import {
   type OrderStatusValue,
   type PaymentMethodValue,
 } from "@/lib/order-constants";
+import { WALLET_TYPE_LABELS, type WalletOption } from "@/lib/wallet";
 
 // ---- option shapes (page passes catalog without any cost fields) ----
 
@@ -128,6 +129,7 @@ export function OrderForm({
   seName,
   teamName,
   initial,
+  wallets = [],
 }: {
   mode: "create" | "edit" | "edit-request";
   orderId?: number;
@@ -137,6 +139,7 @@ export function OrderForm({
   seName: string;
   teamName: string | null;
   initial?: OrderFormInitial;
+  wallets?: WalletOption[]; // active receiving wallets (create mode, §8)
 }) {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
@@ -188,6 +191,7 @@ export function OrderForm({
   // Section D — advance (create only)
   const [advanceAmount, setAdvanceAmount] = useState("0");
   const [method, setMethod] = useState<PaymentMethodValue | "">("");
+  const [advanceWalletId, setAdvanceWalletId] = useState("");
   const [transactionId, setTransactionId] = useState("");
   const [senderNumber, setSenderNumber] = useState("");
   const [screenshotUrl, setScreenshotUrl] = useState("");
@@ -293,6 +297,7 @@ export function OrderForm({
     (mode === "create" &&
       (!customerName.trim() || !customerPhone.trim() || !country)) ||
     (mode === "create" && advance > 0 && !method) ||
+    (mode === "create" && advance > 0 && !advanceWalletId) ||
     mfsNeedsTxn ||
     (mode === "edit-request" && editReason.trim().length < 3);
 
@@ -337,6 +342,7 @@ export function OrderForm({
           advance: {
             amount: advance,
             method: method || undefined,
+            walletId: advanceWalletId ? Number(advanceWalletId) : null,
             transactionId: transactionId || null,
             senderNumber: senderNumber || null,
             screenshotUrl: screenshotUrl || null,
@@ -831,6 +837,33 @@ export function OrderForm({
                 )}
               </div>
             </div>
+            {advance > 0 && (
+              <div className="grid gap-2">
+                <Label>Received in wallet</Label>
+                {wallets.length === 0 ? (
+                  <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
+                    No active wallets — ask an admin to add a company account
+                    under Money → Wallets before taking an advance.
+                  </p>
+                ) : (
+                  <Select
+                    value={advanceWalletId}
+                    onValueChange={setAdvanceWalletId}
+                  >
+                    <SelectTrigger className="sm:max-w-sm">
+                      <SelectValue placeholder="Which account received the advance?" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {wallets.map((w) => (
+                        <SelectItem key={w.id} value={String(w.id)}>
+                          {w.name} · {WALLET_TYPE_LABELS[w.type]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            )}
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="grid gap-2">
                 <Label>Sender wallet number (optional)</Label>

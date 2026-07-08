@@ -77,6 +77,18 @@ export default async function DashboardLayout({
   if (permissions.includes("courier.approve_return")) {
     navItems.push({ href: "/courier/returns", label: "Returns", section: "Courier" });
   }
+  // Money (SPEC §8 / §9.3). Wallet accounts are maintained by Admin/Accounts;
+  // the verification queue is where Accounts signs payments off.
+  if (permissions.includes("wallets.manage")) {
+    navItems.push({ href: "/money/wallets", label: "Wallets", section: "Money" });
+  }
+  if (permissions.includes("payments.verify")) {
+    navItems.push({
+      href: "/money/verification",
+      label: "Payment Verification",
+      section: "Money",
+    });
+  }
   // Reports (SPEC §12). R4/R5 are inventory reports gated on stock.view — the
   // same read scope as the Stock screen (Admin, Manager, Accounts, Packing).
   if (permissions.includes("stock.view")) {
@@ -92,6 +104,14 @@ export default async function DashboardLayout({
   // R6 — Courier report (SPEC §7 / §12), for courier.manage roles.
   if (permissions.includes("courier.manage")) {
     navItems.push({ href: "/reports/courier", label: "Courier Report", section: "Reports" });
+  }
+  // R7 — Collection report (SPEC §8 / §12), for payments.verify roles.
+  if (permissions.includes("payments.verify")) {
+    navItems.push({
+      href: "/reports/collection",
+      label: "Collection Report",
+      section: "Reports",
+    });
   }
   if (permissions.includes("users.manage")) {
     navItems.push(

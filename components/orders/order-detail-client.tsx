@@ -59,6 +59,7 @@ import {
   SHIPMENT_STATUS_LABELS,
   type ShipmentStatusValue,
 } from "@/lib/courier-constants";
+import { WALLET_TYPE_LABELS, type WalletOption } from "@/lib/wallet";
 
 export interface OrderDetail {
   id: number;
@@ -109,6 +110,8 @@ export interface OrderDetail {
     transactionId: string | null;
     senderNumber: string | null;
     screenshotUrl: string | null;
+    walletId: number | null;
+    walletName: string | null;
     isVerified: boolean;
   }[];
   statusHistory: {
@@ -165,16 +168,20 @@ export function OrderDetailClient({
   editBlockedReason,
   canRequestEdit,
   canAddPayment,
+  canVerifyPayment,
   canApprove,
   allowedTransitions,
+  wallets,
 }: {
   order: OrderDetail;
   canEdit: boolean; // direct edit (privileged or within window)
   editBlockedReason: string | null; // why direct edit is unavailable
   canRequestEdit: boolean; // SE after window
   canAddPayment: boolean;
+  canVerifyPayment: boolean; // Accounts sign-off (SPEC §8)
   canApprove: boolean;
   allowedTransitions: OrderStatusValue[]; // already permission-filtered
+  wallets: WalletOption[]; // active receiving wallets for the payment dialog
 }) {
   const router = useRouter();
 
@@ -182,11 +189,13 @@ export function OrderDetailClient({
   const [payOpen, setPayOpen] = useState(false);
   const [payType, setPayType] = useState<PaymentTypeValue>("PARTIAL");
   const [payMethod, setPayMethod] = useState<PaymentMethodValue | "">("");
+  const [payWallet, setPayWallet] = useState("");
   const [payAmount, setPayAmount] = useState("");
   const [payTxn, setPayTxn] = useState("");
   const [paySender, setPaySender] = useState("");
   const [payScreenshot, setPayScreenshot] = useState("");
   const [saving, setSaving] = useState(false);
+  const [verifying, setVerifying] = useState<number | null>(null);
 
   const payMfsMissingTxn =
     !!payMethod && MFS_METHODS.includes(payMethod) && !payTxn.trim();
@@ -200,6 +209,7 @@ export function OrderDetailClient({
         type: payType,
         method: payMethod,
         amount: Number(payAmount),
+        walletId: Number(payWallet),
         transactionId: payTxn || null,
         senderNumber: paySender || null,
         screenshotUrl: payScreenshot || null,
@@ -218,6 +228,24 @@ export function OrderDetailClient({
     setPayTxn("");
     setPaySender("");
     setPayScreenshot("");
+    setPayWallet("");
+    router.refresh();
+  }
+
+  async function setPaymentVerified(id: number, isVerified: boolean) {
+    setVerifying(id);
+    const res = await fetch(`/api/payments/${id}/verify`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isVerified }),
+    });
+    setVerifying(null);
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      toast.error(data?.error ?? "Failed to update payment");
+      return;
+    }
+    toast.success(isVerified ? "Payment verified" : "Payment flagged unverified");
     router.refresh();
   }
 
@@ -728,54 +756,85 @@ export function OrderDetailClient({
           )}
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Date</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Method</TableHead>
-                <TableHead>Txn ID</TableHead>
-                <TableHead className="text-right">Amount</TableHead>
-                <TableHead>Verified</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {order.payments.map((p) => (
-                <TableRow key={p.id}>
-                  <TableCell>{formatDateTime(p.paymentDate)}</TableCell>
-                  <TableCell>{PAYMENT_TYPE_LABELS[p.type]}</TableCell>
-                  <TableCell>{PAYMENT_METHOD_LABELS[p.method]}</TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {p.transactionId ?? "—"}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {p.type === "REFUND" ? (
-                      <span className="text-red-600">−{money(p.amount)}</span>
-                    ) : (
-                      money(p.amount)
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {p.isVerified ? (
-                      <Badge variant="secondary">Verified</Badge>
-                    ) : (
-                      <Badge variant="outline">Unverified</Badge>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-              {order.payments.length === 0 && (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
                 <TableRow>
-                  <TableCell
-                    colSpan={6}
-                    className="text-center text-muted-foreground"
-                  >
-                    No payments recorded.
-                  </TableCell>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Method</TableHead>
+                  <TableHead>Wallet</TableHead>
+                  <TableHead>Txn ID</TableHead>
+                  <TableHead className="text-right">Amount</TableHead>
+                  <TableHead>Verified</TableHead>
+                  {canVerifyPayment && (
+                    <TableHead className="text-right">Action</TableHead>
+                  )}
                 </TableRow>
-              )}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {order.payments.map((p) => (
+                  <TableRow key={p.id}>
+                    <TableCell>{formatDateTime(p.paymentDate)}</TableCell>
+                    <TableCell>{PAYMENT_TYPE_LABELS[p.type]}</TableCell>
+                    <TableCell>{PAYMENT_METHOD_LABELS[p.method]}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {p.walletName ?? "—"}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {p.transactionId ?? "—"}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {p.type === "REFUND" ? (
+                        <span className="text-red-600">−{money(p.amount)}</span>
+                      ) : (
+                        money(p.amount)
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {p.isVerified ? (
+                        <Badge variant="secondary">Verified</Badge>
+                      ) : (
+                        <Badge variant="outline">Unverified</Badge>
+                      )}
+                    </TableCell>
+                    {canVerifyPayment && (
+                      <TableCell className="text-right">
+                        {p.isVerified ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={verifying === p.id}
+                            onClick={() => setPaymentVerified(p.id, false)}
+                          >
+                            Unflag
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            disabled={verifying === p.id}
+                            onClick={() => setPaymentVerified(p.id, true)}
+                          >
+                            Verify
+                          </Button>
+                        )}
+                      </TableCell>
+                    )}
+                  </TableRow>
+                ))}
+                {order.payments.length === 0 && (
+                  <TableRow>
+                    <TableCell
+                      colSpan={canVerifyPayment ? 8 : 7}
+                      className="text-center text-muted-foreground"
+                    >
+                      No payments recorded.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
 
@@ -923,6 +982,28 @@ export function OrderDetailClient({
               </div>
             </div>
             <div className="grid gap-2">
+              <Label>Received in wallet</Label>
+              {wallets.length === 0 ? (
+                <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
+                  No active wallets. Ask an admin to add a company account under
+                  Money → Wallets before recording payments.
+                </p>
+              ) : (
+                <Select value={payWallet} onValueChange={setPayWallet}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Pick receiving account" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {wallets.map((w) => (
+                      <SelectItem key={w.id} value={String(w.id)}>
+                        {w.name} · {WALLET_TYPE_LABELS[w.type]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+            <div className="grid gap-2">
               <Label>Sender wallet number (optional)</Label>
               <Input
                 value={paySender}
@@ -940,6 +1021,7 @@ export function OrderDetailClient({
               disabled={
                 saving ||
                 !payMethod ||
+                !payWallet ||
                 !(Number(payAmount) > 0) ||
                 payMfsMissingTxn
               }

@@ -157,7 +157,8 @@ export async function applyCodReceived(
   tx: Prisma.TransactionClient,
   shipmentIds: number[],
   receivedDate: Date,
-  userId: number
+  userId: number,
+  walletId: number | null = null // wallet the courier remitted the COD into (SPEC §8)
 ): Promise<CodReconcileResult> {
   const result: CodReconcileResult = {
     reconciled: 0,
@@ -200,6 +201,7 @@ export async function applyCodReceived(
           type: "COD_COURIER",
           method: "COURIER_COD",
           amount: payAmount,
+          walletId,
           isVerified: true,
           verifiedBy: userId,
           createdBy: userId,
