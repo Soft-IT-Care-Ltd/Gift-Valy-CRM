@@ -200,8 +200,8 @@ export function CollectionReportClient({
         />
       </div>
 
-      {/* Verified vs unverified (§8) */}
-      <div className="grid gap-4 sm:grid-cols-2">
+      {/* Verified vs unverified vs rejected (§8) */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <Card>
           <CardHeader className="pb-2">
             <CardDescription>Verified collections</CardDescription>
@@ -224,6 +224,17 @@ export function CollectionReportClient({
               <Link href="/money/verification" className="underline">
                 open queue
               </Link>
+            </p>
+          </CardHeader>
+        </Card>
+        <Card className={report.rejected.count > 0 ? "border-red-300" : undefined}>
+          <CardHeader className="pb-2">
+            <CardDescription>Rejected (not received)</CardDescription>
+            <CardTitle className="text-2xl text-red-600">
+              {money(report.rejected.amount)}
+            </CardTitle>
+            <p className="text-xs text-muted-foreground">
+              {report.rejected.count} payments excluded from collections
             </p>
           </CardHeader>
         </Card>

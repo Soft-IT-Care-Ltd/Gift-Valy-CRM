@@ -359,13 +359,15 @@ export async function nextOrderNo(db: Tx, prefix: string): Promise<string> {
 
 // due = total − Σ(payments ≠ REFUND) + Σ(REFUND). Runs inside the same
 // transaction as the payment write; also called after edits change the total.
+// Rejected payments (money that never arrived, SPEC §8) are excluded, so
+// rejecting a bogus payment restores the order's due.
 export async function recomputeDue(tx: Tx, orderId: number): Promise<number> {
   const order = await tx.order.findUniqueOrThrow({
     where: { id: orderId },
     select: { totalAmount: true },
   });
   const payments = await tx.payment.findMany({
-    where: { orderId },
+    where: { orderId, isRejected: false },
     select: { type: true, amount: true },
   });
   const paid = payments.reduce(
@@ -614,6 +616,8 @@ export function serializeOrderDetail(o: OrderWithRelations, showCosts: boolean) 
         walletId: p.walletId,
         walletName: p.wallet?.name ?? null,
         isVerified: p.isVerified,
+        isRejected: p.isRejected,
+        rejectionReason: p.rejectionReason,
       })),
     statusHistory: o.statusHistory
       .slice()

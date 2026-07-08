@@ -480,9 +480,10 @@ export interface CollectionReport {
   totalCollected: number; // Σ non-refund amounts in range
   totalRefunded: number; // Σ refund amounts in range
   netCollected: number; // collected − refunded
-  paymentCount: number; // all payment rows in range
+  paymentCount: number; // all payment rows in range (excludes rejected)
   verified: { amount: number; count: number }; // over non-refund inflow
   unverified: { amount: number; count: number };
+  rejected: { amount: number; count: number }; // not received — excluded from totals
   byMethod: CollectionByMethodRow[];
   byWallet: CollectionByWalletRow[];
   payments: CollectionPaymentRow[]; // detail rows, newest first
@@ -515,9 +516,10 @@ export async function buildCollectionReport(opts: {
     opts.to ?? new Date(dhakaDayStart().getTime() + DAY_MS - 1); // 23:59:59.999 today
   const now = Date.now();
 
-  const [payments, dueOrders] = await Promise.all([
+  const [payments, dueOrders, rejectedAgg] = await Promise.all([
+    // Rejected payments (money never received) are excluded from collections.
     prisma.payment.findMany({
-      where: { paymentDate: { gte: from, lte: to } },
+      where: { paymentDate: { gte: from, lte: to }, isRejected: false },
       orderBy: { paymentDate: "desc" },
       include: {
         wallet: { select: { id: true, name: true, type: true } },
@@ -548,6 +550,12 @@ export async function buildCollectionReport(opts: {
         customer: { select: { name: true } },
         salesExecutive: { select: { name: true } },
       },
+    }),
+    // Rejected in-range, for transparency (shown as a KPI, not counted).
+    prisma.payment.aggregate({
+      where: { paymentDate: { gte: from, lte: to }, isRejected: true },
+      _sum: { amount: true },
+      _count: true,
     }),
   ]);
 
@@ -664,6 +672,10 @@ export async function buildCollectionReport(opts: {
     paymentCount: rows.length,
     verified: { amount: verifiedAmount, count: verifiedCount },
     unverified: { amount: unverifiedAmount, count: unverifiedCount },
+    rejected: {
+      amount: round2(Number(rejectedAgg._sum.amount ?? 0)),
+      count: rejectedAgg._count,
+    },
     byMethod: [...byMethod.values()].sort((a, b) => b.net - a.net),
     byWallet: [...byWallet.values()].sort((a, b) => b.net - a.net),
     payments: rows,

@@ -500,6 +500,13 @@ model Payment {
   walletId      Int?          @map("wallet_id") // receiving account (SPEC §8); nullable so historic/unattributed COD rows stay valid
   isVerified    Boolean       @default(false) @map("is_verified") // Accounts verifies against the wallet statement (SPEC §8)
   verifiedBy    Int?          @map("verified_by")
+  // Rejection (SPEC §8) — Accounts checked and the money never arrived (fake
+  // txn / wrong amount). A rejected payment is excluded from due & collections,
+  // so recording it never falsely settles an order. Mutually exclusive with
+  // is_verified (enforced in the verify route).
+  isRejected      Boolean     @default(false) @map("is_rejected")
+  rejectionReason String?     @map("rejection_reason")
+  rejectedBy      Int?        @map("rejected_by")
   createdAt     DateTime      @default(now()) @map("created_at")
   updatedAt     DateTime      @updatedAt @map("updated_at")
   createdBy     Int?          @map("created_by")

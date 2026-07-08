@@ -113,6 +113,8 @@ export interface OrderDetail {
     walletId: number | null;
     walletName: string | null;
     isVerified: boolean;
+    isRejected: boolean;
+    rejectionReason: string | null;
   }[];
   statusHistory: {
     id: number;
@@ -197,6 +199,10 @@ export function OrderDetailClient({
   const [saving, setSaving] = useState(false);
   const [verifying, setVerifying] = useState<number | null>(null);
 
+  // ---- payment reject dialog ----
+  const [rejectId, setRejectId] = useState<number | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+
   const payMfsMissingTxn =
     !!payMethod && MFS_METHODS.includes(payMethod) && !payTxn.trim();
 
@@ -232,21 +238,42 @@ export function OrderDetailClient({
     router.refresh();
   }
 
-  async function setPaymentVerified(id: number, isVerified: boolean) {
+  async function resolvePayment(
+    id: number,
+    action: "verify" | "reject" | "reopen",
+    reason?: string
+  ) {
     setVerifying(id);
     const res = await fetch(`/api/payments/${id}/verify`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ isVerified }),
+      body: JSON.stringify({ action, reason: reason ?? null }),
     });
     setVerifying(null);
     if (!res.ok) {
       const data = await res.json().catch(() => null);
       toast.error(data?.error ?? "Failed to update payment");
-      return;
+      return false;
     }
-    toast.success(isVerified ? "Payment verified" : "Payment flagged unverified");
+    const data = await res.json();
+    toast.success(
+      action === "verify"
+        ? "Payment verified"
+        : action === "reject"
+          ? `Payment rejected — due is now ${money(data.due)}`
+          : "Payment reopened"
+    );
     router.refresh();
+    return true;
+  }
+
+  async function submitRejectPayment() {
+    if (rejectId === null || rejectReason.trim().length < 3) return;
+    const ok = await resolvePayment(rejectId, "reject", rejectReason.trim());
+    if (ok) {
+      setRejectId(null);
+      setRejectReason("");
+    }
   }
 
   // ---- status change dialog ----
@@ -792,7 +819,14 @@ export function OrderDetailClient({
                       )}
                     </TableCell>
                     <TableCell>
-                      {p.isVerified ? (
+                      {p.isRejected ? (
+                        <Badge
+                          variant="destructive"
+                          title={p.rejectionReason ?? undefined}
+                        >
+                          Rejected
+                        </Badge>
+                      ) : p.isVerified ? (
                         <Badge variant="secondary">Verified</Badge>
                       ) : (
                         <Badge variant="outline">Unverified</Badge>
@@ -800,23 +834,36 @@ export function OrderDetailClient({
                     </TableCell>
                     {canVerifyPayment && (
                       <TableCell className="text-right">
-                        {p.isVerified ? (
+                        {p.isVerified || p.isRejected ? (
                           <Button
                             variant="outline"
                             size="sm"
                             disabled={verifying === p.id}
-                            onClick={() => setPaymentVerified(p.id, false)}
+                            onClick={() => resolvePayment(p.id, "reopen")}
                           >
-                            Unflag
+                            Reopen
                           </Button>
                         ) : (
-                          <Button
-                            size="sm"
-                            disabled={verifying === p.id}
-                            onClick={() => setPaymentVerified(p.id, true)}
-                          >
-                            Verify
-                          </Button>
+                          <div className="flex justify-end gap-1">
+                            <Button
+                              size="sm"
+                              disabled={verifying === p.id}
+                              onClick={() => resolvePayment(p.id, "verify")}
+                            >
+                              Verify
+                            </Button>
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              disabled={verifying === p.id}
+                              onClick={() => {
+                                setRejectId(p.id);
+                                setRejectReason("");
+                              }}
+                            >
+                              Reject
+                            </Button>
+                          </div>
                         )}
                       </TableCell>
                     )}
@@ -1027,6 +1074,43 @@ export function OrderDetailClient({
               }
             >
               {saving ? "Saving…" : "Record payment"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reject payment dialog — reason required (SPEC §8) */}
+      <Dialog
+        open={rejectId !== null}
+        onOpenChange={(o) => !o && setRejectId(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Reject payment</DialogTitle>
+            <DialogDescription>
+              Mark this payment as not received. It is removed from the order&apos;s
+              paid amount (due goes back up) and from collections. Add a reason.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2">
+            <Label>Reason</Label>
+            <Textarea
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              placeholder="e.g. No matching entry in the bKash statement / fake txn ID"
+              rows={3}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRejectId(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={submitRejectPayment}
+              disabled={rejectReason.trim().length < 3 || verifying === rejectId}
+            >
+              Reject payment
             </Button>
           </DialogFooter>
         </DialogContent>

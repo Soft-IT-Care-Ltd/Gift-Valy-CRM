@@ -18,12 +18,16 @@ function verifiedCutoff(): Date {
 export default async function VerificationPage() {
   await requirePagePermission("payments.verify");
 
-  // The queue = everything not yet verified (oldest first), plus payments
-  // verified in the last 30 days so a mistaken sign-off can be flagged back.
+  // The queue = every pending payment (any age), plus payments verified or
+  // rejected in the last 30 days so a mistaken resolution can be reopened.
   const cutoff = verifiedCutoff();
   const payments = await prisma.payment.findMany({
     where: {
-      OR: [{ isVerified: false }, { isVerified: true, updatedAt: { gte: cutoff } }],
+      OR: [
+        { isVerified: false, isRejected: false }, // pending
+        { isVerified: true, updatedAt: { gte: cutoff } }, // recently verified
+        { isRejected: true, updatedAt: { gte: cutoff } }, // recently rejected
+      ],
     },
     orderBy: [{ isVerified: "asc" }, { paymentDate: "asc" }],
     include: {
@@ -52,6 +56,8 @@ export default async function VerificationPage() {
     senderNumber: p.senderNumber,
     screenshotUrl: p.screenshotUrl,
     isVerified: p.isVerified,
+    isRejected: p.isRejected,
+    rejectionReason: p.rejectionReason,
   }));
 
   return <VerificationQueueClient rows={rows} />;
