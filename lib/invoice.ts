@@ -348,11 +348,15 @@ export async function renderInvoicePdf(
     }
     y += 10;
 
+    // Rejected payments (money never received, SPEC §8) never appear as paid.
     const advance = order.payments
-      .filter((p) => p.type === "ADVANCE")
+      .filter((p) => p.type === "ADVANCE" && !p.isRejected)
       .sort((a, b) => a.paymentDate.getTime() - b.paymentDate.getTime())[0];
     const paid = order.payments.reduce(
-      (s, p) => s + (p.type === "REFUND" ? -Number(p.amount) : Number(p.amount)),
+      (s, p) =>
+        p.isRejected
+          ? s
+          : s + (p.type === "REFUND" ? -Number(p.amount) : Number(p.amount)),
       0
     );
 

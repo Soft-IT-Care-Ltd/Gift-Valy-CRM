@@ -327,8 +327,10 @@ export function OrderDetailClient({
   }
 
   const pendingRequest = order.editRequests.find((r) => r.status === "PENDING");
+  // Rejected payments (money never received, SPEC §8) don't count as paid — so
+  // Paid + Due stays equal to the total after a rejection.
   const paid = order.payments.reduce(
-    (s, p) => s + (p.type === "REFUND" ? -p.amount : p.amount),
+    (s, p) => (p.isRejected ? s : s + (p.type === "REFUND" ? -p.amount : p.amount)),
     0
   );
 

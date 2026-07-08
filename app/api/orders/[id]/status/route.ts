@@ -39,7 +39,7 @@ export async function POST(req: Request, { params }: Params) {
 
     const order = await prisma.order.findUnique({
       where: { id },
-      include: { payments: { select: { type: true, amount: true } } },
+      include: { payments: { select: { type: true, amount: true, isRejected: true } } },
     });
     if (!order) {
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
@@ -85,8 +85,12 @@ export async function POST(req: Request, { params }: Params) {
     }
     // SPEC §1.3: no CONFIRMED without an advance — override needs approve_edit + note.
     if (to === "CONFIRMED") {
+      // Rejected payments (money never received, SPEC §8) don't count as an advance.
       const paid = order.payments.reduce(
-        (s, p) => s + (p.type === "REFUND" ? -Number(p.amount) : Number(p.amount)),
+        (s, p) =>
+          p.isRejected
+            ? s
+            : s + (p.type === "REFUND" ? -Number(p.amount) : Number(p.amount)),
         0
       );
       if (paid <= 0) {

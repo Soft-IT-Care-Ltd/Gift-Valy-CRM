@@ -716,15 +716,17 @@ export async function buildWalletBalances(): Promise<WalletBalances> {
   const [wallets, payAgg, refundAgg, expenseAgg, unassignedAgg] =
     await Promise.all([
       prisma.wallet.findMany({ orderBy: [{ isActive: "desc" }, { name: "asc" }] }),
-      // Inflow: everything except refunds, grouped by wallet.
+      // Inflow: everything except refunds, grouped by wallet. Rejected payments
+      // (money never received, SPEC §8) are excluded so the balance reconciles
+      // with the actual wallet statement.
       prisma.payment.groupBy({
         by: ["walletId"],
-        where: { walletId: { not: null }, type: { not: "REFUND" } },
+        where: { walletId: { not: null }, type: { not: "REFUND" }, isRejected: false },
         _sum: { amount: true },
       }),
       prisma.payment.groupBy({
         by: ["walletId"],
-        where: { walletId: { not: null }, type: "REFUND" },
+        where: { walletId: { not: null }, type: "REFUND", isRejected: false },
         _sum: { amount: true },
       }),
       prisma.expense.groupBy({
@@ -733,7 +735,7 @@ export async function buildWalletBalances(): Promise<WalletBalances> {
         _sum: { amount: true },
       }),
       prisma.payment.aggregate({
-        where: { walletId: null, type: { not: "REFUND" } },
+        where: { walletId: null, type: { not: "REFUND" }, isRejected: false },
         _sum: { amount: true },
       }),
     ]);
