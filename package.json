@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "verify:stock": "tsx scripts/verify-stock.ts",
-    "verify:steadfast": "tsx scripts/verify-steadfast.ts"
+    "verify:steadfast": "tsx scripts/verify-steadfast.ts",
+    "verify:lifecycle": "tsx scripts/verify-lifecycle.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
