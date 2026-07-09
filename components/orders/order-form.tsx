@@ -130,6 +130,8 @@ export function OrderForm({
   teamName,
   initial,
   wallets = [],
+  leadId,
+  leadLabel,
 }: {
   mode: "create" | "edit" | "edit-request";
   orderId?: number;
@@ -140,6 +142,8 @@ export function OrderForm({
   teamName: string | null;
   initial?: OrderFormInitial;
   wallets?: WalletOption[]; // active receiving wallets (create mode, §8)
+  leadId?: number; // set when converting a lead → order (§3.2)
+  leadLabel?: string; // human label for the banner (e.g. "Rahim · WhatsApp")
 }) {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
@@ -348,6 +352,7 @@ export function OrderForm({
             screenshotUrl: screenshotUrl || null,
           },
           zeroAdvanceReason: zeroAdvanceReason || undefined,
+          leadId: leadId ?? undefined,
         }),
       });
     } else if (mode === "edit") {
@@ -399,6 +404,14 @@ export function OrderForm({
           <Badge variant="secondary">{ORDER_STATUS_LABELS[initial.status]}</Badge>
         )}
       </div>
+
+      {mode === "create" && leadId && (
+        <div className="rounded-md border border-primary/40 bg-primary/5 px-4 py-2 text-sm">
+          Converting lead{leadLabel ? ` — ${leadLabel}` : ""}. Creating this order
+          will mark the lead <span className="font-medium">Converted</span> and
+          link it here.
+        </div>
+      )}
 
       {/* Section A — Customer (the probashi payer) */}
       <Card>

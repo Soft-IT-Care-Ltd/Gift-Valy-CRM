@@ -38,6 +38,8 @@ model User {
   salesOrders        Order[]                  @relation("SalesOrders")
   orderStatusChanges OrderStatusHistory[]     @relation("StatusChanges")
   orderEditRequests  OrderEditRequest[]       @relation("EditRequests")
+  assignedLeads      Lead[]                   @relation("AssignedLeads")
+  leadDailyCounts    LeadDailyCount[]         @relation("LeadDailyCounts")
 
   @@map("users")
 }
@@ -97,8 +99,102 @@ model Team {
   leader  User?   @relation("TeamLeader", fields: [leaderUserId], references: [id])
   members User[]  @relation("TeamMembers")
   orders  Order[]
+  leads   Lead[]
 
   @@map("teams")
+}
+
+// ============ LEADS (SPEC §3 / §14) ============
+
+// SPEC §3.1 Source enum. Free-text campaign name lives separately (campaignName).
+enum LeadSource {
+  FACEBOOK_AD
+  MESSENGER
+  WHATSAPP
+  INSTAGRAM
+  REFERRAL
+  REPEAT_CUSTOMER
+  OTHER
+}
+
+// SPEC §3.1 funnel statuses. CONVERTED is set by the auto-convert hook when an
+// order is created from the lead (§3.2); LOST requires a lostReason.
+enum LeadStatus {
+  NEW
+  CONTACTED
+  FOLLOW_UP
+  NEGOTIATING
+  CONVERTED
+  LOST
+}
+
+// SPEC §3.1 — required when status = LOST; drives the lost-reason breakdown (R2).
+enum LostReason {
+  PRICE
+  TRUST
+  DELIVERY_TIME
+  OUT_OF_AREA
+  NO_RESPONSE
+  OTHER
+}
+
+// A lead logged by an SE (SPEC §3.1). whatsapp_number is the dedupe key for the
+// duplicate-phone check (§3.1). interested_in is a JSON array of
+// {itemType:'PRODUCT'|'PACKAGE', id, name} snapshots. The lead↔order link is the
+// single unique FK orders.lead_id (Order.lead below); Lead.convertedOrder is its
+// back-relation, so a lead's converted order id is derived, never duplicated.
+model Lead {
+  id             Int         @id @default(autoincrement())
+  leadDate       DateTime    @map("lead_date") @db.Date
+  source         LeadSource
+  campaignName   String?     @map("campaign_name")
+  customerName   String?     @map("customer_name")
+  country        String?
+  whatsappNumber String      @map("whatsapp_number")
+  interestedIn   Json?       @map("interested_in")
+  status         LeadStatus  @default(NEW)
+  followUpAt     DateTime?   @map("follow_up_at")
+  lostReason     LostReason? @map("lost_reason")
+  notes          String?
+  assignedTo     Int         @map("assigned_to")
+  teamId         Int?        @map("team_id")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+  createdBy      Int?        @map("created_by")
+  updatedBy      Int?        @map("updated_by")
+
+  assignee       User   @relation("AssignedLeads", fields: [assignedTo], references: [id])
+  team           Team?  @relation(fields: [teamId], references: [id])
+  convertedOrder Order? @relation("LeadConversion")
+
+  @@index([assignedTo, status])
+  @@index([teamId, status])
+  @@index([whatsappNumber])
+  @@index([followUpAt])
+  @@index([leadDate])
+  @@map("leads")
+}
+
+// SPEC §3.1 bulk quick-entry — a daily lead count per SE/source/campaign, used
+// for conversion-rate math when individual leads aren't logged. One row per
+// (date, user, source, campaign) — the count is edited in place (upsert).
+model LeadDailyCount {
+  id           Int        @id @default(autoincrement())
+  date         DateTime   @db.Date
+  userId       Int        @map("user_id")
+  source       LeadSource
+  campaignName String?    @map("campaign_name")
+  count        Int
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  createdBy    Int?       @map("created_by")
+  updatedBy    Int?       @map("updated_by")
+
+  user User @relation("LeadDailyCounts", fields: [userId], references: [id])
+
+  @@index([date])
+  @@index([userId, date])
+  @@map("lead_daily_counts")
 }
 
 // ============ CATALOG (SPEC §6.1 / §6.2 / §14) ============
@@ -376,7 +472,7 @@ model Customer {
 model Order {
   id                    Int         @id @default(autoincrement())
   orderNo               String      @unique @map("order_no") // GV-YYMM-XXXX (§4.2)
-  leadId                Int?        @map("lead_id") // FK once Leads module lands (Phase 3)
+  leadId                Int?        @unique @map("lead_id") // set on auto-convert from a lead (§3.2); 1:1 with Lead
   customerId            Int         @map("customer_id")
   recipientName         String      @map("recipient_name")
   recipientPhoneBd      String      @map("recipient_phone_bd") // number 2 of 2 (§1.2)
@@ -406,6 +502,7 @@ model Order {
   customer       Customer             @relation(fields: [customerId], references: [id])
   salesExecutive User                 @relation("SalesOrders", fields: [salesExecutiveId], references: [id])
   team           Team?                @relation(fields: [teamId], references: [id])
+  lead           Lead?                @relation("LeadConversion", fields: [leadId], references: [id])
   items          OrderItem[]
   payments       Payment[]
   statusHistory  OrderStatusHistory[]

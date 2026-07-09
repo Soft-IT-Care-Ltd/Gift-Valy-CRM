@@ -28,6 +28,10 @@ export default async function DashboardLayout({
   const permissions = await getEffectivePermissions(user.id);
 
   const navItems: NavItem[] = [{ href: "/", label: "Dashboard" }];
+  // Leads (SPEC §3). Any lead-viewing role gets the Leads workspace.
+  if (permissions.includes("leads.view_own")) {
+    navItems.push({ href: "/leads", label: "Leads", section: "Leads" });
+  }
   if (permissions.includes("orders.view_own")) {
     navItems.push({ href: "/orders", label: "Orders", section: "Sales" });
   }
@@ -99,6 +103,10 @@ export default async function DashboardLayout({
         section: "Money",
       }
     );
+  }
+  // R2 — Lead report (SPEC §3.2 / §12), for any lead-viewing role.
+  if (permissions.includes("leads.view_own")) {
+    navItems.push({ href: "/leads/report", label: "Lead Report", section: "Reports" });
   }
   // Reports (SPEC §12). R4/R5 are inventory reports gated on stock.view — the
   // same read scope as the Stock screen (Admin, Manager, Accounts, Packing).

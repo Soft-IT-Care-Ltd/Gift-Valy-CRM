@@ -4,7 +4,7 @@
 // 15 orders across the status lifecycle with payments.
 // Idempotent — safe to re-run (upserts everywhere; re-running resets demo
 // catalog prices/stock, package BOMs, and wipes/recreates the demo orders).
-import { PrismaClient, type OrderStatus, type PaymentType, type PaymentMethod, type ShipmentStatus } from "@prisma/client";
+import { PrismaClient, Prisma, type OrderStatus, type PaymentType, type PaymentMethod, type ShipmentStatus } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import {
   PERMISSION_DEFS,
@@ -977,6 +977,146 @@ async function main() {
     });
   }
 
+  // ============ 9b. Demo leads (SPEC §3) ============
+  // Leads is a fresh table — fully regenerated each seed. Deleting a lead nulls
+  // any order.lead_id via onDelete: SetNull, so this is safe for converted ones.
+  await prisma.leadDailyCount.deleteMany({});
+  await prisma.lead.deleteMany({});
+
+  const sanjoyId = userIdByEmail.get("sanjoy@giftvaly.com")!;
+  const parthoId = userIdByEmail.get("partho@giftvaly.com")!;
+  const productNameBySku = new Map(demoProducts.map((p) => [p.sku, p.name]));
+  const packageNameByCode = new Map(demoPackages.map((p) => [p.code, p.name]));
+  type Pick = { sku?: string; pkg?: string };
+  const interestedOf = (picks: Pick[]) =>
+    picks.map((pk) =>
+      pk.sku
+        ? { itemType: "PRODUCT", id: productIdBySku.get(pk.sku)!, name: productNameBySku.get(pk.sku)! }
+        : { itemType: "PACKAGE", id: packageIdByCode.get(pk.pkg!)!, name: packageNameByCode.get(pk.pkg!)! }
+    );
+  // Follow-up timestamps anchored to the Asia/Dhaka calendar so "today's
+  // follow-ups" and "overdue" land in the right buckets regardless of server TZ.
+  const dhakaDateStr = (offsetDays: number) =>
+    new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Dhaka" }).format(
+      new Date(Date.now() + offsetDays * 86_400_000)
+    );
+  const followUpAt = (offsetDays: number, hour: number) =>
+    new Date(`${dhakaDateStr(offsetDays)}T${String(hour).padStart(2, "0")}:00:00+06:00`);
+  const leadDateOf = (n: number) => new Date(`${dhakaDateStr(-n)}T00:00:00+06:00`);
+
+  const demoLeads = [
+    { phone: "+9665500010001", name: "Imran Chowdhury", country: "KSA", se: sanjoyId,
+      source: "FACEBOOK_AD" as const, campaign: "Eid FB Ad", status: "NEW" as const,
+      leadN: 0, follow: null, interested: [{ pkg: "PKG-001" }], notes: "Asked about Eid delivery" },
+    { phone: "+9715500010002", name: "Shirin Akhter", country: "UAE", se: sanjoyId,
+      source: "MESSENGER" as const, campaign: null, status: "CONTACTED" as const,
+      leadN: 1, follow: followUpAt(0, 16), interested: [{ sku: "GV-0005" }], notes: "Wants Jamdani saree, will confirm today" },
+    { phone: "+9745500010003", name: "R1 Nabil", country: "Qatar", se: sanjoyId,
+      source: "WHATSAPP" as const, campaign: "Retargeting", status: "NEGOTIATING" as const,
+      leadN: 3, follow: followUpAt(-2, 12), interested: [{ pkg: "PKG-003" }], notes: "Negotiating on price — OVERDUE follow-up" },
+    { phone: "+9665500010004", name: "Tanvir Hasan", country: "KSA", se: sanjoyId,
+      source: "FACEBOOK_AD" as const, campaign: "Boishakh Boost", status: "FOLLOW_UP" as const,
+      leadN: 2, follow: followUpAt(0, 11), interested: [{ sku: "GV-0003" }, { sku: "GV-0009" }], notes: "Follow up this morning" },
+    { phone: "+601155000105", name: "Rahela Khatun", country: "Malaysia", se: sanjoyId,
+      source: "INSTAGRAM" as const, campaign: null, status: "LOST" as const, lostReason: "PRICE" as const,
+      leadN: 5, follow: null, interested: [{ pkg: "PKG-002" }], notes: "Too expensive" },
+    { phone: "+9665500010006", name: "Sohel Rana", country: "KSA", se: parthoId,
+      source: "FACEBOOK_AD" as const, campaign: "New Reels", status: "NEW" as const,
+      leadN: 0, follow: null, interested: [{ sku: "GV-0006" }], notes: null },
+    { phone: "+9715500010007", name: "Farhana Yeasmin", country: "UAE", se: parthoId,
+      source: "REFERRAL" as const, campaign: null, status: "CONTACTED" as const,
+      leadN: 2, follow: followUpAt(-1, 14), interested: [{ sku: "GV-0002" }], notes: "Referred by a past customer — OVERDUE" },
+    { phone: "+974550001008", name: "Kamrul Islam", country: "Qatar", se: parthoId,
+      source: "WHATSAPP" as const, campaign: "Eid FB Ad", status: "NEGOTIATING" as const,
+      leadN: 1, follow: followUpAt(0, 18), interested: [{ pkg: "PKG-001" }], notes: "Wants a discount" },
+    { phone: "+966550001009", name: "Nadia Sultana", country: "KSA", se: parthoId,
+      source: "MESSENGER" as const, campaign: "Retargeting", status: "LOST" as const, lostReason: "NO_RESPONSE" as const,
+      leadN: 4, follow: null, interested: [], notes: "Went silent" },
+    { phone: "+971550001010", name: "Repeat Buyer", country: "UAE", se: parthoId,
+      source: "REPEAT_CUSTOMER" as const, campaign: null, status: "FOLLOW_UP" as const,
+      leadN: 1, follow: followUpAt(1, 10), interested: [{ sku: "GV-0004" }], notes: "Regular — reminder tomorrow" },
+  ];
+
+  for (const l of demoLeads) {
+    await prisma.lead.create({
+      data: {
+        leadDate: leadDateOf(l.leadN),
+        source: l.source,
+        campaignName: l.campaign,
+        customerName: l.name,
+        country: l.country,
+        whatsappNumber: l.phone,
+        interestedIn: interestedOf(l.interested) as unknown as Prisma.InputJsonValue,
+        status: l.status,
+        followUpAt: l.follow,
+        lostReason: "lostReason" in l ? l.lostReason : null,
+        notes: l.notes,
+        assignedTo: l.se,
+        teamId: team.id,
+        createdAt: leadDateOf(l.leadN),
+        createdBy: l.se,
+        updatedBy: l.se,
+      },
+    });
+  }
+
+  // A few converted leads linked to existing demo orders (§3.2 auto-convert),
+  // so the R2 conversion % and the lead→order link have real data.
+  const convOrders = await prisma.order.findMany({
+    where: { customerId: { in: demoCustomerIds }, leadId: null },
+    orderBy: { createdAt: "asc" },
+    take: 3,
+    include: { customer: true },
+  });
+  const convSources = ["FACEBOOK_AD", "MESSENGER", "WHATSAPP"] as const;
+  const convCampaigns = ["Eid FB Ad", "Boishakh Boost", "New Reels"];
+  for (const [i, o] of convOrders.entries()) {
+    const lead = await prisma.lead.create({
+      data: {
+        leadDate: o.createdAt,
+        source: convSources[i % convSources.length],
+        campaignName: convCampaigns[i % convCampaigns.length],
+        customerName: o.customer.name,
+        country: o.customer.country,
+        whatsappNumber: o.customer.phoneForeign,
+        interestedIn: [] as unknown as Prisma.InputJsonValue,
+        status: "CONVERTED",
+        assignedTo: o.salesExecutiveId,
+        teamId: o.teamId,
+        createdAt: o.createdAt,
+        createdBy: o.salesExecutiveId,
+        updatedBy: o.salesExecutiveId,
+      },
+    });
+    await prisma.order.update({ where: { id: o.id }, data: { leadId: lead.id } });
+  }
+
+  // Bulk daily counts (§3.1) — a few days of per-source totals per SE.
+  const dailyCountRows: {
+    date: Date; userId: number; source: (typeof convSources)[number] | "INSTAGRAM"; campaignName: string | null; count: number;
+  }[] = [];
+  for (const [se, base] of [[sanjoyId, 12], [parthoId, 9]] as const) {
+    for (let day = 1; day <= 4; day++) {
+      dailyCountRows.push({
+        date: leadDateOf(day),
+        userId: se,
+        source: "FACEBOOK_AD",
+        campaignName: "Eid FB Ad",
+        count: base + day,
+      });
+      dailyCountRows.push({
+        date: leadDateOf(day),
+        userId: se,
+        source: "INSTAGRAM",
+        campaignName: null,
+        count: Math.max(0, base - day),
+      });
+    }
+  }
+  await prisma.leadDailyCount.createMany({
+    data: dailyCountRows.map((r) => ({ ...r, createdBy: r.userId, updatedBy: r.userId })),
+  });
+
   // Demo manual expenses (SPEC §9.1) so the R8 report + ad-cost trend have data.
   // Ad cost is a near-daily entry over the last ~5 weeks (a few zero-spend days),
   // plus a handful of fixed/variable costs landing in the current month.
@@ -1042,6 +1182,9 @@ async function main() {
   });
 
   const orderCount = await prisma.order.count();
+  const leadCount = await prisma.lead.count();
+  const convertedLeadCount = await prisma.lead.count({ where: { status: "CONVERTED" } });
+  const dailyCountTotal = await prisma.leadDailyCount.count();
   const paymentCount = await prisma.payment.count();
   const movementCount = await prisma.stockMovement.count();
   const shipmentCount = await prisma.shipment.count();
@@ -1053,6 +1196,7 @@ async function main() {
   console.log("  Team: Team Alpha");
   console.log(`  Catalog: ${categoryNames.length} categories, ${demoProducts.length} products, ${demoPackages.length} packages`);
   console.log(`  Demo data: ${demoCustomers.length} customers, ${demoOrders.length} demo orders (${orderCount} total), ${paymentCount} payments`);
+  console.log(`  Leads: ${leadCount} leads (${convertedLeadCount} converted), ${dailyCountTotal} daily-count rows`);
   console.log(`  Stock: ${movementCount} movements (opening balances + confirmed-order reservations)`);
   console.log(`  Courier: ${demoCouriers.length} couriers, ${shipmentCount} shipments (incl. delivered, in-transit, COD-pending, returned)`);
   console.log(`  Money: ${demoWallets.length} wallets (bKash/Nagad/Rocket/Bank/Cash), payments attributed by method`);

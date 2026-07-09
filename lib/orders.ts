@@ -229,6 +229,9 @@ export const createOrderSchema = z.object({
       .transform((v) => (v?.trim() ? v.trim() : null)),
   }),
   zeroAdvanceReason: z.string().trim().optional(), // Admin/TL override note (§1.3)
+  // Set when the order is created from a lead (§3.2) — flips the lead to
+  // Converted and links orders.lead_id (validated in the route).
+  leadId: z.number().int().positive().nullable().optional(),
 });
 
 export type CreateOrderPayload = z.infer<typeof createOrderSchema>;

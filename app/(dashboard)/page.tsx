@@ -1,12 +1,14 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { getServerSession } from "next-auth";
+import { getServerSession, type Session } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { getEffectivePermissions } from "@/lib/rbac";
 import { PERMISSION_DEFS, ROLE_LABELS, type RoleName } from "@/lib/permissions";
 import { dhakaDayStart, dhakaMonthStart } from "@/lib/orders";
+import { buildFollowUps, leadScopeWhere } from "@/lib/leads";
 import { canSeeCosts } from "@/lib/catalog";
+import { LEAD_SOURCE_LABELS, LEAD_STATUS_LABELS } from "@/lib/lead-constants";
 import { buildStockReport, buildPackageReport } from "@/lib/reports";
 import { money, formatDateTime } from "@/lib/format";
 import {
@@ -238,6 +240,85 @@ async function InventorySummary({ showCosts }: { showCosts: boolean }) {
   );
 }
 
+// SPEC §3.2 — follow-up reminders on the SE dashboard ("Today's follow-ups"),
+// overdue ones flagged red. Shown to any lead-viewing role at their scope.
+async function FollowUpsWidget({
+  session,
+  permissions,
+}: {
+  session: Session;
+  permissions: string[];
+}) {
+  const scope = await leadScopeWhere(session, permissions);
+  const fu = await buildFollowUps(scope);
+  if (fu.todayCount === 0 && fu.overdueCount === 0) return null;
+
+  const rows = [
+    ...fu.overdue.map((l) => ({ l, overdue: true })),
+    ...fu.today.map((l) => ({ l, overdue: false })),
+  ].slice(0, 8);
+
+  return (
+    <Card className={fu.overdueCount > 0 ? "border-destructive/40" : ""}>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div>
+          <CardTitle className="text-base">
+            Today&apos;s follow-ups: {fu.todayCount}
+          </CardTitle>
+          <CardDescription>
+            {fu.overdueCount > 0 ? (
+              <span className="font-medium text-destructive">
+                {fu.overdueCount} overdue — act now
+              </span>
+            ) : (
+              "Leads due for a follow-up today."
+            )}
+          </CardDescription>
+        </div>
+        <Button variant="outline" asChild>
+          <Link href="/leads">Open leads</Link>
+        </Button>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Customer</TableHead>
+              <TableHead>Source</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Follow-up</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map(({ l, overdue }) => (
+              <TableRow key={l.id}>
+                <TableCell>
+                  <div className="font-medium">{l.customerName ?? l.whatsappNumber}</div>
+                  {l.customerName && (
+                    <div className="text-xs text-muted-foreground">{l.whatsappNumber}</div>
+                  )}
+                </TableCell>
+                <TableCell className="text-muted-foreground">
+                  {LEAD_SOURCE_LABELS[l.source]}
+                </TableCell>
+                <TableCell>
+                  <Badge variant="outline">{LEAD_STATUS_LABELS[l.status]}</Badge>
+                </TableCell>
+                <TableCell
+                  className={overdue ? "font-medium text-destructive" : "text-muted-foreground"}
+                >
+                  {l.followUpAt ? formatDateTime(l.followUpAt) : "—"}
+                  {overdue ? " · overdue" : ""}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default async function HomePage() {
   // Pages render in parallel with the layout, so guard here too.
   const session = await getServerSession(authOptions);
@@ -293,6 +374,10 @@ export default async function HomePage() {
           </CardContent>
         )}
       </Card>
+
+      {permissions.includes("leads.view_own") && (
+        <FollowUpsWidget session={session} permissions={permissions} />
+      )}
 
       {permissions.includes("purchases.create") && <SupplierDuesAlert />}
 

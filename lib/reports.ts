@@ -13,6 +13,11 @@ import {
   type ExpenseRow,
   type CostTypeValue,
 } from "@/lib/expense-constants";
+import type { Prisma } from "@prisma/client";
+import type {
+  LeadSourceValue,
+  LostReasonValue,
+} from "@/lib/lead-constants";
 
 // Report data builders for SPEC §12 Module 10 — R4 (Stock) and R5 (Package
 // availability). Cost/value fields (avg cost, stock value, package cost/margin)
@@ -937,5 +942,181 @@ export async function buildExpenseReport(opts: {
     byCategory,
     adCost: { total: adTotal, daily, dailyContinuous, peak, byCampaign },
     expenses,
+  };
+}
+
+// ============ R2 — Lead report (SPEC §3.2 / §12) ============
+// Leads by SE / source / campaign / date, conversion %, lost-reason breakdown.
+// Bulk daily counts (§3.1) are folded in as an extra "leads received" total so
+// conversion math still has a denominator when individual leads weren't logged.
+
+export interface LeadConversionRow {
+  key: string;
+  label: string;
+  total: number; // detailed leads
+  converted: number;
+  conversionPct: number; // converted / total, 0 when total is 0
+}
+
+export interface LostReasonRow {
+  reason: LostReasonValue;
+  count: number;
+  share: number; // % of lost leads
+}
+
+export interface LeadReport {
+  range: { from: string; to: string };
+  totalLeads: number; // detailed leads in range
+  converted: number;
+  lost: number;
+  open: number;
+  conversionPct: number;
+  bulkCount: number; // Σ lead_daily_counts in range (leads logged in bulk)
+  bySE: LeadConversionRow[];
+  bySource: LeadConversionRow[];
+  byCampaign: LeadConversionRow[];
+  byDate: LeadConversionRow[]; // ascending by date
+  lostReasons: LostReasonRow[];
+  // Bulk counts per source (extra denominator context when detail is missing).
+  bulkBySource: { source: LeadSourceValue; count: number }[];
+}
+
+interface LeadReportInput {
+  from?: Date;
+  to?: Date;
+  leadWhere: Prisma.LeadWhereInput; // scope (SE own / TL team / all)
+  dailyCountWhere: Prisma.LeadDailyCountWhereInput;
+  seId?: number;
+  source?: LeadSourceValue;
+  campaign?: string; // exact match; "" ignored
+}
+
+export async function buildLeadReport(
+  opts: LeadReportInput,
+  db: Prisma.TransactionClient | typeof prisma = prisma
+): Promise<LeadReport> {
+  const from = opts.from ?? dhakaMonthStart();
+  const to = opts.to ?? new Date(dhakaDayStart().getTime() + DAY_MS - 1);
+
+  const filters: Prisma.LeadWhereInput[] = [
+    opts.leadWhere,
+    { leadDate: { gte: from, lte: to } },
+  ];
+  if (opts.seId) filters.push({ assignedTo: opts.seId });
+  if (opts.source) filters.push({ source: opts.source });
+  if (opts.campaign) filters.push({ campaignName: opts.campaign });
+
+  const leads = await db.lead.findMany({
+    where: { AND: filters },
+    select: {
+      id: true,
+      leadDate: true,
+      source: true,
+      campaignName: true,
+      status: true,
+      lostReason: true,
+      assignedTo: true,
+      assignee: { select: { name: true } },
+    },
+  });
+
+  const dailyCounts = await db.leadDailyCount.findMany({
+    where: {
+      AND: [
+        opts.dailyCountWhere,
+        { date: { gte: from, lte: to } },
+        ...(opts.source ? [{ source: opts.source }] : []),
+        ...(opts.campaign ? [{ campaignName: opts.campaign }] : []),
+        ...(opts.seId ? [{ userId: opts.seId }] : []),
+      ],
+    },
+    select: { source: true, count: true },
+  });
+
+  const totalLeads = leads.length;
+  const converted = leads.filter((l) => l.status === "CONVERTED").length;
+  const lost = leads.filter((l) => l.status === "LOST").length;
+  const open = totalLeads - converted - lost;
+  const conversionPct = totalLeads > 0 ? round2((converted / totalLeads) * 100) : 0;
+
+  // Generic grouping into conversion rows.
+  function group(
+    keyOf: (l: (typeof leads)[number]) => string,
+    labelOf: (l: (typeof leads)[number]) => string
+  ): LeadConversionRow[] {
+    const map = new Map<string, LeadConversionRow>();
+    for (const l of leads) {
+      const key = keyOf(l);
+      const row =
+        map.get(key) ?? { key, label: labelOf(l), total: 0, converted: 0, conversionPct: 0 };
+      row.total += 1;
+      if (l.status === "CONVERTED") row.converted += 1;
+      map.set(key, row);
+    }
+    return [...map.values()]
+      .map((r) => ({
+        ...r,
+        conversionPct: r.total > 0 ? round2((r.converted / r.total) * 100) : 0,
+      }))
+      .sort((a, b) => b.total - a.total);
+  }
+
+  const bySE = group(
+    (l) => String(l.assignedTo),
+    (l) => l.assignee.name
+  );
+  const bySource = group(
+    (l) => l.source,
+    (l) => l.source
+  );
+  const byCampaign = group(
+    (l) => l.campaignName?.trim() || "(none)",
+    (l) => l.campaignName?.trim() || "(none)"
+  );
+  const byDate = group(
+    (l) => l.leadDate.toISOString().slice(0, 10),
+    (l) => l.leadDate.toISOString().slice(0, 10)
+  ).sort((a, b) => a.key.localeCompare(b.key));
+
+  // Lost-reason breakdown.
+  const lostMap = new Map<LostReasonValue, number>();
+  for (const l of leads) {
+    if (l.status === "LOST" && l.lostReason) {
+      lostMap.set(l.lostReason, (lostMap.get(l.lostReason) ?? 0) + 1);
+    }
+  }
+  const lostReasons: LostReasonRow[] = [...lostMap.entries()]
+    .map(([reason, count]) => ({
+      reason,
+      count,
+      share: lost > 0 ? round2((count / lost) * 100) : 0,
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  // Bulk daily counts.
+  const bulkMap = new Map<LeadSourceValue, number>();
+  let bulkCount = 0;
+  for (const d of dailyCounts) {
+    bulkMap.set(d.source, (bulkMap.get(d.source) ?? 0) + d.count);
+    bulkCount += d.count;
+  }
+  const bulkBySource = [...bulkMap.entries()]
+    .map(([source, count]) => ({ source, count }))
+    .sort((a, b) => b.count - a.count);
+
+  return {
+    range: { from: from.toISOString(), to: to.toISOString() },
+    totalLeads,
+    converted,
+    lost,
+    open,
+    conversionPct,
+    bulkCount,
+    bySE,
+    bySource,
+    byCampaign,
+    byDate,
+    lostReasons,
+    bulkBySource,
   };
 }

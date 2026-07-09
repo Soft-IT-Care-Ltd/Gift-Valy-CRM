@@ -17,6 +17,7 @@ import {
   serializeOrderListRow,
 } from "@/lib/orders";
 import { syncReservations } from "@/lib/stock";
+import { leadScopeWhere } from "@/lib/leads";
 import { normalizePhone, type OrderStatusValue } from "@/lib/order-constants";
 
 // Order list — same filters/window/search/pagination as the Orders page
@@ -111,6 +112,33 @@ export async function POST(req: Request) {
       throw new AuthzError(400, "COD amount cannot exceed the due amount");
     }
 
+    // §3.2 auto-convert: if this order is created from a lead, verify the lead is
+    // visible and not already linked to an order (orders.lead_id is unique). The
+    // link + status flip to CONVERTED happen atomically inside the txn below.
+    if (data.leadId != null) {
+      let leadScope;
+      try {
+        leadScope = await leadScopeWhere(session, permissions);
+      } catch {
+        leadScope = { assignedTo: session.user.id };
+      }
+      const lead = await prisma.lead.findFirst({
+        where: { AND: [leadScope, { id: data.leadId }] },
+        select: { id: true, status: true },
+      });
+      if (!lead) throw new AuthzError(400, "Lead not found or not accessible");
+      const already = await prisma.order.findUnique({
+        where: { leadId: data.leadId },
+        select: { orderNo: true },
+      });
+      if (already) {
+        throw new AuthzError(
+          400,
+          `Lead already converted to order ${already.orderNo}`
+        );
+      }
+    }
+
     // SPEC §1.3: no CONFIRMED without an advance > 0; TL/Admin may override
     // with a reason, otherwise the order waits at ON_HOLD.
     let initialStatus: OrderStatusValue = "CONFIRMED";
@@ -161,6 +189,7 @@ export async function POST(req: Request) {
           const order = await tx.order.create({
             data: {
               orderNo,
+              leadId: data.leadId ?? null,
               customerId: customer.id,
               recipientName: data.order.recipientName,
               recipientPhoneBd: data.order.recipientPhoneBd,
@@ -229,6 +258,13 @@ export async function POST(req: Request) {
               note: statusNote,
             },
           });
+          // §3.2 — flip the source lead to Converted (link is order.lead_id above).
+          if (data.leadId != null) {
+            await tx.lead.update({
+              where: { id: data.leadId },
+              data: { status: "CONVERTED", updatedBy: session.user.id },
+            });
+          }
           return { id: order.id, orderNo: order.orderNo };
         });
       } catch (err) {
@@ -250,6 +286,7 @@ export async function POST(req: Request) {
         total: totals.total,
         advance: adv.amount,
         status: initialStatus,
+        ...(data.leadId != null ? { convertedFromLeadId: data.leadId } : {}),
         ...(totals.floorBreaches.length > 0
           ? { priceFloorOverride: totals.floorBreaches }
           : {}),
