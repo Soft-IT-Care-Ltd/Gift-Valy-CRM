@@ -11,6 +11,8 @@ import { buildFollowUps, leadScopeWhere } from "@/lib/leads";
 import { canSeeCosts } from "@/lib/catalog";
 import { LEAD_SOURCE_LABELS, LEAD_STATUS_LABELS } from "@/lib/lead-constants";
 import { buildStockReport, buildPackageReport } from "@/lib/reports";
+import { whoIsInToday } from "@/lib/attendance";
+import { WhoIsInCard } from "@/components/attendance/who-is-in-card";
 import { money, formatDateTime } from "@/lib/format";
 import {
   Card,
@@ -314,6 +316,13 @@ async function FollowUpsWidget({
   );
 }
 
+// SPEC §11 / §13 Row 4 — "Who's checked in today" on the admin dashboard.
+// Shown to attendance.view_all roles (Admin, Manager).
+async function WhoIsInWidget() {
+  const data = await whoIsInToday(new Date());
+  return <WhoIsInCard data={data} />;
+}
+
 export default async function HomePage() {
   // Pages render in parallel with the layout, so guard here too.
   const session = await getServerSession(authOptions);
@@ -373,6 +382,8 @@ export default async function HomePage() {
       {permissions.includes("leads.view_own") && (
         <FollowUpsWidget session={session} permissions={permissions} />
       )}
+
+      {permissions.includes("attendance.view_all") && <WhoIsInWidget />}
 
       {permissions.includes("purchases.create") && <SupplierDuesAlert />}
 

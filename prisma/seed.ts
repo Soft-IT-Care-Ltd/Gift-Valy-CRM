@@ -12,6 +12,15 @@ import {
   ROLE_NAMES,
 } from "../lib/permissions";
 import { SEED_EXPENSE_CATEGORIES, AD_COST_CATEGORY } from "../lib/expense-constants";
+import {
+  ATTENDANCE_SETTINGS_KEY,
+  DEFAULT_ATTENDANCE_SETTINGS,
+  attendanceSettingsToJson,
+  dayStartUTC,
+  deriveCheckInStatus,
+  dhakaMinutesOfDay,
+  dhakaYmd,
+} from "../lib/attendance-constants";
 
 const prisma = new PrismaClient();
 
@@ -146,6 +155,96 @@ async function main() {
     update: {},
     create: { key: "order_edit_window_minutes", value: 30 },
   });
+
+  // 4b-bis. Attendance office-hours settings (§11) + demo attendance for today
+  // so the "who's in" widget and R10 report have data out of the box.
+  await prisma.setting.upsert({
+    where: { key: ATTENDANCE_SETTINGS_KEY },
+    update: {},
+    create: {
+      key: ATTENDANCE_SETTINGS_KEY,
+      value: attendanceSettingsToJson(DEFAULT_ATTENDANCE_SETTINGS),
+    },
+  });
+  {
+    const now = new Date();
+    const todayYmd = dhakaYmd(now);
+    const date = dayStartUTC(todayYmd);
+    const at = (hhmm: string) => new Date(`${todayYmd}T${hhmm}:00+06:00`);
+    const mark = async (email: string, checkIn: string, checkOut: string | null) => {
+      const userId = userIdByEmail.get(email);
+      if (!userId) return;
+      const checkInAt = at(checkIn);
+      const status = deriveCheckInStatus(
+        dhakaMinutesOfDay(checkInAt),
+        DEFAULT_ATTENDANCE_SETTINGS
+      );
+      await prisma.attendance.upsert({
+        where: { userId_date: { userId, date } },
+        update: {},
+        create: {
+          userId,
+          date,
+          checkInAt,
+          checkOutAt: checkOut ? at(checkOut) : null,
+          status,
+          createdBy: userId,
+          updatedBy: userId,
+        },
+      });
+    };
+    await mark("sakib@giftvaly.com", "09:58", null); // present, still in
+    await mark("sanjoy@giftvaly.com", "10:32", null); // late, still in
+    await mark("mh.neshad39@gmail.com", "09:45", "18:10"); // present, checked out
+
+    // One approved leave spanning today + the next two days (§11) so "LEAVE" days
+    // show on the sheet and "on leave" shows on the dashboard widget.
+    const parthoId = userIdByEmail.get("partho@giftvaly.com");
+    const adminId = userIdByEmail.get("mh.neshad39@gmail.com") ?? null;
+    if (parthoId) {
+      const leaveTo = dayStartUTC(dhakaYmd(new Date(now.getTime() + 2 * 86_400_000)));
+      const has = await prisma.leaveRequest.findFirst({
+        where: { userId: parthoId, fromDate: date },
+      });
+      if (!has) {
+        await prisma.leaveRequest.create({
+          data: {
+            userId: parthoId,
+            fromDate: date,
+            toDate: leaveTo,
+            reason: "Family event",
+            status: "APPROVED",
+            approvedBy: adminId,
+            approvedAt: now,
+            createdBy: parthoId,
+            updatedBy: parthoId,
+          },
+        });
+      }
+    }
+
+    // A pending leave request awaiting approval (§11) so the queue isn't empty.
+    const habibId = userIdByEmail.get("packing@giftvaly.com");
+    if (habibId) {
+      const has = await prisma.leaveRequest.findFirst({
+        where: { userId: habibId, status: "PENDING" },
+      });
+      if (!has) {
+        const nextWeekYmd = dhakaYmd(new Date(now.getTime() + 7 * 86_400_000));
+        await prisma.leaveRequest.create({
+          data: {
+            userId: habibId,
+            fromDate: dayStartUTC(nextWeekYmd),
+            toDate: dayStartUTC(nextWeekYmd),
+            reason: "Personal work",
+            status: "PENDING",
+            createdBy: habibId,
+            updatedBy: habibId,
+          },
+        });
+      }
+    }
+  }
 
   // 4c. Couriers (SPEC §7) — COD fee % + a few per-district zone charges.
   const demoCouriers = [

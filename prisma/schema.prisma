@@ -42,6 +42,8 @@ model User {
   leadDailyCounts    LeadDailyCount[]         @relation("LeadDailyCounts")
   targets            Target[]                 @relation("UserTargets")
   rewards            Reward[]                 @relation("UserRewards")
+  attendance         Attendance[]             @relation("UserAttendance")
+  leaveRequests      LeaveRequest[]           @relation("UserLeaves")
 
   @@map("users")
 }
@@ -952,4 +954,73 @@ model Reward {
   @@index([month])
   @@index([userId])
   @@map("rewards")
+}
+
+// ============ ATTENDANCE & LEAVE (SPEC §11 / §14) ============
+
+// SPEC §11 — a day's attendance for one employee. LATE / HALF_DAY are auto-set
+// from the check-in time against the office-hours settings; PRESENT is on time.
+// ABSENT is never stored — it is derived in reports for a workday with no row
+// and no approved leave (so no nightly job is needed). LEAVE marks a day the
+// employee is out on an approved leave.
+enum AttendanceStatus {
+  PRESENT
+  LATE
+  ABSENT
+  HALF_DAY
+  LEAVE
+}
+
+// SPEC §11 — one row per employee per calendar day (Asia/Dhaka). `date` is that
+// day stored as UTC-midnight so the @db.Date column reads back the same calendar
+// day (mirrors the reward/expense date convention). Timestamps are server-side.
+model Attendance {
+  id         Int              @id @default(autoincrement())
+  userId     Int              @map("user_id")
+  date       DateTime         @db.Date
+  checkInAt  DateTime?        @map("check_in_at")
+  checkOutAt DateTime?        @map("check_out_at")
+  status     AttendanceStatus @default(PRESENT)
+  note       String?
+  createdAt  DateTime         @default(now()) @map("created_at")
+  updatedAt  DateTime         @updatedAt @map("updated_at")
+  createdBy  Int?             @map("created_by")
+  updatedBy  Int?             @map("updated_by")
+
+  user User @relation("UserAttendance", fields: [userId], references: [id], onDelete: Cascade)
+
+  // One attendance row per user per day.
+  @@unique([userId, date])
+  @@index([date])
+  @@map("attendance")
+}
+
+// SPEC §11 — simple leave request + approval flow. PENDING until a manager
+// (attendance.view_all) approves or rejects. An APPROVED request marks its
+// [fromDate, toDate] span as LEAVE in the monthly sheet.
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model LeaveRequest {
+  id         Int         @id @default(autoincrement())
+  userId     Int         @map("user_id")
+  fromDate   DateTime    @map("from_date") @db.Date
+  toDate     DateTime    @map("to_date") @db.Date
+  reason     String
+  status     LeaveStatus @default(PENDING)
+  approvedBy Int?        @map("approved_by")
+  approvedAt DateTime?   @map("approved_at")
+  createdAt  DateTime    @default(now()) @map("created_at")
+  updatedAt  DateTime    @updatedAt @map("updated_at")
+  createdBy  Int?        @map("created_by")
+  updatedBy  Int?        @map("updated_by")
+
+  user User @relation("UserLeaves", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@map("leave_requests")
 }

@@ -140,11 +140,31 @@ export default async function DashboardLayout({
       section: "Reports",
     });
   }
+  // R10 — Attendance report (SPEC §11 / §12), for attendance.view_all roles.
+  if (permissions.includes("attendance.view_all")) {
+    navItems.push({
+      href: "/attendance/report",
+      label: "Attendance Report",
+      section: "Reports",
+    });
+  }
   // Targets & Rewards (SPEC §10). The leaderboard is for everyone (motivation);
   // gauges and management are scoped inside the page/API by permission.
   navItems.push({ href: "/targets", label: "Targets & Rewards", section: "Targets" });
   if (permissions.includes("targets.manage")) {
     navItems.push({ href: "/targets/manage", label: "Manage Targets", section: "Targets" });
+  }
+  // Attendance (SPEC §11). Everyone with attendance.own gets the self check-in
+  // page; managers (attendance.view_all) also get the leave-approval view.
+  if (permissions.includes("attendance.own")) {
+    navItems.push({ href: "/attendance", label: "My Attendance", section: "Attendance" });
+  }
+  if (permissions.includes("attendance.view_all")) {
+    navItems.push({
+      href: "/attendance/manage",
+      label: "Attendance & Leave",
+      section: "Attendance",
+    });
   }
   if (permissions.includes("users.manage")) {
     navItems.push(
@@ -156,13 +176,21 @@ export default async function DashboardLayout({
   if (permissions.includes("audit.view")) {
     navItems.push({ href: "/admin/audit", label: "Audit Log", section: "Admin" });
   }
-  // Courier API integration settings (STEADFAST_INTEGRATION.md §1) — admin-only.
+  // Settings (SPEC §11 attendance office hours; STEADFAST_INTEGRATION.md §1) —
+  // admin-only (settings.manage).
   if (permissions.includes("settings.manage")) {
-    navItems.push({
-      href: "/settings/steadfast",
-      label: "Steadfast Integration",
-      section: "Admin",
-    });
+    navItems.push(
+      {
+        href: "/settings/attendance",
+        label: "Attendance Settings",
+        section: "Admin",
+      },
+      {
+        href: "/settings/steadfast",
+        label: "Steadfast Integration",
+        section: "Admin",
+      }
+    );
   }
 
   const roleLabel = ROLE_LABELS[user.role.name as RoleName] ?? user.role.name;
