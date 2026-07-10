@@ -148,6 +148,15 @@ export default async function DashboardLayout({
       section: "Reports",
     });
   }
+  // R9 — P&L / costing (SPEC §9.2 / §9.3). Cost-visible roles only (reports.pnl:
+  // Admin + Accounts by seed, Manager if granted) — never Sales/TL/Packing.
+  if (permissions.includes("reports.pnl")) {
+    navItems.push(
+      { href: "/reports/pnl/daily", label: "Daily Summary", section: "P&L" },
+      { href: "/reports/pnl/monthly", label: "Monthly P&L", section: "P&L" },
+      { href: "/reports/pnl/orders", label: "Per-order Profit", section: "P&L" }
+    );
+  }
   // Targets & Rewards (SPEC §10). The leaderboard is for everyone (motivation);
   // gauges and management are scoped inside the page/API by permission.
   navItems.push({ href: "/targets", label: "Targets & Rewards", section: "Targets" });
@@ -180,6 +189,11 @@ export default async function DashboardLayout({
   // admin-only (settings.manage).
   if (permissions.includes("settings.manage")) {
     navItems.push(
+      {
+        href: "/settings/pnl",
+        label: "P&L Settings",
+        section: "Admin",
+      },
       {
         href: "/settings/attendance",
         label: "Attendance Settings",

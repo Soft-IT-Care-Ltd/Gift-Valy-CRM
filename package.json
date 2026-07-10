@@ -13,7 +13,8 @@
     "verify:purchase-dues": "tsx scripts/verify-purchase-dues.ts",
     "verify:leads": "tsx scripts/verify-leads.ts",
     "verify:targets": "tsx scripts/verify-targets.ts",
-    "verify:attendance": "tsx scripts/verify-attendance.ts"
+    "verify:attendance": "tsx scripts/verify-attendance.ts",
+    "verify:pnl": "tsx scripts/verify-pnl.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
