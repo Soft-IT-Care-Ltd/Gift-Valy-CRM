@@ -140,6 +140,12 @@ export default async function DashboardLayout({
       section: "Reports",
     });
   }
+  // Targets & Rewards (SPEC §10). The leaderboard is for everyone (motivation);
+  // gauges and management are scoped inside the page/API by permission.
+  navItems.push({ href: "/targets", label: "Targets & Rewards", section: "Targets" });
+  if (permissions.includes("targets.manage")) {
+    navItems.push({ href: "/targets/manage", label: "Manage Targets", section: "Targets" });
+  }
   if (permissions.includes("users.manage")) {
     navItems.push(
       { href: "/admin/users", label: "Users", section: "Admin" },

@@ -72,6 +72,15 @@ export function orderIsInvoiceable(status: OrderStatusValue): boolean {
   return !NON_INVOICEABLE_STATUSES.includes(status);
 }
 
+// §4.2 — an order counts toward sales (SE dashboard, targets, leaderboard) unless
+// its money came back or never landed: cancelled, returned and refunded orders
+// are excluded. Shared so the home dashboard and the Targets gauges agree.
+export const NON_SALE_STATUSES: OrderStatusValue[] = [
+  "CANCELLED",
+  "RETURNED",
+  "REFUNDED",
+];
+
 export const PAYMENT_TYPES = [
   "ADVANCE",
   "PARTIAL",

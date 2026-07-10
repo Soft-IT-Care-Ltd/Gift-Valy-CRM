@@ -1181,6 +1181,63 @@ async function main() {
     })),
   });
 
+  // 10. Targets & Rewards (SPEC §10). Reward rules, the onboarding-grace setting
+  // and demo targets for the current Asia/Dhaka month (incl. a confidential TL
+  // target). Rewards themselves are left uncomputed — run the month-close from
+  // /targets/manage to see the flow.
+  const rewardRulesSeed = [
+    { name: "Target hit (100%)", type: "ACHIEVEMENT" as const, minAchievementPercent: 100, rewardAmount: 3000 },
+    { name: "Overachiever (120%)", type: "ACHIEVEMENT" as const, minAchievementPercent: 120, rewardAmount: 6000 },
+    { name: "Top seller of month", type: "TOP_SELLER" as const, minAchievementPercent: null, rewardAmount: 5000 },
+  ];
+  for (const r of rewardRulesSeed) {
+    await prisma.rewardRule.upsert({
+      where: { name: r.name },
+      update: { type: r.type, minAchievementPercent: r.minAchievementPercent, rewardAmount: r.rewardAmount, isActive: true },
+      create: { ...r, createdBy: adminId, updatedBy: adminId },
+    });
+  }
+  await prisma.setting.upsert({
+    where: { key: "onboarding_exclude_days" },
+    update: {},
+    create: { key: "onboarding_exclude_days", value: 30 },
+  });
+
+  const seedMonthKey = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Dhaka",
+    year: "numeric",
+    month: "2-digit",
+  }).format(new Date());
+  const seedMonth = new Date(`${seedMonthKey}-01T00:00:00.000Z`);
+  const sakibId = userIdByEmail.get(TL)!;
+
+  const userTargets = [
+    { userId: sanjoyId, targetOrders: 20, targetAmount: 300000, isConfidential: false },
+    { userId: parthoId, targetOrders: 15, targetAmount: 250000, isConfidential: false },
+    // Confidential TL target — visible only to Admin + Sakib (§10).
+    { userId: sakibId, targetOrders: 10, targetAmount: 200000, isConfidential: true },
+  ];
+  for (const t of userTargets) {
+    await prisma.target.upsert({
+      where: { month_userId: { month: seedMonth, userId: t.userId } },
+      update: { targetOrders: t.targetOrders, targetAmount: t.targetAmount, isConfidential: t.isConfidential },
+      create: {
+        month: seedMonth, scope: "USER", userId: t.userId,
+        targetOrders: t.targetOrders, targetAmount: t.targetAmount, isConfidential: t.isConfidential,
+        createdBy: adminId, updatedBy: adminId,
+      },
+    });
+  }
+  await prisma.target.upsert({
+    where: { month_teamId: { month: seedMonth, teamId: team.id } },
+    update: { targetOrders: 45, targetAmount: 700000 },
+    create: {
+      month: seedMonth, scope: "TEAM", teamId: team.id,
+      targetOrders: 45, targetAmount: 700000,
+      createdBy: adminId, updatedBy: adminId,
+    },
+  });
+
   const orderCount = await prisma.order.count();
   const leadCount = await prisma.lead.count();
   const convertedLeadCount = await prisma.lead.count({ where: { status: "CONVERTED" } });
@@ -1201,6 +1258,7 @@ async function main() {
   console.log(`  Courier: ${demoCouriers.length} couriers, ${shipmentCount} shipments (incl. delivered, in-transit, COD-pending, returned)`);
   console.log(`  Money: ${demoWallets.length} wallets (bKash/Nagad/Rocket/Bank/Cash), payments attributed by method`);
   console.log(`  Expenses: ${expenseCategoryCount} categories (fixed/variable), ${expenseCount} expenses (ad-cost trend + fixed costs + auto COD fees)`);
+  console.log(`  Targets:  ${rewardRulesSeed.length} reward rules, 3 user + 1 team target for ${seedMonthKey}; onboarding grace = 30 days`);
   console.log("  Admin:    mh.neshad39@gmail.com / Admin@GV2026");
   console.log("  Manager:  manager@giftvaly.com  / Manager@GV2026");
   console.log("  TL:       sakib@giftvaly.com    / Team@GV2026");

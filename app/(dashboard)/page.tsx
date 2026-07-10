@@ -6,6 +6,7 @@ import { prisma } from "@/lib/db";
 import { getEffectivePermissions } from "@/lib/rbac";
 import { PERMISSION_DEFS, ROLE_LABELS, type RoleName } from "@/lib/permissions";
 import { dhakaDayStart, dhakaMonthStart } from "@/lib/orders";
+import { NON_SALE_STATUSES } from "@/lib/order-constants";
 import { buildFollowUps, leadScopeWhere } from "@/lib/leads";
 import { canSeeCosts } from "@/lib/catalog";
 import { LEAD_SOURCE_LABELS, LEAD_STATUS_LABELS } from "@/lib/lead-constants";
@@ -30,13 +31,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/orders/orders-list-client";
 import { SupplierDuesAlert } from "@/components/purchases/supplier-dues-alert";
-import type { OrderStatus } from "@prisma/client";
-
 export const dynamic = "force-dynamic";
-
-// §4.2: cancelled orders are excluded from sales numbers; returned/refunded
-// sales are money that came back, so they don't count either.
-const NON_SALE_STATUSES: OrderStatus[] = ["CANCELLED", "RETURNED", "REFUNDED"];
 
 // SPEC §13 role-based dashboards — SE home: my orders today, my sales this
 // month (count + value), recent orders.

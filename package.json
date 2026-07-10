@@ -11,7 +11,8 @@
     "verify:steadfast": "tsx scripts/verify-steadfast.ts",
     "verify:lifecycle": "tsx scripts/verify-lifecycle.ts",
     "verify:purchase-dues": "tsx scripts/verify-purchase-dues.ts",
-    "verify:leads": "tsx scripts/verify-leads.ts"
+    "verify:leads": "tsx scripts/verify-leads.ts",
+    "verify:targets": "tsx scripts/verify-targets.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
