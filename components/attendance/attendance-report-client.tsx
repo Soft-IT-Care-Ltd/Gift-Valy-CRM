@@ -25,9 +25,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toCsv, downloadCsv, csvDateStamp } from "@/lib/csv";
-import { formatDateTime } from "@/lib/format";
+import { formatDate, formatDateTime } from "@/lib/format";
 import { monthLabel } from "@/lib/targets-constants";
 import { DAY_CELL_LABELS, WEEKDAY_LABELS } from "@/lib/attendance-constants";
+import { ExportPdfButton } from "@/components/reports/export-pdf-button";
+import type { ReportPdfPayload } from "@/lib/report-pdf";
 import type {
   EmployeeMonthlySheet,
   TeamMonthlySummary,
@@ -115,6 +117,60 @@ export function AttendanceReportClient({
     );
   }
 
+  function pdfPayload(): ReportPdfPayload {
+    const sections: ReportPdfPayload["sections"] = [
+      {
+        heading: "Team summary",
+        note: "Present / late / absent / half-day / leave counts and work hours per employee.",
+        headers: [
+          "Employee",
+          "Role",
+          "Team",
+          "Present",
+          "Late",
+          "Half",
+          "Absent",
+          "Leave",
+          "Hours",
+        ],
+        aligns: ["l", "l", "l", "r", "r", "r", "r", "r", "r"],
+        rows: summary.rows.map((r) => [
+          r.name,
+          r.roleName,
+          r.teamName ?? "—",
+          r.counts.present,
+          r.counts.late || "—",
+          r.counts.halfDay || "—",
+          r.counts.absent || "—",
+          r.counts.leave || "—",
+          r.counts.totalWorkHours,
+        ]),
+      },
+    ];
+    if (sheet) {
+      sections.push({
+        heading: `Monthly sheet — ${sheet.user.name}`,
+        note: `Present ${sheet.counts.present} · Late ${sheet.counts.late} · Half-day ${sheet.counts.halfDay} · Absent ${sheet.counts.absent} · On leave ${sheet.counts.leave} · Work hours ${sheet.counts.totalWorkHours}`,
+        headers: ["Date", "Weekday", "Status", "Check-in", "Check-out", "Hours"],
+        aligns: ["l", "l", "l", "l", "l", "r"],
+        rows: sheet.days.map((d) => [
+          formatDate(d.date),
+          WEEKDAY_LABELS[d.weekday],
+          DAY_CELL_LABELS[d.status],
+          d.checkInAt ? formatDateTime(d.checkInAt) : "—",
+          d.checkOutAt ? formatDateTime(d.checkOutAt) : "—",
+          d.workedHours ?? "—",
+        ]),
+      });
+    }
+    return {
+      title: "Attendance Report (R10)",
+      subtitle: monthLabel(monthKey),
+      landscape: true,
+      sections,
+    };
+  }
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -138,6 +194,10 @@ export function AttendanceReportClient({
           <Button variant="outline" size="sm" onClick={() => shiftMonth(1)}>
             Next →
           </Button>
+          <ExportPdfButton
+            filename={`attendance-report-${monthKey}-${csvDateStamp()}.pdf`}
+            build={pdfPayload}
+          />
         </div>
       </div>
 

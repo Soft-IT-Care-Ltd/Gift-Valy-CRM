@@ -30,11 +30,13 @@ import {
 } from "@/components/ui/select";
 import { formatDate } from "@/lib/format";
 import { toCsv, downloadCsv, csvDateStamp } from "@/lib/csv";
+import { ExportPdfButton } from "@/components/reports/export-pdf-button";
 import {
   LEAD_SOURCES,
   LEAD_SOURCE_LABELS,
   LOST_REASON_LABELS,
 } from "@/lib/lead-constants";
+import type { ReportPdfPayload, ReportPdfSection } from "@/lib/report-pdf";
 import type { LeadReport, LeadConversionRow } from "@/lib/reports";
 
 export function LeadReportClient({
@@ -79,14 +81,84 @@ export function LeadReportClient({
     downloadCsv(`leads-by-${name}-${csvDateStamp()}.csv`, toCsv(headers, body));
   }
 
+  function pdfPayload(): ReportPdfPayload {
+    const conv = (
+      heading: string,
+      labelHead: string,
+      rows: LeadConversionRow[]
+    ): ReportPdfSection => ({
+      heading,
+      headers: [labelHead, "Leads", "Converted", "Conversion %"],
+      aligns: ["l", "r", "r", "r"],
+      rows: rows.map((r) => [r.label, r.total, r.converted, `${r.conversionPct}%`]),
+    });
+    const sections: ReportPdfSection[] = [];
+    if (report.bulkCount > 0) {
+      sections.push({
+        heading: "Bulk daily counts",
+        note: `${report.bulkCount} leads logged as daily counts (§3.1) — no per-lead conversion tracked, so they aren't in the conversion % above.`,
+        headers: ["Source", "Leads"],
+        aligns: ["l", "r"],
+        rows: report.bulkBySource.map((b) => [LEAD_SOURCE_LABELS[b.source], b.count]),
+      });
+    }
+    sections.push(
+      conv("By sales executive", "SE", report.bySE),
+      conv(
+        "By source",
+        "Source",
+        report.bySource.map((r) => ({
+          ...r,
+          label:
+            LEAD_SOURCE_LABELS[r.label as keyof typeof LEAD_SOURCE_LABELS] ??
+            r.label,
+        }))
+      ),
+      conv("By campaign", "Campaign", report.byCampaign),
+      conv("By date", "Date", report.byDate),
+      {
+        heading: "Lost reasons",
+        note: `Why ${report.lost} leads were lost in this range.`,
+        headers: ["Reason", "Share", "Count"],
+        aligns: ["l", "r", "r"],
+        rows: report.lostReasons.map((r) => [
+          LOST_REASON_LABELS[r.reason],
+          `${r.share}%`,
+          r.count,
+        ]),
+      }
+    );
+    return {
+      title: "Lead Report (R2)",
+      subtitle: `${rangeLabel}${seId !== "ALL" ? ` · SE: ${seOptions.find((s) => String(s.id) === seId)?.name ?? seId}` : ""}${source !== "ALL" ? ` · Source: ${LEAD_SOURCE_LABELS[source as keyof typeof LEAD_SOURCE_LABELS] ?? source}` : ""}${campaign.trim() ? ` · Campaign: ${campaign.trim()}` : ""}`,
+      kpis: [
+        {
+          label: "Total leads",
+          value: `${report.totalLeads}${report.bulkCount > 0 ? ` (+${report.bulkCount} in bulk)` : ""}`,
+        },
+        { label: "Converted", value: String(report.converted) },
+        { label: "Conversion %", value: `${report.conversionPct}%` },
+        { label: "Open", value: String(report.open) },
+        { label: "Lost", value: String(report.lost) },
+      ],
+      sections,
+    };
+  }
+
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">Lead report</h1>
-        <p className="text-sm text-muted-foreground">
-          R2 — leads by SE, source, campaign and date, with conversion % and the
-          lost-reason breakdown.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h1 className="text-2xl font-semibold">Lead report</h1>
+          <p className="text-sm text-muted-foreground">
+            R2 — leads by SE, source, campaign and date, with conversion % and the
+            lost-reason breakdown.
+          </p>
+        </div>
+        <ExportPdfButton
+          filename={`lead-report-${csvDateStamp()}.pdf`}
+          build={pdfPayload}
+        />
       </div>
 
       {/* Filters */}

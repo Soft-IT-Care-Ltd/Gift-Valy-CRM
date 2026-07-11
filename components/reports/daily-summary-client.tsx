@@ -23,7 +23,9 @@ import {
 } from "@/components/ui/table";
 import { money, formatDate } from "@/lib/format";
 import { toCsv, downloadCsv, csvDateStamp } from "@/lib/csv";
+import { ExportPdfButton } from "@/components/reports/export-pdf-button";
 import { PnlNav } from "@/components/reports/pnl-nav";
+import type { ReportPdfPayload } from "@/lib/report-pdf";
 import type { DailySummary, DailySummaryRow } from "@/lib/pnl";
 
 export function DailySummaryClient({
@@ -75,15 +77,62 @@ export function DailySummaryClient({
   const rangeLabel = `${formatDate(summary.range.from)} → ${formatDate(summary.range.to)}`;
   const t = summary.totals;
 
+  function pdfPayload(): ReportPdfPayload {
+    const rows: (string | number | null)[][] = summary.rows.map((r) => [
+      formatDate(r.date),
+      r.orders || "—",
+      r.salesValue ? money(r.salesValue) : "—",
+      r.collection ? money(r.collection) : "—",
+      r.costs ? money(r.costs) : "—",
+      r.net ? money(r.net) : "—",
+    ]);
+    if (summary.rows.length > 0) {
+      rows.push([
+        "Total",
+        t.orders,
+        money(t.salesValue),
+        money(t.collection),
+        money(t.costs),
+        money(t.net),
+      ]);
+    }
+    return {
+      title: "Daily Summary (R9)",
+      subtitle: rangeLabel,
+      kpis: [
+        { label: "Orders", value: String(t.orders) },
+        { label: "Sales value", value: money(t.salesValue) },
+        { label: "Collection", value: money(t.collection) },
+        { label: "Costs", value: money(t.costs) },
+        { label: "Net (sales − costs)", value: money(t.net) },
+      ],
+      sections: [
+        {
+          heading: "By day",
+          note: "Sales are booked at confirmation; collection and costs are cash (by payment/expense date). Net = Sales − Costs.",
+          headers: ["Date", "Orders", "Sales", "Collection", "Costs", "Net"],
+          aligns: ["l", "r", "r", "r", "r", "r"],
+          rows,
+        },
+      ],
+    };
+  }
+
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">Daily summary</h1>
-        <p className="text-sm text-muted-foreground">
-          R9 (SPEC §9.3) — date-wise sales, collection, costs and net. Sales are
-          booked at confirmation; collection and costs are cash (by payment/expense
-          date). Net = Sales − Costs.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h1 className="text-2xl font-semibold">Daily summary</h1>
+          <p className="text-sm text-muted-foreground">
+            R9 (SPEC §9.3) — date-wise sales, collection, costs and net. Sales are
+            booked at confirmation; collection and costs are cash (by payment/expense
+            date). Net = Sales − Costs.
+          </p>
+        </div>
+        <ExportPdfButton
+          filename={`daily-summary-${csvDateStamp()}.pdf`}
+          build={pdfPayload}
+        />
       </div>
 
       <PnlNav />

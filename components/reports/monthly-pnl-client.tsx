@@ -29,13 +29,15 @@ import {
 } from "@/components/ui/select";
 import { money } from "@/lib/format";
 import { toCsv, downloadCsv, csvDateStamp } from "@/lib/csv";
+import { ExportPdfButton } from "@/components/reports/export-pdf-button";
 import { PnlNav } from "@/components/reports/pnl-nav";
 import {
   REVENUE_BASES,
   REVENUE_BASIS_LABELS,
   type RevenueBasis,
 } from "@/lib/pnl-constants";
-import type { MonthlyPnl, MonthlyPnlPeriod } from "@/lib/pnl";
+import type { ReportPdfPayload } from "@/lib/report-pdf";
+import type { MonthlyPnl } from "@/lib/pnl";
 
 const pctText = (n: number) => `${n.toFixed(1)}%`;
 
@@ -91,14 +93,120 @@ export function MonthlyPnlClient({ pnl }: { pnl: MonthlyPnl }) {
     );
   }
 
+  function pdfPayload(): ReportPdfPayload {
+    const statementRows: (string | number | null)[][] = [
+      [
+        "Revenue",
+        money(current.revenue),
+        money(previous.revenue),
+        delta(deltas.revenue).text,
+      ],
+      [
+        "− Cost of goods sold",
+        `(${money(current.cogs)})`,
+        `(${money(previous.cogs)})`,
+        delta(deltas.cogs).text,
+      ],
+      [
+        `= Gross profit (${pctText(current.grossMarginPct)} margin)`,
+        money(current.grossProfit),
+        money(previous.grossProfit),
+        delta(deltas.grossProfit).text,
+      ],
+      ["− Variable costs", money(current.variableCost), "", ""],
+      ...(current.variableLines.length > 0
+        ? current.variableLines.map((l) => [
+            `  ${l.name}`,
+            money(l.amount),
+            money(previous.variableLines.find((p) => p.name === l.name)?.amount ?? 0),
+            "",
+          ])
+        : [["  No variable costs recorded", "", "", ""]]),
+      ["− Fixed costs", money(current.fixedCost), "", ""],
+      ...(current.fixedLines.length > 0
+        ? current.fixedLines.map((l) => [
+            `  ${l.name}`,
+            money(l.amount),
+            money(previous.fixedLines.find((p) => p.name === l.name)?.amount ?? 0),
+            "",
+          ])
+        : [["  No fixed costs recorded", "", "", ""]]),
+      [
+        `= Net profit (${pctText(current.netMarginPct)} margin)`,
+        money(current.netProfit),
+        money(previous.netProfit),
+        delta(deltas.netProfit).text,
+      ],
+    ];
+    const caveats = [
+      current.inventoryPurchased > 0
+        ? `Inventory purchased this month: ${money(current.inventoryPurchased)} — excluded from operating costs (expensed as COGS when the goods sell).`
+        : null,
+      current.cogsIncompleteCount > 0
+        ? `${current.cogsIncompleteCount} order(s) counted in revenue aren't packed yet, so their product cost isn't frozen — COGS (and net profit) will firm up once they're packed.`
+        : null,
+    ].filter((c): c is string => c !== null);
+    return {
+      title: "Monthly P&L (R9)",
+      subtitle: `${current.label} vs ${previous.label} · ${REVENUE_BASIS_LABELS[current.basis]}`,
+      kpis: [
+        {
+          label: "Revenue",
+          value: `${money(current.revenue)} · ${current.orderCount} orders`,
+        },
+        {
+          label: "Gross profit",
+          value: `${money(current.grossProfit)} · ${pctText(current.grossMarginPct)} margin`,
+        },
+        {
+          label: "Net profit",
+          value: `${money(current.netProfit)} · ${pctText(current.netMarginPct)} margin`,
+        },
+        { label: "Per-order avg profit", value: money(current.perOrderAvgProfit) },
+      ],
+      sections: [
+        {
+          heading: `Profit & loss — ${current.label}`,
+          note: [
+            `${REVENUE_BASIS_LABELS[current.basis]}. COGS is the frozen cost of goods sold; inventory purchases are excluded from operating costs (they hit COGS when the goods sell).`,
+            ...caveats,
+          ].join(" "),
+          headers: ["Line", current.label, previous.label, "Change"],
+          aligns: ["l", "r", "r", "r"],
+          rows: statementRows,
+        },
+        {
+          heading: `vs ${previous.label}`,
+          note: "Month-over-month change on the key lines.",
+          headers: ["Line", "Change"],
+          aligns: ["l", "r"],
+          rows: [
+            ["Revenue", delta(deltas.revenue).text],
+            ["Gross profit", delta(deltas.grossProfit).text],
+            ["Net profit", delta(deltas.netProfit).text],
+            ["Variable costs", delta(deltas.variableCost).text],
+            ["Fixed costs", delta(deltas.fixedCost).text],
+            ["COGS", delta(deltas.cogs).text],
+          ],
+        },
+      ],
+    };
+  }
+
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">Monthly P&amp;L</h1>
-        <p className="text-sm text-muted-foreground">
-          R9 (SPEC §9.2) — revenue − COGS − variable − fixed = net profit, with
-          margins and a comparison against the previous month.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h1 className="text-2xl font-semibold">Monthly P&amp;L</h1>
+          <p className="text-sm text-muted-foreground">
+            R9 (SPEC §9.2) — revenue − COGS − variable − fixed = net profit, with
+            margins and a comparison against the previous month.
+          </p>
+        </div>
+        <ExportPdfButton
+          filename={`monthly-pnl-${current.ym}-${csvDateStamp()}.pdf`}
+          build={pdfPayload}
+        />
       </div>
 
       <PnlNav />

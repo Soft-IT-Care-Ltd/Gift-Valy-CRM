@@ -15,7 +15,8 @@
     "verify:targets": "tsx scripts/verify-targets.ts",
     "verify:attendance": "tsx scripts/verify-attendance.ts",
     "verify:pnl": "tsx scripts/verify-pnl.ts",
-    "verify:dashboard": "tsx scripts/verify-dashboard.ts"
+    "verify:dashboard": "tsx scripts/verify-dashboard.ts",
+    "verify:reports": "tsx scripts/verify-reports.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",

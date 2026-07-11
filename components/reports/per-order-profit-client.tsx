@@ -31,9 +31,11 @@ import {
 } from "@/components/ui/select";
 import { money, formatDate } from "@/lib/format";
 import { toCsv, downloadCsv, csvDateStamp } from "@/lib/csv";
+import { ExportPdfButton } from "@/components/reports/export-pdf-button";
 import { ORDER_STATUS_LABELS, type OrderStatusValue } from "@/lib/order-constants";
 import { AD_ALLOCATION_LABELS } from "@/lib/pnl-constants";
 import { PnlNav } from "@/components/reports/pnl-nav";
+import type { ReportPdfPayload } from "@/lib/report-pdf";
 import type { PerOrderProfitReport, OrderProfitRow } from "@/lib/pnl";
 
 export function PerOrderProfitClient({
@@ -121,14 +123,94 @@ export function PerOrderProfitClient({
   const rangeLabel = `${formatDate(report.range.from)} → ${formatDate(report.range.to)}`;
   const t = report.totals;
 
+  function pdfPayload(): ReportPdfPayload {
+    const seName = se
+      ? salesExecutives.find((u) => String(u.id) === se)?.name ?? se
+      : "";
+    const statusLabel =
+      statusFilter === "SALES"
+        ? "Sales only"
+        : statusFilter === "ALL"
+          ? "All statuses"
+          : ORDER_STATUS_LABELS[statusFilter as OrderStatusValue];
+    const share = (value: number) =>
+      `${t.sellValue > 0 ? Math.round((value / t.sellValue) * 100) : 0}%`;
+    return {
+      title: "Per-order Profit (R9)",
+      subtitle: `${rangeLabel}${seName ? ` · SE: ${seName}` : ""} · Status: ${statusLabel}`,
+      landscape: true,
+      kpis: [
+        { label: "Sales orders", value: String(t.orderCount) },
+        { label: "Sell value", value: money(t.sellValue) },
+        {
+          label: "Total profit",
+          value: `${money(t.profit)} · ${t.marginPct.toFixed(1)}% margin`,
+        },
+        { label: "Avg profit / order", value: money(t.avgProfit) },
+      ],
+      sections: [
+        {
+          heading: "Where the margin goes",
+          note: `Totals across ${t.orderCount} sales orders in range. Ad allocation: ${AD_ALLOCATION_LABELS[report.adAllocationMethod]}${report.adAllocationMethod === "manual_percent" ? ` (${report.settings.adManualPercent}%)` : ""} · Packaging / order: ${money(report.settings.packagingCostPerOrder)}.`,
+          headers: ["Line", "Amount", "% of sell value"],
+          aligns: ["l", "r", "r"],
+          rows: [
+            ["Product cost", money(t.productCost), share(t.productCost)],
+            ["Courier cost", money(t.courierCost), share(t.courierCost)],
+            ["Packaging", money(t.packagingCost), share(t.packagingCost)],
+            ["Ad cost", money(t.adCost), share(t.adCost)],
+            ["Profit", money(t.profit), share(t.profit)],
+          ],
+        },
+        {
+          heading: `Orders (${filtered.length})`,
+          note: `* = product cost or courier cost not yet frozen (order not packed / no shipment).${report.incompleteCostCount > 0 ? ` ${report.incompleteCostCount} sales order(s) don't have their full cost frozen yet — their profit is an estimate until packed / shipped.` : ""}`,
+          headers: [
+            "Order",
+            "Date",
+            "SE",
+            "Status",
+            "Sell",
+            "Product",
+            "Courier",
+            "Pkg",
+            "Ad",
+            "Profit",
+            "Margin",
+          ],
+          aligns: ["l", "l", "l", "l", "r", "r", "r", "r", "r", "r", "r"],
+          rows: filtered.map((r) => [
+            `${r.orderNo}${!r.hasCostSnapshot || !r.hasCourierActual ? " *" : ""}`,
+            formatDate(r.createdAt),
+            r.salesExecutive,
+            ORDER_STATUS_LABELS[r.status],
+            money(r.sellValue),
+            r.hasCostSnapshot ? money(r.productCost) : "—",
+            r.hasCourierActual ? money(r.courierCost) : "—",
+            money(r.packagingCost),
+            money(r.adCost),
+            money(r.profit),
+            `${r.marginPct.toFixed(1)}%`,
+          ]),
+        },
+      ],
+    };
+  }
+
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">Per-order profit</h1>
-        <p className="text-sm text-muted-foreground">
-          R9 (SPEC §9.2) — sell value − product cost − actual courier cost −
-          packaging − allocated ad cost, per order.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h1 className="text-2xl font-semibold">Per-order profit</h1>
+          <p className="text-sm text-muted-foreground">
+            R9 (SPEC §9.2) — sell value − product cost − actual courier cost −
+            packaging − allocated ad cost, per order.
+          </p>
+        </div>
+        <ExportPdfButton
+          filename={`per-order-profit-${csvDateStamp()}.pdf`}
+          build={pdfPayload}
+        />
       </div>
 
       <PnlNav />

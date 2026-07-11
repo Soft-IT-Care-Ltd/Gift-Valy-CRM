@@ -105,6 +105,27 @@ export default async function DashboardLayout({
       }
     );
   }
+  // R1/R11/R12 — order-based reports (SPEC §12), for any order-viewing role;
+  // each page scopes rows via orderScopeWhere (SE own / TL team / all).
+  if (permissions.includes("orders.view_own")) {
+    navItems.push(
+      { href: "/reports/sales", label: "Sales Report", section: "Reports" },
+      {
+        href: "/reports/cancelled",
+        label: "Cancelled / Returned",
+        section: "Reports",
+      },
+      { href: "/reports/customers", label: "Customer Report", section: "Reports" }
+    );
+  }
+  // R3 — Team performance (SPEC §12), scope via reports.own/team/all.
+  if (permissions.includes("reports.own")) {
+    navItems.push({
+      href: "/reports/team",
+      label: "Team Performance",
+      section: "Reports",
+    });
+  }
   // R2 — Lead report (SPEC §3.2 / §12), for any lead-viewing role.
   if (permissions.includes("leads.view_own")) {
     navItems.push({ href: "/leads/report", label: "Lead Report", section: "Reports" });
