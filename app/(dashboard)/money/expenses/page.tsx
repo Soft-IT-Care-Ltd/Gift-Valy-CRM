@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import { requirePagePermission } from "@/lib/page-auth";
-import { dhakaMonthStart, dhakaDayStart } from "@/lib/orders";
+import { dhakaDateBound, dhakaMonthStart, dhakaDayStart } from "@/lib/orders";
 import {
   serializeExpense,
   EXPENSE_INCLUDE,
@@ -28,7 +28,14 @@ export default async function ExpensesPage() {
       orderBy: [{ name: "asc" }],
     }),
     prisma.expense.findMany({
-      where: { expenseDate: { gte: monthStart, lte: monthEnd } },
+      // expenseDate is @db.Date — Dhaka-day bounds so the ledger doesn't show
+      // the prior month's last day (see dhakaDateBound in lib/orders).
+      where: {
+        expenseDate: {
+          gte: dhakaDateBound(monthStart),
+          lte: dhakaDateBound(monthEnd),
+        },
+      },
       include: EXPENSE_INCLUDE,
       orderBy: [{ expenseDate: "desc" }, { id: "desc" }],
     }),

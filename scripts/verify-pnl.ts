@@ -16,6 +16,7 @@ import {
   dhakaYm,
 } from "../lib/pnl";
 import { round2 } from "../lib/pnl-constants";
+import { dhakaDateBound } from "../lib/orders";
 import { canSeeCosts } from "../lib/catalog";
 import { getEffectivePermissions } from "../lib/rbac";
 import { NON_SALE_STATUSES, type OrderStatusValue } from "../lib/order-constants";
@@ -89,7 +90,11 @@ async function main() {
   // Recompute the per-day ad allocation exactly as the builder does.
   const [adRows, orderDays] = await Promise.all([
     prisma.expense.findMany({
-      where: { expenseDate: { gte: from, lte: to }, category: { name: AD_COST_CATEGORY } },
+      // expenseDate is @db.Date — same Dhaka-day bounds as buildAdAllocationByDay.
+      where: {
+        expenseDate: { gte: dhakaDateBound(from), lte: dhakaDateBound(to) },
+        category: { name: AD_COST_CATEGORY },
+      },
       select: { expenseDate: true, amount: true },
     }),
     prisma.order.findMany({
@@ -190,7 +195,8 @@ async function main() {
 
   // Costs total reconciles with the raw expense ledger for the window.
   const expenseAgg = await prisma.expense.aggregate({
-    where: { expenseDate: { gte: from, lte: to } },
+    // expenseDate is @db.Date — same Dhaka-day bounds as buildDailySummary.
+    where: { expenseDate: { gte: dhakaDateBound(from), lte: dhakaDateBound(to) } },
     _sum: { amount: true },
   });
   check(
@@ -234,7 +240,8 @@ async function main() {
     })(),
   ];
   const monthExpenses = await prisma.expense.findMany({
-    where: { expenseDate: { gte: start, lt: next } },
+    // expenseDate is @db.Date — same Dhaka-day bounds as buildMonthlyPnl.
+    where: { expenseDate: { gte: dhakaDateBound(start), lt: dhakaDateBound(next) } },
     select: { amount: true, category: { select: { name: true, costType: true } } },
   });
   let expVar = 0;

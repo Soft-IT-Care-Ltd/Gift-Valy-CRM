@@ -199,3 +199,26 @@ export function normalizePhone(raw: string): string {
   const digits = trimmed.replace(/[^\d]/g, "");
   return trimmed.startsWith("+") ? `+${digits}` : digits;
 }
+
+// A `@db.Date` column stores a bare calendar day; Prisma truncates any Date
+// written or compared against it to the instant's UTC calendar date. A Dhaka
+// +06:00 instant (e.g. the 1st at 00:00+06 = the prior day 18:00 UTC) therefore
+// resolves to the PREVIOUS day — leaking the day before into `gte` ranges and
+// storing user-picked days one day early. Both helpers pin a value to
+// UTC-midnight of its Dhaka calendar day so `@db.Date` round-trips exactly.
+
+// Range bound (or derived write) from an existing Date/instant.
+export function dhakaDateBound(d: Date): Date {
+  const ymd = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Dhaka",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+  return new Date(`${ymd}T00:00:00.000Z`);
+}
+
+// Write value for a user-picked "YYYY-MM-DD" string.
+export function dbDate(ymd: string): Date {
+  return new Date(`${ymd}T00:00:00.000Z`);
+}

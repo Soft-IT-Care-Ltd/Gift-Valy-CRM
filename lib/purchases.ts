@@ -1,7 +1,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "./db";
 import { AuthzError } from "./authz";
-import { dhakaDayStart } from "./orders";
+import { dhakaDateBound, dhakaDayStart } from "./orders";
 import { ensurePurchaseExpenseCategory, purchasePaymentStatus } from "./stock";
 
 // ============ SPEC §6.3 — supplier credit (purchase dues) ============
@@ -68,7 +68,8 @@ export async function recordPurchasePayment(
   const categoryId = await ensurePurchaseExpenseCategory(tx);
   const expense = await tx.expense.create({
     data: {
-      expenseDate: input.paymentDate,
+      // expenseDate is @db.Date — store the Dhaka calendar day, not the instant
+      expenseDate: dhakaDateBound(input.paymentDate),
       categoryId,
       amount,
       walletId: input.walletId,

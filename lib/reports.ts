@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import { packageAvailable, packageCost } from "@/lib/catalog";
-import { dhakaDayStart, dhakaMonthStart } from "@/lib/orders";
+import { dhakaDateBound, dhakaDayStart, dhakaMonthStart } from "@/lib/orders";
 import type {
   PaymentMethodValue,
   PaymentTypeValue,
@@ -843,14 +843,7 @@ function dhakaYmd(d: Date): string {
   }).format(d);
 }
 
-// A `@db.Date` column stores a bare calendar day at UTC-midnight. A Dhaka +06:00
-// instant used as a range bound (e.g. `dhakaMonthStart()` = the 1st at 00:00+06 =
-// the prior day 18:00 UTC) resolves to the PREVIOUS UTC date, so `gte from` leaks
-// in the day before the intended range. Align a bound to UTC-midnight of its
-// Dhaka calendar day so `@db.Date` filtering matches the Dhaka window exactly.
-function dhakaDateBound(d: Date): Date {
-  return new Date(`${dhakaYmd(d)}T00:00:00.000Z`);
-}
+// `@db.Date` range bounds use dhakaDateBound (lib/orders) — see its comment.
 
 const AD_TREND_MAX_DAYS = 120;
 
@@ -1011,7 +1004,9 @@ export async function buildLeadReport(
 
   const filters: Prisma.LeadWhereInput[] = [
     opts.leadWhere,
-    { leadDate: { gte: from, lte: to } },
+    // leadDate is @db.Date — bound on the Dhaka calendar day, not the raw
+    // +06:00 instant, so a month range doesn't pull in the prior month's last day.
+    { leadDate: { gte: dhakaDateBound(from), lte: dhakaDateBound(to) } },
   ];
   if (opts.seId) filters.push({ assignedTo: opts.seId });
   if (opts.source) filters.push({ source: opts.source });
@@ -1035,7 +1030,8 @@ export async function buildLeadReport(
     where: {
       AND: [
         opts.dailyCountWhere,
-        { date: { gte: from, lte: to } },
+        // date is @db.Date — same Dhaka-day bounding as leadDate above.
+        { date: { gte: dhakaDateBound(from), lte: dhakaDateBound(to) } },
         ...(opts.source ? [{ source: opts.source }] : []),
         ...(opts.campaign ? [{ campaignName: opts.campaign }] : []),
         ...(opts.seId ? [{ userId: opts.seId }] : []),

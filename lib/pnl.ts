@@ -1,6 +1,6 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "./db";
-import { dhakaDayStart, dhakaMonthStart } from "./orders";
+import { dhakaDateBound, dhakaDayStart, dhakaMonthStart } from "./orders";
 import { NON_SALE_STATUSES, type OrderStatusValue } from "./order-constants";
 import { PURCHASE_EXPENSE_CATEGORY } from "./stock";
 import { AD_COST_CATEGORY, type CostTypeValue } from "./expense-constants";
@@ -210,7 +210,9 @@ async function buildAdAllocationByDay(
   const [adRows, orderDays] = await Promise.all([
     db.expense.findMany({
       where: {
-        expenseDate: { gte: from, lte: to },
+        // expenseDate is @db.Date — bound on the Dhaka calendar day, not the raw
+        // +06:00 instant, so the range doesn't pull in the prior month's last day.
+        expenseDate: { gte: dhakaDateBound(from), lte: dhakaDateBound(to) },
         category: { name: AD_COST_CATEGORY },
       },
       select: { expenseDate: true, amount: true },
@@ -392,7 +394,8 @@ export async function buildDailySummary(
       select: { paymentDate: true, amount: true, type: true },
     }),
     db.expense.findMany({
-      where: { expenseDate: { gte: from, lte: to } },
+      // expenseDate is @db.Date — Dhaka-day bounds (see dhakaDateBound).
+      where: { expenseDate: { gte: dhakaDateBound(from), lte: dhakaDateBound(to) } },
       select: { expenseDate: true, amount: true },
     }),
   ]);
@@ -589,7 +592,9 @@ async function buildPnlPeriod(
 
   // --- operating costs from the expense ledger ---
   const expenses = await db.expense.findMany({
-    where: { expenseDate: { gte: start, lt: next } },
+    // expenseDate is @db.Date — without Dhaka-day bounding, `gte start` leaks the
+    // prior month's last day in AND `lt next` drops this month's last day.
+    where: { expenseDate: { gte: dhakaDateBound(start), lt: dhakaDateBound(next) } },
     select: {
       amount: true,
       category: { select: { name: true, costType: true } },

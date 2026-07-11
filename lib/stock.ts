@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient, StockMovementType } from "@prisma/client";
 import { AuthzError } from "./authz";
+import { dhakaDateBound } from "./order-constants";
 
 type Tx = Prisma.TransactionClient | PrismaClient;
 
@@ -461,7 +462,8 @@ export async function applyPurchase(
     const categoryId = await ensurePurchaseExpenseCategory(tx);
     await tx.expense.create({
       data: {
-        expenseDate: opts.purchaseDate,
+        // expenseDate is @db.Date — store the Dhaka calendar day, not the instant
+        expenseDate: dhakaDateBound(opts.purchaseDate),
         categoryId,
         amount: paidNow,
         walletId: opts.walletId ?? null,

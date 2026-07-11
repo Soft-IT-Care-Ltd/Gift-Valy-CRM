@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { requirePermission, apiError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
 import { serializeExpense, EXPENSE_INCLUDE } from "@/lib/expense-constants";
+import { dbDate } from "@/lib/orders";
 
 // SPEC §9.1 — quick daily expense entry (Accounts/Admin). Auto-expenses (from
 // purchase §6.3 / courier §7) are created by those modules, not here.
@@ -60,7 +61,7 @@ export async function POST(req: Request) {
 
     const expense = await prisma.expense.create({
       data: {
-        expenseDate: new Date(`${data.expenseDate}T00:00:00+06:00`),
+        expenseDate: dbDate(data.expenseDate), // @db.Date — UTC-midnight, not a +06 instant
         categoryId: data.categoryId,
         amount: data.amount,
         walletId: data.walletId ?? null,

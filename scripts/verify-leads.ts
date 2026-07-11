@@ -34,7 +34,9 @@ const dhakaDateStr = (offsetDays: number) =>
   );
 const at = (offsetDays: number, hour: number) =>
   new Date(`${dhakaDateStr(offsetDays)}T${String(hour).padStart(2, "0")}:00:00+06:00`);
-const dateOnly = (offsetDays: number) => new Date(`${dhakaDateStr(offsetDays)}T00:00:00+06:00`);
+// @db.Date value for a Dhaka day — UTC-midnight, NOT a +06 instant (which
+// Prisma would truncate to the previous UTC day).
+const dateOnly = (offsetDays: number) => new Date(`${dhakaDateStr(offsetDays)}T00:00:00.000Z`);
 
 async function main() {
   console.log("Lead management verification — SPEC §3\n");

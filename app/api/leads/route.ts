@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { requirePermissionCtx, apiError, AuthzError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
 import { normalizePhone } from "@/lib/order-constants";
+import { dbDate } from "@/lib/orders";
 import {
   createLeadSchema,
   resolveInterested,
@@ -40,7 +41,7 @@ export async function POST(req: Request) {
 
     const lead = await prisma.lead.create({
       data: {
-        leadDate: new Date(`${data.leadDate}T00:00:00+06:00`),
+        leadDate: dbDate(data.leadDate), // @db.Date — UTC-midnight, not a +06 instant
         source: data.source,
         campaignName: data.campaignName,
         customerName: data.customerName,

@@ -84,6 +84,10 @@ export function dhakaDayStart(date = new Date()): Date {
   return new Date(`${y}-${m}-${d}T00:00:00+06:00`);
 }
 
+// `@db.Date` day helpers live in order-constants (leaf module, no import
+// cycles); re-exported here alongside the other Dhaka date helpers.
+export { dhakaDateBound, dbDate } from "./order-constants";
+
 export interface OrderListQuery {
   // every non-status filter — tab counts group over these
   baseFilters: Prisma.OrderWhereInput[];

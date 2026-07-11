@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { requirePermissionCtx, apiError, AuthzError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
 import { normalizePhone } from "@/lib/order-constants";
+import { dbDate } from "@/lib/orders";
 import {
   canEditLead,
   leadCoreSchema,
@@ -48,7 +49,7 @@ export async function PATCH(req: Request, { params }: Params) {
     await prisma.lead.update({
       where: { id },
       data: {
-        leadDate: new Date(`${data.leadDate}T00:00:00+06:00`),
+        leadDate: dbDate(data.leadDate), // @db.Date — UTC-midnight, not a +06 instant
         source: data.source,
         campaignName: data.campaignName,
         customerName: data.customerName,

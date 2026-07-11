@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { requirePermission, apiError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
 import { applyHandover } from "@/lib/courier";
+import { dbDate } from "@/lib/orders";
 
 // SPEC §7 — courier handover: create the shipment and move the order
 // PACKED → HANDED_TO_COURIER (order status + history synced in one transaction).
@@ -41,11 +42,10 @@ export async function POST(req: Request) {
           orderId: data.orderId,
           courierId: data.courierId,
           trackingNo: data.trackingNo,
-          handoverDate: new Date(`${data.handoverDate}T00:00:00+06:00`),
+          // @db.Date columns — UTC-midnight, not +06 instants
+          handoverDate: dbDate(data.handoverDate),
           codAmount: data.codAmount,
-          expectedDelivery: data.expectedDelivery
-            ? new Date(`${data.expectedDelivery}T00:00:00+06:00`)
-            : null,
+          expectedDelivery: data.expectedDelivery ? dbDate(data.expectedDelivery) : null,
           note: data.note,
         },
         session.user.id

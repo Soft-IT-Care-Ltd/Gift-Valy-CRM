@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { requirePermission, apiError, AuthzError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
 import { applyPurchase } from "@/lib/stock";
+import { dbDate } from "@/lib/orders";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -85,13 +86,11 @@ export async function POST(req: Request) {
     const purchase = await prisma.$transaction((tx) =>
       applyPurchase(tx, {
         supplierName: data.supplierName,
-        purchaseDate: new Date(`${data.purchaseDate}T00:00:00+06:00`),
+        // @db.Date columns — UTC-midnight, not +06 instants
+        purchaseDate: dbDate(data.purchaseDate),
         paidAmount,
         walletId: paidAmount > 0 ? data.walletId ?? null : null,
-        dueDate:
-          paidAmount < total && data.dueDate
-            ? new Date(`${data.dueDate}T00:00:00+06:00`)
-            : null,
+        dueDate: paidAmount < total && data.dueDate ? dbDate(data.dueDate) : null,
         notes: data.notes,
         lines: data.items,
         userId: session.user.id,

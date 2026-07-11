@@ -12,6 +12,7 @@ import {
   ROLE_NAMES,
 } from "../lib/permissions";
 import { SEED_EXPENSE_CATEGORIES, AD_COST_CATEGORY } from "../lib/expense-constants";
+import { dhakaDateBound } from "../lib/order-constants";
 import {
   ATTENDANCE_SETTINGS_KEY,
   DEFAULT_ATTENDANCE_SETTINGS,
@@ -137,7 +138,7 @@ async function main() {
         isActive: true,
         isOnboarding: false,
         mustChangePassword: false,
-        joinedAt: new Date(),
+        joinedAt: dhakaDateBound(new Date()), // @db.Date — today's Dhaka day
       },
     });
     userIdByEmail.set(u.email, saved.id);
@@ -826,10 +827,11 @@ async function main() {
     const purchase = await prisma.purchase.create({
       data: {
         supplierName: dp.supplier,
-        purchaseDate: dp.date,
+        // @db.Date columns — pin to the Dhaka calendar day
+        purchaseDate: dhakaDateBound(dp.date),
         totalAmount: total,
         paymentStatus: status,
-        dueDate: status === "PAID" ? null : dp.dueDate,
+        dueDate: status === "PAID" || !dp.dueDate ? null : dhakaDateBound(dp.dueDate),
         createdBy: accountsId,
         updatedBy: accountsId,
         items: { create: [{ productId, qty: dp.qty, unitCost, lineTotal: total }] },
@@ -854,7 +856,7 @@ async function main() {
     if (paid > 0) {
       await prisma.expense.create({
         data: {
-          expenseDate: dp.date,
+          expenseDate: dhakaDateBound(dp.date), // @db.Date
           categoryId: purchaseCategory.id,
           amount: paid,
           walletId: dp.walletId,
@@ -1038,9 +1040,10 @@ async function main() {
             orderId: order.id,
             courierId,
             trackingNo: `TRK-${1000 + idx}`,
-            handoverDate: daysAgo(handoverDay, 9),
+            // @db.Date columns — pin to the Dhaka calendar day
+            handoverDate: dhakaDateBound(daysAgo(handoverDay, 9)),
             codAmount: cod,
-            expectedDelivery: daysAgo(Math.max(handoverDay - 2, 0), 9),
+            expectedDelivery: dhakaDateBound(daysAgo(Math.max(handoverDay - 2, 0), 9)),
             status: shipmentStatus,
             deliveredAt: deliveredStep ? daysAgo(deliveredStep.day, 14) : null,
             returnedAt: returnedStep ? daysAgo(returnedStep.day, 14) : null,
@@ -1056,7 +1059,7 @@ async function main() {
         if (codReceived && codFee > 0) {
           const feeExpense = await tx.expense.create({
             data: {
-              expenseDate: daysAgo(codPaymentDay!, 12),
+              expenseDate: dhakaDateBound(daysAgo(codPaymentDay!, 12)), // @db.Date
               categoryId: courierCategory.id,
               amount: codFee,
               walletId: bankWalletId, // fee netted from the COD settled to the bank (§9.3)
@@ -1101,7 +1104,9 @@ async function main() {
     );
   const followUpAt = (offsetDays: number, hour: number) =>
     new Date(`${dhakaDateStr(offsetDays)}T${String(hour).padStart(2, "0")}:00:00+06:00`);
-  const leadDateOf = (n: number) => new Date(`${dhakaDateStr(-n)}T00:00:00+06:00`);
+  // @db.Date value for the Dhaka day n days ago — UTC-midnight, NOT a +06
+  // instant (which Prisma would truncate to the previous UTC day).
+  const leadDateOf = (n: number) => new Date(`${dhakaDateStr(-n)}T00:00:00.000Z`);
 
   const demoLeads = [
     { phone: "+9665500010001", name: "Imran Chowdhury", country: "KSA", se: sanjoyId,
@@ -1172,7 +1177,7 @@ async function main() {
   for (const [i, o] of convOrders.entries()) {
     const lead = await prisma.lead.create({
       data: {
-        leadDate: o.createdAt,
+        leadDate: dhakaDateBound(o.createdAt), // @db.Date — the order's Dhaka day
         source: convSources[i % convSources.length],
         campaignName: convCampaigns[i % convCampaigns.length],
         customerName: o.customer.name,
@@ -1236,7 +1241,7 @@ async function main() {
     if (day % 8 === 5) continue; // occasional zero-spend day (visible in the chart)
     const amount = round2(900 + (day % 5) * 420 + (day % 3) * 260);
     demoExpenses.push({
-      expenseDate: daysAgo(day, 11),
+      expenseDate: dhakaDateBound(daysAgo(day, 11)), // @db.Date
       categoryId: adCostCategoryId,
       amount,
       walletId: bkashWalletId,
@@ -1263,7 +1268,7 @@ async function main() {
     const categoryId = expenseCategoryIdByName.get(f.name);
     if (!categoryId) continue;
     demoExpenses.push({
-      expenseDate: daysAgo(f.day, 12),
+      expenseDate: dhakaDateBound(daysAgo(f.day, 12)), // @db.Date
       categoryId,
       amount: f.amount,
       walletId: f.walletId,

@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./db";
 import { AuthzError } from "./authz";
-import { applyStatusTransition, recomputeDue } from "./orders";
+import { applyStatusTransition, dhakaDateBound, recomputeDue } from "./orders";
 import { releaseOrderStock } from "./stock";
 import { COURIER_EXPENSE_CATEGORY } from "./courier-constants";
 
@@ -219,7 +219,8 @@ export async function applyCodReceived(
       categoryId ??= await courierExpenseCategoryId(tx);
       const expense = await tx.expense.create({
         data: {
-          expenseDate: receivedDate,
+          // expenseDate is @db.Date — store the Dhaka calendar day, not the instant
+          expenseDate: dhakaDateBound(receivedDate),
           categoryId,
           amount: fee,
           notes: `COD fee — ${shipment.courier.name} — ${shipment.order.orderNo}`,
