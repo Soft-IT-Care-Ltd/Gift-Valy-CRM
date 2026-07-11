@@ -843,6 +843,15 @@ function dhakaYmd(d: Date): string {
   }).format(d);
 }
 
+// A `@db.Date` column stores a bare calendar day at UTC-midnight. A Dhaka +06:00
+// instant used as a range bound (e.g. `dhakaMonthStart()` = the 1st at 00:00+06 =
+// the prior day 18:00 UTC) resolves to the PREVIOUS UTC date, so `gte from` leaks
+// in the day before the intended range. Align a bound to UTC-midnight of its
+// Dhaka calendar day so `@db.Date` filtering matches the Dhaka window exactly.
+function dhakaDateBound(d: Date): Date {
+  return new Date(`${dhakaYmd(d)}T00:00:00.000Z`);
+}
+
 const AD_TREND_MAX_DAYS = 120;
 
 export async function buildExpenseReport(opts: {
@@ -854,7 +863,9 @@ export async function buildExpenseReport(opts: {
   const to = opts.to ?? new Date(dhakaDayStart().getTime() + DAY_MS - 1);
 
   const raw = await prisma.expense.findMany({
-    where: { expenseDate: { gte: from, lte: to } },
+    // expenseDate is @db.Date — bound on the Dhaka calendar day, not the raw
+    // +06:00 instant, so a month range doesn't pull in the prior month's last day.
+    where: { expenseDate: { gte: dhakaDateBound(from), lte: dhakaDateBound(to) } },
     include: EXPENSE_INCLUDE,
     orderBy: [{ expenseDate: "desc" }, { id: "desc" }],
   });
