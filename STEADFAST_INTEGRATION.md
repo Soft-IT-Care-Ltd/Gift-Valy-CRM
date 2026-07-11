@@ -110,6 +110,41 @@ Webhooks can be missed (server down, network). Keep the polling job but relax it
 
 > Note: webhook `delivery_status` values are a shorter list than the V1 polling API (`in_review`, `hold` etc. only appear via polling) — the mapper must accept both sets, case-insensitively.
 
+### 3C. Scheduled poller — deployment
+
+The unattended poll runs through **`GET /api/cron/steadfast-sync`**, secured by the
+`CRON_SECRET` env var (generate with `openssl rand -hex 32`). The request must carry
+`Authorization: Bearer <CRON_SECRET>`; anything else → 401. The endpoint is a safe
+no-op when the integration is disabled, and it only polls non-final Steadfast
+shipments whose last webhook/poll update is older than the configured polling
+interval — so the cron may fire more often than the interval without over-polling.
+
+**Vercel** — `vercel.json` schedules it every 15 minutes; set `CRON_SECRET` in the
+project's environment variables and Vercel Cron sends the Bearer header
+automatically:
+
+```json
+{ "crons": [{ "path": "/api/cron/steadfast-sync", "schedule": "*/15 * * * *" }] }
+```
+
+> Vercel Hobby plan restricts cron jobs to once per day (run inside an hour-wide
+> window). On Hobby, either accept daily reconciliation (the webhook remains the
+> real-time source) or trigger the endpoint from any external scheduler exactly
+> like the VPS setup below.
+
+**VPS / any host with system cron** — `crontab -e` on the server (or any machine
+that can reach the app) and add:
+
+```cron
+# Steadfast status reconciliation — every 15 minutes (STEADFAST_INTEGRATION.md §3B)
+*/15 * * * * curl -fsS -m 60 -H "Authorization: Bearer $CRON_SECRET" https://<our-domain>/api/cron/steadfast-sync >> /var/log/steadfast-sync.log 2>&1
+```
+
+If the crontab can't read env vars, inline the secret (keep the crontab
+root-readable only: `chmod 600`). The endpoint returns
+`{"ok":true,"polled":N,"changed":N,"errors":[…]}` so the log doubles as a health
+trail; "Last synced at" on Settings → Steadfast shows the same signal in the UI.
+
 ## 4. Schema additions
 
 ```sql

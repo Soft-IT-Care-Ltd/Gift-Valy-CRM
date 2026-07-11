@@ -1,5 +1,6 @@
 import type { CourierIntegration } from "@prisma/client";
 import { prisma } from "./db";
+import { AuthzError } from "./authz";
 import { applyHandover } from "./courier";
 import {
   createOrder,
@@ -99,6 +100,116 @@ function buildPayload(o: SendOrder, phone: string): CreateOrderPayload {
   // BD number (§2 mapping) — the payer is usually abroad, so this is normally omitted.
   if (altPhone) payload.alternative_phone = altPhone;
   return payload;
+}
+
+// ---------- consignment on shipment entry (manual handover form) ----------
+//
+// The shipments board's "Hand over" dialog with the Steadfast courier selected
+// and no hand-typed tracking number books the consignment through the API and
+// records the shipment with the returned tracking code — same payload rules,
+// guards and handover transaction as the PACKED-tab bulk send above.
+
+export interface HandoverConsignmentInput {
+  orderId: number;
+  courierId: number; // the Steadfast row in couriers — resolved by the route
+  handoverDate: Date;
+  codAmount: number;
+  expectedDelivery: Date | null;
+  note: string | null;
+}
+
+export interface HandoverConsignmentResult {
+  shipmentId: number;
+  consignmentId: number;
+  trackingCode: string | null;
+}
+
+export async function createConsignmentForHandover(
+  input: HandoverConsignmentInput,
+  integration: CourierIntegration,
+  userId: number
+): Promise<HandoverConsignmentResult> {
+  const creds: SteadfastCreds = credsFromIntegration(integration);
+
+  const order = await prisma.order.findUnique({
+    where: { id: input.orderId },
+    select: sendOrderSelect,
+  });
+  if (!order) throw new AuthzError(404, "Order not found");
+  if (order.shipment) {
+    throw new AuthzError(
+      400,
+      order.shipment.consignmentId
+        ? "This order was already sent to Steadfast"
+        : "This order already has a shipment"
+    );
+  }
+  if (order.status !== "PACKED") {
+    throw new AuthzError(
+      400,
+      `Only PACKED orders can be handed over — this order is ${order.status}`
+    );
+  }
+  const phone = normalizeBdPhone(order.recipientPhoneBd);
+  if (!phone) {
+    throw new AuthzError(
+      400,
+      `Invalid recipient phone "${order.recipientPhoneBd}" — must be a 11-digit BD number`
+    );
+  }
+
+  // The form's COD amount is what Steadfast collects, so it overrides the
+  // order's stored cod_amount in the payload.
+  const payload = buildPayload(order, phone);
+  payload.cod_amount = Math.max(0, Math.round(input.codAmount * 100) / 100);
+
+  // Network call OUTSIDE the transaction (§5), then the same handover + stamp
+  // transaction the bulk send uses.
+  const consignment = await createOrder(creds, payload);
+
+  const apiNote = `Sent via Steadfast API, tracking ${
+    consignment.tracking_code ?? consignment.consignment_id
+  }`;
+  try {
+    const shipmentId = await prisma.$transaction(async (tx) => {
+      const shipment = await applyHandover(
+        tx,
+        {
+          orderId: input.orderId,
+          courierId: input.courierId,
+          trackingNo: consignment.tracking_code ?? null,
+          handoverDate: input.handoverDate,
+          codAmount: input.codAmount,
+          expectedDelivery: input.expectedDelivery,
+          note: input.note ? `${input.note} · ${apiNote}` : apiNote,
+        },
+        userId
+      );
+      await tx.shipment.update({
+        where: { id: shipment.id },
+        data: {
+          consignmentId: BigInt(consignment.consignment_id),
+          steadfastStatus: (consignment.status ?? "in_review").toLowerCase(),
+          updatedBy: userId,
+        },
+      });
+      return shipment.id;
+    });
+    return {
+      shipmentId,
+      consignmentId: Number(consignment.consignment_id),
+      trackingCode: consignment.tracking_code ?? null,
+    };
+  } catch (e) {
+    // The consignment exists at Steadfast but recording failed — surface it so
+    // the operator reconciles instead of double-booking (§2 error rule).
+    throw new AuthzError(
+      500,
+      `Created at Steadfast (consignment ${consignment.consignment_id}) but failed to record locally: ${
+        e instanceof Error ? e.message : "unknown error"
+      }`
+    );
+  }
 }
 
 export async function sendOrdersToSteadfast(

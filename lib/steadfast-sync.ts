@@ -186,7 +186,15 @@ export async function runSteadfastPoll(opts?: {
       order: { status: { in: ["HANDED_TO_COURIER", "IN_TRANSIT"] } },
       ...(opts?.shipmentId
         ? { id: opts.shipmentId }
-        : { OR: [{ lastPolledAt: null }, { lastPolledAt: { lt: cutoff } }] }),
+        : {
+            AND: [
+              { OR: [{ lastPolledAt: null }, { lastPolledAt: { lt: cutoff } }] },
+              // "Last webhook/poll update older than the interval" (§3B): every
+              // webhook and poll writes a status log, so a log inside the window
+              // means the shipment is fresh — skip it this round.
+              { statusLogs: { none: { receivedAt: { gte: cutoff } } } },
+            ],
+          }),
     },
     select: {
       id: true,
