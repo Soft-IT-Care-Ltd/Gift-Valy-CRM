@@ -1,3 +1,4 @@
+import Image from "next/image";
 import { redirect } from "next/navigation";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -213,14 +214,40 @@ export default async function DashboardLayout({
     <div className="flex min-h-screen">
       <aside className="hidden w-60 shrink-0 flex-col border-r bg-background md:flex">
         <div className="flex h-14 items-center border-b px-4">
-          <span className="text-lg font-bold">🎁 Gift Valy</span>
+          <Image
+            src="/gift-valy-logo.png"
+            alt="Gift Valy"
+            width={815}
+            height={246}
+            priority
+            className="h-8 w-auto"
+          />
         </div>
-        <SidebarNav items={navItems} />
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <SidebarNav items={navItems} />
+        </div>
+        <div className="border-t px-4 py-3 text-center text-xs text-muted-foreground">
+          Developed by{" "}
+          <a
+            href="https://softitcare.com/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-semibold text-foreground underline-offset-2 hover:text-primary hover:underline"
+          >
+            Soft IT Care
+          </a>
+        </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 items-center justify-between border-b bg-background px-4">
           <div className="flex items-center gap-2 md:hidden">
-            <span className="font-bold">🎁 Gift Valy</span>
+            <Image
+              src="/gift-valy-logo.png"
+              alt="Gift Valy"
+              width={815}
+              height={246}
+              className="h-7 w-auto"
+            />
           </div>
           <div className="ml-auto flex items-center gap-3">
             <div className="text-right">

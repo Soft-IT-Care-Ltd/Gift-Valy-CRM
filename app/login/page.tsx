@@ -3,6 +3,7 @@
 import { useState, Suspense } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,7 +12,6 @@ import {
   CardContent,
   CardDescription,
   CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 
 function LoginForm() {
@@ -43,8 +43,19 @@ function LoginForm() {
   return (
     <Card className="w-full max-w-sm">
       <CardHeader className="text-center">
-        <CardTitle className="text-2xl">Gift Valy</CardTitle>
-        <CardDescription>Business Management — sign in</CardDescription>
+        <div className="flex justify-center">
+          <Image
+            src="/gift-valy-logo.png"
+            alt="Gift Valy"
+            width={815}
+            height={246}
+            priority
+            className="h-12 w-auto"
+          />
+        </div>
+        <CardDescription className="mt-3">
+          Business Management — sign in
+        </CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={onSubmit} className="grid gap-4">
@@ -82,10 +93,21 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-muted/40 p-4">
+    <main className="flex min-h-screen flex-col items-center justify-center gap-5 bg-muted/40 p-4">
       <Suspense>
         <LoginForm />
       </Suspense>
+      <p className="text-xs text-muted-foreground">
+        Developed by{" "}
+        <a
+          href="https://softitcare.com/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-medium text-foreground underline-offset-2 hover:text-primary hover:underline"
+        >
+          Soft IT Care
+        </a>
+      </p>
     </main>
   );
 }

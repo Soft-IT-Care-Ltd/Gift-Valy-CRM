@@ -1,20 +1,53 @@
 import type { Metadata } from "next";
-import { Geist_Mono, Inter, Noto_Sans_Bengali } from "next/font/google";
+import {
+  Inter,
+  Space_Grotesk,
+  JetBrains_Mono,
+  Hind_Siliguri,
+  Caveat,
+} from "next/font/google";
 import "./globals.css";
 import { cn } from "@/lib/utils";
 import { Toaster } from "@/components/ui/sonner";
+import { ThemeProvider } from "@/components/theme-provider";
 
-const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
-
-const notoBengali = Noto_Sans_Bengali({
-  subsets: ["bengali"],
-  weight: ["400", "500", "700"],
-  variable: "--font-bengali",
+// Body / UI
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+// Display / headings
+const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-space",
+  display: "swap",
+});
+
+// Monospace — money, IDs, tabular figures
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-jetbrains",
+  display: "swap",
+});
+
+// Bangla-first typography
+const hindSiliguri = Hind_Siliguri({
+  subsets: ["bengali", "latin"],
+  weight: ["300", "400", "500", "600", "700"],
+  variable: "--font-hind",
+  display: "swap",
+});
+
+// Handwritten accent
+const caveat = Caveat({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-caveat",
+  display: "swap",
 });
 
 export const metadata: Metadata = {
@@ -30,16 +63,26 @@ export default function RootLayout({
   return (
     <html
       lang="en"
+      suppressHydrationWarning
       className={cn(
         "h-full antialiased font-sans",
         inter.variable,
-        notoBengali.variable,
-        geistMono.variable
+        spaceGrotesk.variable,
+        jetbrainsMono.variable,
+        hindSiliguri.variable,
+        caveat.variable
       )}
     >
       <body className="min-h-full flex flex-col">
-        {children}
-        <Toaster richColors position="top-center" />
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="light"
+          enableSystem
+          disableTransitionOnChange
+        >
+          {children}
+          <Toaster richColors position="top-center" />
+        </ThemeProvider>
       </body>
     </html>
   );
