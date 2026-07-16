@@ -285,8 +285,10 @@ export function ShipmentsBoardClient({
                     <div className="text-xs text-muted-foreground">{o.recipientPhoneBd}</div>
                   </TableCell>
                   <TableCell>
-                    {o.district}
-                    <span className="text-muted-foreground"> · {o.thana}</span>
+                    {o.district || "—"}
+                    {o.thana && (
+                      <span className="text-muted-foreground"> · {o.thana}</span>
+                    )}
                   </TableCell>
                   <TableCell className="text-right">{money(o.codAmount)}</TableCell>
                   <TableCell className="text-muted-foreground">{o.salesExecutive}</TableCell>
@@ -351,7 +353,8 @@ export function ShipmentsBoardClient({
                       {s.orderNo}
                     </Link>
                     <div className="text-xs text-muted-foreground">
-                      {s.recipientName} · {s.district}
+                      {s.recipientName}
+                      {s.district ? ` · ${s.district}` : ""}
                     </div>
                   </TableCell>
                   <TableCell>{s.courier}</TableCell>
@@ -450,7 +453,7 @@ export function ShipmentsBoardClient({
                       </Link>
                     </TableCell>
                     <TableCell>{s.courier}</TableCell>
-                    <TableCell>{s.district}</TableCell>
+                    <TableCell>{s.district || "—"}</TableCell>
                     <TableCell className="text-right">{money(s.codAmount)}</TableCell>
                     <TableCell>
                       {s.codAmount <= 0 ? (

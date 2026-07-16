@@ -20,10 +20,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { prisma } from "@/lib/db";
 import { dhakaDayStart, dhakaMonthStart } from "@/lib/orders";
-import { NON_SALE_STATUSES } from "@/lib/order-constants";
+import { EXCLUDED_SALE_STATUSES } from "@/lib/order-constants";
+import { buildCommittedQueue, leadScopeWhere } from "@/lib/leads";
 import { dhakaYm, buildDailySummary } from "@/lib/pnl";
 import { buildUserGauge, buildTeamGauge, buildLeaderboard } from "@/lib/targets";
 import { buildFunnel } from "@/lib/dashboard";
@@ -35,6 +37,67 @@ import { Funnel, ProgressBar, chartColor } from "./charts";
 import { FollowUpsWidget } from "./follow-ups-widget";
 
 // ---------- shared bits ----------
+
+// Committed queue (CORRECTIONS Leads §9) — leads that promised the advance but
+// haven't paid, oldest commitment first. Shown on the SE/TL homes so they get
+// chased until the payment lands.
+async function CommittedQueueCard({
+  session,
+  permissions,
+}: {
+  session: Session;
+  permissions: string[];
+}) {
+  const scope = await leadScopeWhere(session, permissions);
+  const committed = await buildCommittedQueue(scope, prisma, 8);
+  if (committed.length === 0) return null;
+  return (
+    <Card className="border-amber-400/60">
+      <CardHeader className="flex flex-row items-center justify-between pb-3">
+        <div>
+          <CardTitle className="text-base">
+            💰 Committed — awaiting payment ({committed.length})
+          </CardTitle>
+          <CardDescription>
+            Promised the advance, hasn&apos;t paid — chase these first.
+          </CardDescription>
+        </div>
+        <Button variant="outline" asChild>
+          <Link href="/leads">Open leads</Link>
+        </Button>
+      </CardHeader>
+      <CardContent className="grid gap-2">
+        {committed.map((l) => (
+          <div
+            key={l.id}
+            className="flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-sm"
+          >
+            <span className="font-medium">
+              {l.customerName ?? l.whatsappNumber}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {l.whatsappNumber} · {l.assignedToName}
+            </span>
+            <Badge
+              variant={l.chaseOverdue ? "destructive" : "secondary"}
+              className="ml-auto whitespace-nowrap"
+            >
+              committed {l.committedSince} ago
+            </Badge>
+            {l.convertedOrder && (
+              <Link
+                href={`/orders/${l.convertedOrder.id}`}
+                className="font-mono text-xs underline underline-offset-2"
+              >
+                {l.convertedOrder.orderNo}
+              </Link>
+            )}
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
 
 function GaugeCard({
   title,
@@ -201,7 +264,7 @@ export async function SalesExecutiveHome({
 }) {
   const monthKey = dhakaYm();
   const monthStart = dhakaMonthStart();
-  const sale = { salesExecutiveId: userId, status: { notIn: NON_SALE_STATUSES } };
+  const sale = { salesExecutiveId: userId, status: { notIn: EXCLUDED_SALE_STATUSES } };
 
   const [today, month, gauge, funnel] = await Promise.all([
     prisma.order.aggregate({
@@ -287,7 +350,10 @@ export async function SalesExecutiveHome({
       </div>
 
       {permissions.includes("leads.view_own") && (
-        <FollowUpsWidget session={session} permissions={permissions} />
+        <>
+          <CommittedQueueCard session={session} permissions={permissions} />
+          <FollowUpsWidget session={session} permissions={permissions} />
+        </>
       )}
 
       <RecentOrders
@@ -333,7 +399,7 @@ export async function TeamLeaderHome({
 
   const teamSale = {
     teamId: teamIds.length ? { in: teamIds } : { equals: -1 },
-    status: { notIn: NON_SALE_STATUSES },
+    status: { notIn: EXCLUDED_SALE_STATUSES },
   } as const;
 
   const [today, month, funnel, gauges, leaderboard, members] = await Promise.all([
@@ -495,7 +561,10 @@ export async function TeamLeaderHome({
       </Card>
 
       {permissions.includes("leads.view_own") && (
-        <FollowUpsWidget session={session} permissions={permissions} />
+        <>
+          <CommittedQueueCard session={session} permissions={permissions} />
+          <FollowUpsWidget session={session} permissions={permissions} />
+        </>
       )}
     </div>
   );

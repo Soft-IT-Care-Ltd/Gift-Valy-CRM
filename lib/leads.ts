@@ -10,6 +10,7 @@ import {
   LOST_REASONS,
   MANUAL_LEAD_STATUSES,
   OPEN_LEAD_STATUSES,
+  timeSince,
   type InterestedItem,
   type LeadRow,
 } from "./lead-constants";
@@ -213,6 +214,7 @@ export function serializeLead(l: LeadWithRelations): LeadRow {
       ? (l.interestedIn as unknown as InterestedItem[])
       : [],
     status: l.status,
+    committedAt: l.committedAt ? l.committedAt.toISOString() : null,
     followUpAt: l.followUpAt ? l.followUpAt.toISOString() : null,
     lostReason: l.lostReason,
     notes: l.notes,
@@ -323,4 +325,39 @@ export async function buildFollowUps(
     overdueCount: overdue.length,
     todayCount: today.length,
   };
+}
+
+// ---------- Committed queue (CORRECTIONS Leads §9) ----------
+
+export interface CommittedLeadRow extends LeadRow {
+  committedSince: string; // "45m" / "6h" / "2d 4h" — time since commitment
+  chaseOverdue: boolean; // committed > 24h ago and still unpaid — chase hard
+}
+
+// Leads whose customer has verbally confirmed + promised the advance but
+// hasn't paid. Oldest commitment first — these need chasing until the payment
+// lands (a linked DRAFT order confirms → the lead flips to CONVERTED and
+// drops out of this queue automatically). Age fields are precomputed here so
+// components render them without clock calls.
+export async function buildCommittedQueue(
+  scopeWhere: Prisma.LeadWhereInput,
+  db: Tx = prisma,
+  take = 50
+): Promise<CommittedLeadRow[]> {
+  const rows = await db.lead.findMany({
+    where: { AND: [scopeWhere, { status: "COMMITTED" }] },
+    include: LEAD_INCLUDE,
+    orderBy: [{ committedAt: "asc" }, { updatedAt: "asc" }],
+    take,
+  });
+  const now = Date.now();
+  return rows.map((l) => {
+    const row = serializeLead(l);
+    const since = row.committedAt ?? row.updatedAt;
+    return {
+      ...row,
+      committedSince: timeSince(since, now),
+      chaseOverdue: now - new Date(since).getTime() > DAY_MS,
+    };
+  });
 }

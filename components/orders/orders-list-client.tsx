@@ -39,12 +39,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { NotebookPen } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DateFilter } from "@/components/ui/date-filter";
 import { detectPreset } from "@/lib/date-filter";
 import { money, formatDate } from "@/lib/format";
 import {
   ORDER_STATUS_LABELS,
+  joinAddress,
+  type DeliveryDateModeValue,
   type OrderStatusValue,
 } from "@/lib/order-constants";
 
@@ -64,6 +68,13 @@ export interface OrderRow {
   totalAmount: number;
   dueAmount: number;
   status: OrderStatusValue;
+  deliveryDateMode: DeliveryDateModeValue;
+  requestedDeliveryDate: string | null;
+  draftAge: string | null; // "6h" / "2d 4h" — DRAFT rows only
+  draftOverdue: boolean; // DRAFT unpaid > 24h — chase it
+  notes: string | null;
+  invoiceNote: string | null;
+  courierNote: string | null;
   salesExecutive: string;
   salesExecutiveId: number;
 }
@@ -80,6 +91,7 @@ interface SendResult {
 }
 
 const STATUS_BADGE: Partial<Record<OrderStatusValue, string>> = {
+  DRAFT: "bg-slate-100 text-slate-700 border-dashed",
   CONFIRMED: "bg-blue-100 text-blue-800",
   PACKED: "bg-violet-100 text-violet-800",
   HANDED_TO_COURIER: "bg-amber-100 text-amber-800",
@@ -101,8 +113,10 @@ export function StatusBadge({ status }: { status: OrderStatusValue }) {
 }
 
 // Tab order mirrors the §1.3 lifecycle, side states last. LEAD/FOLLOW_UP are
-// pre-order stages (Leads module) and never appear here.
+// pre-order stages (Leads module) and never appear here. DRAFT leads the row —
+// the "Pending Payment (Drafts)" pipeline (CORRECTIONS Leads §10).
 const STATUS_TABS: OrderStatusValue[] = [
+  "DRAFT",
   "CONFIRMED",
   "PACKED",
   "HANDED_TO_COURIER",
@@ -114,6 +128,11 @@ const STATUS_TABS: OrderStatusValue[] = [
   "RETURNED",
   "REFUNDED",
 ];
+
+// Tab labels — DRAFT reads as what it is: the committed-but-unpaid queue.
+const STATUS_TAB_LABELS: Partial<Record<OrderStatusValue, string>> = {
+  DRAFT: "Pending Payment (Drafts)",
+};
 
 export function OrdersListClient({
   orders,
@@ -222,6 +241,45 @@ export function OrdersListClient({
     setResults(null);
   }
 
+  // ---- Note modal (CORRECTIONS Orders §6d): view + update the 3 notes ----
+  const [noteOrder, setNoteOrder] = useState<OrderRow | null>(null);
+  const [noteTab, setNoteTab] = useState<"order" | "invoice" | "courier">("order");
+  const [noteDraft, setNoteDraft] = useState({ order: "", invoice: "", courier: "" });
+  const [noteSaving, setNoteSaving] = useState(false);
+
+  function openNotes(o: OrderRow) {
+    setNoteOrder(o);
+    setNoteTab("order");
+    setNoteDraft({
+      order: o.notes ?? "",
+      invoice: o.invoiceNote ?? "",
+      courier: o.courierNote ?? "",
+    });
+  }
+
+  async function saveNotes() {
+    if (!noteOrder) return;
+    setNoteSaving(true);
+    const res = await fetch(`/api/orders/${noteOrder.id}/notes`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        notes: noteDraft.order || null,
+        invoiceNote: noteDraft.invoice || null,
+        courierNote: noteDraft.courier || null,
+      }),
+    });
+    setNoteSaving(false);
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      toast.error(data?.error ?? "Failed to update notes");
+      return;
+    }
+    toast.success(`Notes updated — ${noteOrder.orderNo}`);
+    setNoteOrder(null);
+    router.refresh();
+  }
+
   // Any filter change restarts at page 1 — a page number only means something
   // within the result set it was computed for.
   function setParam(key: string, value: string) {
@@ -303,7 +361,11 @@ export function OrdersListClient({
             return [
               tab("ALL", "All", total),
               ...STATUS_TABS.map((s) =>
-                tab(s, ORDER_STATUS_LABELS[s], statusCounts[s] ?? 0)
+                tab(
+                  s,
+                  STATUS_TAB_LABELS[s] ?? ORDER_STATUS_LABELS[s],
+                  statusCounts[s] ?? 0
+                )
               ),
             ];
           })()}
@@ -390,6 +452,16 @@ export function OrdersListClient({
           )}
         </div>
 
+        {/* Pending Payment (Drafts) helper — CORRECTIONS Leads §10 */}
+        {activeStatus === "DRAFT" && (
+          <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-300">
+            Committed-but-unpaid orders. No stock is reserved and nothing counts
+            as a sale yet — recording the advance payment on a draft confirms
+            it (real order number, stock reserve, invoice). Rows older than 24
+            hours show in red: chase them.
+          </div>
+        )}
+
         {/* Send to Steadfast bar — PACKED tab only (§2) */}
         {showSend && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/40 px-3 py-2">
@@ -431,11 +503,14 @@ export function OrdersListClient({
               <TableHead className="text-right">Total</TableHead>
               <TableHead className="text-right">Due</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead>Note</TableHead>
               <TableHead>SE</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {orders.map((o) => (
+            {orders.map((o) => {
+              const hasNote = !!(o.notes || o.invoiceNote || o.courierNote);
+              return (
               <TableRow
                 key={o.id}
                 className="cursor-pointer"
@@ -459,15 +534,42 @@ export function OrdersListClient({
                     {o.orderNo}
                   </Link>
                 </TableCell>
-                <TableCell>{formatDate(o.createdAt)}</TableCell>
+                <TableCell>
+                  {formatDate(o.createdAt)}
+                  {/* Pending-Payment aging (§10) — red after 24h unpaid */}
+                  {o.status === "DRAFT" && o.draftAge && (
+                    <div
+                      className={cn(
+                        "text-xs",
+                        o.draftOverdue
+                          ? "font-medium text-destructive"
+                          : "text-muted-foreground"
+                      )}
+                    >
+                      unpaid {o.draftAge}
+                    </div>
+                  )}
+                </TableCell>
                 <TableCell>
                   <div className="font-medium">{o.customerName}</div>
                   <div className="text-xs text-muted-foreground">
                     {o.customerCountry}
                   </div>
                 </TableCell>
-                <TableCell>{o.recipientName}</TableCell>
-                <TableCell>{o.district}</TableCell>
+                <TableCell>
+                  {o.recipientName}
+                  {o.deliveryDateMode === "FIXED" && o.requestedDeliveryDate && (
+                    <div className="text-xs font-medium text-violet-700 dark:text-violet-400">
+                      🎯 {formatDate(o.requestedDeliveryDate)}
+                    </div>
+                  )}
+                  {o.deliveryDateMode === "ASAP" && (
+                    <div className="text-xs font-medium text-amber-700 dark:text-amber-500">
+                      ⚡ ASAP
+                    </div>
+                  )}
+                </TableCell>
+                <TableCell>{o.district || "—"}</TableCell>
                 <TableCell className="text-right">
                   {money(o.totalAmount)}
                 </TableCell>
@@ -481,13 +583,32 @@ export function OrdersListClient({
                 <TableCell>
                   <StatusBadge status={o.status} />
                 </TableCell>
+                <TableCell onClick={(e) => e.stopPropagation()}>
+                  <button
+                    type="button"
+                    onClick={() => openNotes(o)}
+                    className={cn(
+                      "rounded-md border p-1.5 transition-colors hover:bg-muted",
+                      hasNote
+                        ? "border-primary/40 text-primary"
+                        : "text-muted-foreground"
+                    )}
+                    title={
+                      hasNote ? "View / update notes" : "Add a note"
+                    }
+                    aria-label={`Notes for ${o.orderNo}`}
+                  >
+                    <NotebookPen className="size-4" />
+                  </button>
+                </TableCell>
                 <TableCell>{o.salesExecutive}</TableCell>
               </TableRow>
-            ))}
+              );
+            })}
             {orders.length === 0 && (
               <TableRow>
                 <TableCell
-                  colSpan={showSend ? 10 : 9}
+                  colSpan={showSend ? 11 : 10}
                   className="text-center text-muted-foreground"
                 >
                   No orders match the current filters.
@@ -563,7 +684,7 @@ export function OrdersListClient({
                         <TableCell>{o.recipientName}</TableCell>
                         <TableCell className="font-mono text-xs">{o.recipientPhone}</TableCell>
                         <TableCell className="max-w-[220px] truncate text-xs text-muted-foreground">
-                          {o.deliveryAddress}, {o.thana}, {o.district}
+                          {joinAddress(o.deliveryAddress, o.thana, o.district)}
                         </TableCell>
                         <TableCell className="text-right">{money(o.codAmount)}</TableCell>
                       </TableRow>
@@ -624,6 +745,65 @@ export function OrdersListClient({
               ) : (
                 <Button onClick={closeSendDialog}>Close</Button>
               )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Note modal — 3 tabs, view & update (CORRECTIONS Orders §6d) */}
+        <Dialog open={noteOrder !== null} onOpenChange={(o) => !o && setNoteOrder(null)}>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Notes — {noteOrder?.orderNo}</DialogTitle>
+              <DialogDescription>
+                View and update your note. Courier Note travels to Steadfast
+                with the parcel; Invoice Note prints on the invoice.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex gap-1 rounded-md bg-muted p-1 text-sm">
+              {(
+                [
+                  ["order", "Order Note", noteDraft.order],
+                  ["invoice", "Invoice Note", noteDraft.invoice],
+                  ["courier", "Courier Note", noteDraft.courier],
+                ] as const
+              ).map(([key, label, value]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setNoteTab(key)}
+                  className={cn(
+                    "flex-1 rounded-sm px-2 py-1.5 font-medium transition-colors",
+                    noteTab === key
+                      ? "bg-background shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {label}
+                  {value.trim() ? " •" : ""}
+                </button>
+              ))}
+            </div>
+            <Textarea
+              rows={4}
+              value={noteDraft[noteTab]}
+              onChange={(e) =>
+                setNoteDraft((d) => ({ ...d, [noteTab]: e.target.value }))
+              }
+              placeholder={
+                noteTab === "order"
+                  ? "Internal — visible to the team only"
+                  : noteTab === "invoice"
+                    ? "Printed on the invoice — the customer sees this"
+                    : "Delivery instructions — sent to Steadfast"
+              }
+            />
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setNoteOrder(null)}>
+                Cancel
+              </Button>
+              <Button onClick={saveNotes} disabled={noteSaving}>
+                {noteSaving ? "Saving…" : "Save notes"}
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

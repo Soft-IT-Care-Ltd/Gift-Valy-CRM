@@ -23,11 +23,15 @@ export const LEAD_SOURCE_LABELS: Record<LeadSourceValue, string> = {
   OTHER: "Other",
 };
 
+// COMMITTED (CORRECTIONS Leads §9): verbal confirmation + promised advance,
+// payment not yet in hand — sits between NEGOTIATING and CONVERTED and feeds
+// the Committed queue (chase until the money lands).
 export const LEAD_STATUSES = [
   "NEW",
   "CONTACTED",
   "FOLLOW_UP",
   "NEGOTIATING",
+  "COMMITTED",
   "CONVERTED",
   "LOST",
 ] as const;
@@ -39,6 +43,7 @@ export const LEAD_STATUS_LABELS: Record<LeadStatusValue, string> = {
   CONTACTED: "Contacted",
   FOLLOW_UP: "Follow-up",
   NEGOTIATING: "Negotiating",
+  COMMITTED: "Committed",
   CONVERTED: "Converted",
   LOST: "Lost",
 };
@@ -89,6 +94,17 @@ export function lostReasonRequired(status: LeadStatusValue): boolean {
   return status === "LOST";
 }
 
+// "45m" / "6h" / "2d 4h" — the Committed queue's time-since-commitment (§9).
+export function timeSince(iso: string, now: number = Date.now()): string {
+  const mins = Math.max(0, Math.floor((now - new Date(iso).getTime()) / 60_000));
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  const rem = hours % 24;
+  return rem > 0 ? `${days}d ${rem}h` : `${days}d`;
+}
+
 // One "interested in" selection — a product or package snapshot (§3.1). Names are
 // frozen at pick time so the lead reads correctly even if the catalog changes.
 export interface InterestedItem {
@@ -108,6 +124,7 @@ export interface LeadRow {
   whatsappNumber: string;
   interestedIn: InterestedItem[];
   status: LeadStatusValue;
+  committedAt: string | null; // ISO — when the lead last entered COMMITTED (§9)
   followUpAt: string | null; // ISO
   lostReason: LostReasonValue | null;
   notes: string | null;

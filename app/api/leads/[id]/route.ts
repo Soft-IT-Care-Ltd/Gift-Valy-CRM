@@ -57,6 +57,11 @@ export async function PATCH(req: Request, { params }: Params) {
         whatsappNumber: normalizePhone(data.whatsappNumber),
         interestedIn: interestedIn as unknown as Prisma.InputJsonValue,
         status: data.status as LeadStatus,
+        // CORRECTIONS Leads §9 — (re)entering COMMITTED restarts the
+        // time-since-commitment clock; the stamp is kept otherwise.
+        ...(data.status === "COMMITTED" && lead.status !== "COMMITTED"
+          ? { committedAt: new Date() }
+          : {}),
         followUpAt: data.followUpAt ? new Date(data.followUpAt) : null,
         // Clear the lost reason whenever the lead isn't LOST (§3.1).
         lostReason:

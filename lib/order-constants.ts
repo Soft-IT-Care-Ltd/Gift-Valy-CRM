@@ -2,6 +2,7 @@
 // Client-safe: no Prisma/server imports (used by forms and API routes alike).
 
 export const ORDER_STATUSES = [
+  "DRAFT",
   "LEAD",
   "FOLLOW_UP",
   "CONFIRMED",
@@ -19,6 +20,7 @@ export const ORDER_STATUSES = [
 export type OrderStatusValue = (typeof ORDER_STATUSES)[number];
 
 export const ORDER_STATUS_LABELS: Record<OrderStatusValue, string> = {
+  DRAFT: "Draft",
   LEAD: "Lead",
   FOLLOW_UP: "Follow-up",
   CONFIRMED: "Confirmed",
@@ -34,9 +36,12 @@ export const ORDER_STATUS_LABELS: Record<OrderStatusValue, string> = {
 };
 
 // SPEC §1.3 lifecycle. Orders are entered at CONFIRMED (§4.1 E) — or ON_HOLD
-// when there is no advance yet (rule: no CONFIRMED without advance > 0).
-// COMPLETED additionally requires due_amount = 0 (checked server-side).
+// when there is no advance yet (rule: no CONFIRMED without advance > 0), or
+// DRAFT when a committed-but-unpaid order is saved ahead of the advance
+// (CORRECTIONS Leads §10). COMPLETED additionally requires due_amount = 0
+// (checked server-side). DRAFT → CONFIRMED assigns the real GV number.
 export const ALLOWED_TRANSITIONS: Record<OrderStatusValue, OrderStatusValue[]> = {
+  DRAFT: ["CONFIRMED", "CANCELLED"],
   LEAD: ["FOLLOW_UP", "CONFIRMED", "CANCELLED"],
   FOLLOW_UP: ["CONFIRMED", "CANCELLED"],
   CONFIRMED: ["PACKED", "ON_HOLD", "CANCELLED"],
@@ -52,16 +57,20 @@ export const ALLOWED_TRANSITIONS: Record<OrderStatusValue, OrderStatusValue[]> =
 };
 
 // Edits only make sense before courier handover; later corrections go through
-// cancel/return flows.
+// cancel/return flows. DRAFT is editable — details may change while the SE
+// chases the advance (CORRECTIONS Leads §10).
 export const EDITABLE_STATUSES: OrderStatusValue[] = [
+  "DRAFT",
   "CONFIRMED",
   "ON_HOLD",
   "PACKED",
 ];
 
 // SPEC §5 — invoices exist only once an order has reached CONFIRMED;
-// pre-sale stages and never-confirmed holds/cancels have nothing to invoice.
+// pre-sale stages (incl. DRAFT) and never-confirmed holds/cancels have
+// nothing to invoice.
 export const NON_INVOICEABLE_STATUSES: OrderStatusValue[] = [
+  "DRAFT",
   "LEAD",
   "FOLLOW_UP",
   "ON_HOLD",
@@ -79,6 +88,16 @@ export const NON_SALE_STATUSES: OrderStatusValue[] = [
   "CANCELLED",
   "RETURNED",
   "REFUNDED",
+];
+
+// CORRECTIONS Leads §10 — DRAFT orders are not sales YET (committed-but-unpaid
+// pipeline): excluded from every sales/collection metric, but never counted as
+// "lost" the way the NON_SALE trio is. Sales filters use the combined list.
+export const PRE_SALE_STATUSES: OrderStatusValue[] = ["DRAFT"];
+
+export const EXCLUDED_SALE_STATUSES: OrderStatusValue[] = [
+  ...NON_SALE_STATUSES,
+  ...PRE_SALE_STATUSES,
 ];
 
 export const PAYMENT_TYPES = [
@@ -140,9 +159,12 @@ export const DELIVERY_ZONE_LABELS: Record<DeliveryZoneValue, string> = {
   OUTSIDE_DHAKA: "Outside Dhaka",
 };
 
+// CORRECTIONS Orders §4 — "Special One ❤" discreetly covers girlfriend/
+// boyfriend in one option (either direction).
 export const RECIPIENT_RELATIONS = [
   "Wife",
   "Husband",
+  "Special One ❤",
   "Mother",
   "Father",
   "Sibling",
@@ -152,6 +174,25 @@ export const RECIPIENT_RELATIONS = [
   "Relative",
   "Other",
 ] as const;
+
+// CORRECTIONS Orders §1 — requested-delivery timing modes.
+export const DELIVERY_DATE_MODES = ["ASAP", "ANY_DAY", "FIXED"] as const;
+
+export type DeliveryDateModeValue = (typeof DELIVERY_DATE_MODES)[number];
+
+export const DELIVERY_DATE_MODE_LABELS: Record<DeliveryDateModeValue, string> = {
+  ASAP: "ASAP / Urgent",
+  ANY_DAY: "Any day",
+  FIXED: "Fixed date",
+};
+
+// Join address parts, skipping empties — District/Thana are "" on new orders
+// (CORRECTIONS Orders §5) but still present on legacy rows.
+export function joinAddress(
+  ...parts: (string | null | undefined)[]
+): string {
+  return parts.map((p) => p?.trim()).filter(Boolean).join(", ");
+}
 
 export const OCCASIONS = [
   "Birthday",

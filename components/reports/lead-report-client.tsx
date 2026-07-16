@@ -223,6 +223,27 @@ export function LeadReportClient({
         <Kpi label="Lost" value={String(report.lost)} />
       </div>
 
+      {/* Draft→confirm pipeline (CORRECTIONS Leads §10) */}
+      {(report.draftPipeline.created > 0 || report.draftPipeline.confirmed > 0) && (
+        <div className="grid gap-4 sm:grid-cols-3">
+          <Kpi
+            label="Drafts saved"
+            value={String(report.draftPipeline.created)}
+            sub="committed-but-unpaid orders"
+          />
+          <Kpi
+            label="Drafts confirmed"
+            value={String(report.draftPipeline.confirmed)}
+            sub="advance landed in range"
+          />
+          <Kpi
+            label="Draft → confirm %"
+            value={`${report.draftPipeline.conversionPct}%`}
+            sub="of drafts saved in range"
+          />
+        </div>
+      )}
+
       {report.bulkCount > 0 && (
         <Card>
           <CardHeader className="pb-2">

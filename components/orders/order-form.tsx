@@ -25,8 +25,9 @@ import {
 import { PhotoField } from "@/components/catalog/photo-field";
 import { money } from "@/lib/format";
 import {
-  BD_DISTRICTS,
   CUSTOMER_COUNTRIES,
+  DELIVERY_DATE_MODES,
+  DELIVERY_DATE_MODE_LABELS,
   DELIVERY_ZONES,
   DELIVERY_ZONE_LABELS,
   MFS_METHODS,
@@ -34,6 +35,7 @@ import {
   ORDER_STATUS_LABELS,
   PAYMENT_METHOD_LABELS,
   RECIPIENT_RELATIONS,
+  type DeliveryDateModeValue,
   type DeliveryZoneValue,
   type OrderStatusValue,
   type PaymentMethodValue,
@@ -98,10 +100,13 @@ export interface OrderFormInitial {
   recipientPhoneBd: string;
   recipientRelation: string | null;
   deliveryAddress: string;
-  district: string;
-  thana: string;
   deliveryZone: string | null;
   occasion: string | null;
+  // CORRECTIONS Orders §7 (form part) — from the customer↔recipient profile.
+  recipientBirthday: string | null;
+  recipientAnniversary: string | null;
+  // CORRECTIONS Orders §1 — ASAP / Any day / Fixed date.
+  deliveryDateMode: DeliveryDateModeValue;
   requestedDeliveryDate: string | null;
   items: {
     itemType: "PRODUCT" | "PACKAGE";
@@ -114,7 +119,10 @@ export interface OrderFormInitial {
   discount: number;
   courierCharge: number;
   codAmount: number;
+  // 3-note system (CORRECTIONS Orders §6d).
   notes: string | null;
+  invoiceNote: string | null;
+  courierNote: string | null;
   customer: { name: string; phoneForeign: string; country: string };
   orderNo?: string;
   status?: OrderStatusValue;
@@ -188,21 +196,31 @@ export function OrderForm({
   const [foundCustomer, setFoundCustomer] = useState<FoundCustomer | null>(null);
   const lookupSeq = useRef(0);
 
-  // Section B — recipient
+  // Section B — recipient. District/Thana removed (CORRECTIONS Orders §5) —
+  // the full address is all Steadfast needs.
   const [recipientName, setRecipientName] = useState(initial?.recipientName ?? "");
   const [recipientPhoneBd, setRecipientPhoneBd] = useState(
     initial?.recipientPhoneBd ?? ""
   );
   const [relation, setRelation] = useState(initial?.recipientRelation ?? "");
   const [address, setAddress] = useState(initial?.deliveryAddress ?? "");
-  const [district, setDistrict] = useState(initial?.district ?? "");
-  const [thana, setThana] = useState(initial?.thana ?? "");
   const [occasion, setOccasion] = useState(initial?.occasion ?? "");
   const [deliveryZone, setDeliveryZone] = useState<DeliveryZoneValue | "">(
     (initial?.deliveryZone as DeliveryZoneValue | null) ?? ""
   );
+  // CORRECTIONS Orders §1 — ASAP / Any day / Fixed date selector.
+  const [deliveryDateMode, setDeliveryDateMode] = useState<DeliveryDateModeValue>(
+    initial?.deliveryDateMode ?? "ANY_DAY"
+  );
   const [deliveryDate, setDeliveryDate] = useState(
     initial?.requestedDeliveryDate ?? ""
+  );
+  // CORRECTIONS Orders §7 — optional recipient occasion dates → customer profile.
+  const [recipientBirthday, setRecipientBirthday] = useState(
+    initial?.recipientBirthday ?? ""
+  );
+  const [recipientAnniversary, setRecipientAnniversary] = useState(
+    initial?.recipientAnniversary ?? ""
   );
 
   // Section C — items. Choice picks (§5) prefill from the saved order (edit)
@@ -271,8 +289,12 @@ export function OrderForm({
   );
   const [zeroAdvanceReason, setZeroAdvanceReason] = useState("");
 
-  // Section E — meta
+  // Section E — meta. 3-note system (CORRECTIONS Orders §6d): Order Note
+  // (internal) / Invoice Note (printed) / Courier Note (sent to Steadfast).
   const [notes, setNotes] = useState(initial?.notes ?? "");
+  const [invoiceNote, setInvoiceNote] = useState(initial?.invoiceNote ?? "");
+  const [courierNote, setCourierNote] = useState(initial?.courierNote ?? "");
+  const [noteTab, setNoteTab] = useState<"order" | "invoice" | "courier">("order");
   const [editReason, setEditReason] = useState("");
 
   const productById = useMemo(
@@ -396,8 +418,7 @@ export function OrderForm({
     !recipientName.trim() ||
     !recipientPhoneBd.trim() ||
     !address.trim() ||
-    !district ||
-    !thana.trim() ||
+    (deliveryDateMode === "FIXED" && !deliveryDate) ||
     lines.some((l) => !l.itemId || !(Number(l.qty) > 0)) ||
     lines.length === 0 ||
     (floorBreaches.length > 0 && !canOverrideFloor) ||
@@ -408,18 +429,20 @@ export function OrderForm({
     mfsNeedsTxn ||
     (mode === "edit-request" && editReason.trim().length < 3);
 
-  async function submit() {
+  async function submit(saveAsDraft = false) {
     setSaving(true);
     const orderPayload = {
       recipientName,
       recipientPhoneBd,
       recipientRelation: relation || null,
       deliveryAddress: address,
-      district,
-      thana,
       deliveryZone: deliveryZone || null,
       occasion: occasion || null,
-      requestedDeliveryDate: deliveryDate || null,
+      recipientBirthday: recipientBirthday || null,
+      recipientAnniversary: recipientAnniversary || null,
+      deliveryDateMode,
+      requestedDeliveryDate:
+        deliveryDateMode === "FIXED" ? deliveryDate || null : null,
       items: lines.map((l) => ({
         itemType: l.itemType,
         productId: l.itemType === "PRODUCT" ? Number(l.itemId) : null,
@@ -440,6 +463,8 @@ export function OrderForm({
       courierCharge: Number(courierCharge) || 0,
       codAmount: codAmount === "" ? null : Number(codAmount),
       notes: notes || null,
+      invoiceNote: invoiceNote || null,
+      courierNote: courierNote || null,
     };
 
     let res: Response;
@@ -455,16 +480,19 @@ export function OrderForm({
             fbLink: fbLink || null,
           },
           order: orderPayload,
-          advance: {
-            amount: advance,
-            method: method || undefined,
-            walletId: advanceWalletId ? Number(advanceWalletId) : null,
-            transactionId: transactionId || null,
-            senderNumber: senderNumber || null,
-            screenshotUrl: screenshotUrl || null,
-          },
+          advance: saveAsDraft
+            ? { amount: 0 }
+            : {
+                amount: advance,
+                method: method || undefined,
+                walletId: advanceWalletId ? Number(advanceWalletId) : null,
+                transactionId: transactionId || null,
+                senderNumber: senderNumber || null,
+                screenshotUrl: screenshotUrl || null,
+              },
           zeroAdvanceReason: zeroAdvanceReason || undefined,
           leadId: leadId ?? undefined,
+          saveAsDraft,
         }),
       });
     } else if (mode === "edit") {
@@ -488,7 +516,11 @@ export function OrderForm({
     }
     if (mode === "create") {
       const data = await res.json();
-      toast.success(`Order ${data.orderNo} created`);
+      toast.success(
+        saveAsDraft
+          ? `Draft ${data.orderNo} saved — confirm it by recording the advance`
+          : `Order ${data.orderNo} created`
+      );
       router.push(`/orders/${data.id}`);
     } else if (mode === "edit") {
       toast.success("Order updated");
@@ -659,31 +691,32 @@ export function OrderForm({
               </Select>
             </div>
             <div className="grid gap-2">
-              <Label>District</Label>
-              <Select value={district} onValueChange={setDistrict}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Pick district" />
-                </SelectTrigger>
-                <SelectContent className="max-h-64">
-                  {BD_DISTRICTS.map((d) => (
-                    <SelectItem key={d} value={d}>
-                      {d}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label>Recipient birthday (optional)</Label>
+              <Input
+                type="date"
+                value={recipientBirthday}
+                onChange={(e) => setRecipientBirthday(e.target.value)}
+              />
             </div>
             <div className="grid gap-2">
-              <Label>Thana / Upazila</Label>
-              <Input value={thana} onChange={(e) => setThana(e.target.value)} />
+              <Label>Recipient anniversary (optional)</Label>
+              <Input
+                type="date"
+                value={recipientAnniversary}
+                onChange={(e) => setRecipientAnniversary(e.target.value)}
+              />
             </div>
           </div>
+          <p className="-mt-2 text-xs text-muted-foreground">
+            Birthday/anniversary save to the customer&apos;s recipient profile —
+            the team gets reminded before the date every year.
+          </p>
           <div className="grid gap-2">
             <Label>Full delivery address</Label>
             <Textarea
               value={address}
               onChange={(e) => setAddress(e.target.value)}
-              placeholder="House, road, area, landmarks…"
+              placeholder="House, road, area, landmarks — the courier gets exactly this"
             />
           </div>
           <div className="grid gap-2">
@@ -713,7 +746,7 @@ export function OrderForm({
               below). Default is free delivery.
             </p>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-3">
             <div className="grid gap-2">
               <Label>Occasion (optional)</Label>
               <Select value={occasion} onValueChange={setOccasion}>
@@ -730,13 +763,41 @@ export function OrderForm({
               </Select>
             </div>
             <div className="grid gap-2">
-              <Label>Delivery date requested (optional)</Label>
-              <Input
-                type="date"
-                value={deliveryDate}
-                onChange={(e) => setDeliveryDate(e.target.value)}
-              />
+              <Label>Requested delivery</Label>
+              <Select
+                value={deliveryDateMode}
+                onValueChange={(v) => {
+                  const m = v as DeliveryDateModeValue;
+                  setDeliveryDateMode(m);
+                  if (m !== "FIXED") setDeliveryDate("");
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {DELIVERY_DATE_MODES.map((m) => (
+                    <SelectItem key={m} value={m}>
+                      {m === "FIXED" ? "🎯 " : ""}
+                      {DELIVERY_DATE_MODE_LABELS[m]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
+            {deliveryDateMode === "FIXED" && (
+              <div className="grid gap-2">
+                <Label>Deliver ON this date</Label>
+                <Input
+                  type="date"
+                  value={deliveryDate}
+                  onChange={(e) => setDeliveryDate(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Birthdays/anniversaries — must arrive on the day.
+                </p>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -1114,8 +1175,10 @@ export function OrderForm({
                     </>
                   ) : (
                     <p className="text-xs text-amber-600">
-                      Order will start ON HOLD until an advance is recorded
-                      (SPEC rule).
+                      No advance → the order starts ON HOLD, or use{" "}
+                      <span className="font-medium">Save as draft</span> for a
+                      committed-but-unpaid order (confirms when the advance is
+                      recorded).
                     </p>
                   )}
                 </div>
@@ -1160,9 +1223,69 @@ export function OrderForm({
               <div className="font-medium">{teamName ?? "—"}</div>
             </div>
           </div>
+          {/* 3-note system (CORRECTIONS Orders §6d) */}
           <div className="grid gap-2">
-            <Label>Internal notes (optional)</Label>
-            <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} />
+            <Label>Notes</Label>
+            <div className="flex gap-1 rounded-md bg-muted p-1 text-sm">
+              {(
+                [
+                  ["order", "Order Note", notes],
+                  ["invoice", "Invoice Note", invoiceNote],
+                  ["courier", "Courier Note", courierNote],
+                ] as const
+              ).map(([key, label, value]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setNoteTab(key)}
+                  className={`flex-1 rounded-sm px-2 py-1.5 font-medium transition-colors ${
+                    noteTab === key
+                      ? "bg-background shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {label}
+                  {value.trim() ? " •" : ""}
+                </button>
+              ))}
+            </div>
+            {noteTab === "order" && (
+              <>
+                <Textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder="Internal — visible to the team only"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Internal note — never leaves the team.
+                </p>
+              </>
+            )}
+            {noteTab === "invoice" && (
+              <>
+                <Textarea
+                  value={invoiceNote}
+                  onChange={(e) => setInvoiceNote(e.target.value)}
+                  placeholder="Printed on the invoice — the customer sees this"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Printed on the invoice PDF — customer-visible.
+                </p>
+              </>
+            )}
+            {noteTab === "courier" && (
+              <>
+                <Textarea
+                  value={courierNote}
+                  onChange={(e) => setCourierNote(e.target.value)}
+                  placeholder="Delivery instructions — sent to Steadfast with the parcel"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Sent to Steadfast as the consignment note (delivery
+                  instructions).
+                </p>
+              </>
+            )}
           </div>
           {mode === "edit-request" && (
             <div className="grid gap-2">
@@ -1187,7 +1310,19 @@ export function OrderForm({
         <Button variant="outline" onClick={() => router.back()}>
           Cancel
         </Button>
-        <Button onClick={submit} disabled={disableSubmit}>
+        {/* CORRECTIONS Leads §10 — committed-but-unpaid: save everything as a
+            DRAFT (no reserve/invoice); recording the advance later confirms it. */}
+        {mode === "create" && advance === 0 && (
+          <Button
+            variant="secondary"
+            onClick={() => submit(true)}
+            disabled={disableSubmit}
+            title="No advance yet — save the full order as a draft and confirm when the payment lands"
+          >
+            {saving ? "Saving…" : "Save as draft"}
+          </Button>
+        )}
+        <Button onClick={() => submit(false)} disabled={disableSubmit}>
           {saving
             ? "Saving…"
             : mode === "create"

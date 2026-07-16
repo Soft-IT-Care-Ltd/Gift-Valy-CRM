@@ -96,10 +96,12 @@ export default async function PackingQueuePage() {
       district: o.district,
       thana: o.thana,
       occasion: o.occasion,
+      deliveryDateMode: o.deliveryDateMode,
       requestedDeliveryDate: o.requestedDeliveryDate
         ? o.requestedDeliveryDate.toISOString().slice(0, 10)
         : null,
       notes: o.notes,
+      courierNote: o.courierNote,
       items: o.items.map((it) => {
         const picks =
           (it.choiceSelections as StoredChoiceSelection[] | null) ?? [];
@@ -120,6 +122,19 @@ export default async function PackingQueuePage() {
       ),
     };
   });
+
+  // Pack in delivery priority (CORRECTIONS Orders §1): ASAP first, then fixed
+  // dates earliest-first, then flexible any-day — oldest first within a group.
+  // (The full date-grouped Delivery Schedule view arrives with C7.)
+  const modeRank = { ASAP: 0, FIXED: 1, ANY_DAY: 2 } as const;
+  queue.sort(
+    (a, b) =>
+      modeRank[a.deliveryDateMode] - modeRank[b.deliveryDateMode] ||
+      (a.requestedDeliveryDate ?? "").localeCompare(
+        b.requestedDeliveryDate ?? ""
+      ) ||
+      a.createdAt.localeCompare(b.createdAt)
+  );
 
   return <PackingQueueClient queue={queue} />;
 }

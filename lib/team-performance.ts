@@ -2,7 +2,7 @@ import type { OrderStatus, Prisma, PrismaClient } from "@prisma/client";
 import type { Session } from "next-auth";
 import { prisma } from "./db";
 import { AuthzError } from "./authz";
-import { NON_SALE_STATUSES } from "./order-constants";
+import { EXCLUDED_SALE_STATUSES } from "./order-constants";
 import { dhakaDateBound } from "./order-constants";
 import { getOnboardingExcludeDays } from "./settings";
 import {
@@ -22,7 +22,7 @@ type Tx = Prisma.TransactionClient | PrismaClient;
 // visible only to its subject and to an Admin. No cost fields (CLAUDE.md rule 1).
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
-const SALE_STATUS_FILTER = { notIn: NON_SALE_STATUSES as unknown as OrderStatus[] };
+const SALE_STATUS_FILTER = { notIn: EXCLUDED_SALE_STATUSES as unknown as OrderStatus[] };
 
 export type ReportScope = "all" | "team" | "own";
 

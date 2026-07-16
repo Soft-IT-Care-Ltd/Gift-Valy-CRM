@@ -45,6 +45,7 @@ import { formatDateTime } from "@/lib/format";
 import {
   LEAD_SOURCES,
   LEAD_SOURCE_LABELS,
+  LEAD_STATUSES,
   LEAD_STATUS_LABELS,
   LOST_REASONS,
   LOST_REASON_LABELS,
@@ -55,6 +56,7 @@ import {
   type LeadSourceValue,
   type LeadStatusValue,
 } from "@/lib/lead-constants";
+import type { CommittedLeadRow } from "@/lib/leads";
 import { CUSTOMER_COUNTRIES } from "@/lib/order-constants";
 
 // ---- option shapes passed from the server page ----
@@ -152,6 +154,7 @@ function validateLeadForm(f: LeadFormState): string | null {
 
 export function LeadsClient({
   leads,
+  committed,
   todayCount,
   overdueLeadIds,
   catalog,
@@ -162,6 +165,7 @@ export function LeadsClient({
   me,
 }: {
   leads: LeadRow[];
+  committed: CommittedLeadRow[]; // Committed queue (CORRECTIONS Leads §9), oldest first
   todayCount: number;
   overdueLeadIds: number[];
   catalog: CatalogPick[];
@@ -367,6 +371,59 @@ export function LeadsClient({
         </div>
       )}
 
+      {/* Committed queue (CORRECTIONS Leads §9) — promised the advance, hasn't
+          paid. Chase these until the payment lands / the draft confirms. */}
+      {committed.length > 0 && (
+        <Card className="border-amber-400/60">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">
+              💰 Committed — awaiting payment ({committed.length})
+            </CardTitle>
+            <CardDescription>
+              These customers confirmed the order and promised the advance.
+              Follow up until the payment lands.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-2">
+            {committed.map((l) => (
+              <div
+                key={l.id}
+                className="flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-sm"
+              >
+                <span className="font-medium">
+                  {l.customerName ?? l.whatsappNumber}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  {l.whatsappNumber}
+                  {l.country ? ` · ${l.country}` : ""} · {l.assignedToName}
+                </span>
+                <Badge
+                  variant={l.chaseOverdue ? "destructive" : "secondary"}
+                  className="ml-auto whitespace-nowrap"
+                >
+                  committed {l.committedSince} ago
+                </Badge>
+                {l.convertedOrder ? (
+                  <Button variant="outline" size="sm" asChild>
+                    <Link href={`/orders/${l.convertedOrder.id}`}>
+                      {l.convertedOrder.orderNo}
+                    </Link>
+                  </Button>
+                ) : (
+                  canConvert && (
+                    <Button size="sm" asChild>
+                      <Link href={`/orders/new?leadId=${l.id}`}>
+                        Take order
+                      </Link>
+                    </Button>
+                  )
+                )}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Quick entry (§3.1, <30s) */}
       <Card>
         <CardHeader className="pb-3">
@@ -463,7 +520,7 @@ export function LeadsClient({
               <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="ALL">All statuses</SelectItem>
-                {(["NEW", "CONTACTED", "FOLLOW_UP", "NEGOTIATING", "CONVERTED", "LOST"] as LeadStatusValue[]).map((s) => (
+                {LEAD_STATUSES.map((s) => (
                   <SelectItem key={s} value={s}>{LEAD_STATUS_LABELS[s]}</SelectItem>
                 ))}
               </SelectContent>
@@ -894,7 +951,15 @@ export function LeadStatusBadge({
           ? "secondary"
           : "outline";
   return (
-    <Badge variant={variant} className="whitespace-nowrap">
+    <Badge
+      variant={variant}
+      className={
+        status === "COMMITTED"
+          ? "whitespace-nowrap border-amber-400 bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+          : "whitespace-nowrap"
+      }
+    >
+      {status === "COMMITTED" ? "💰 " : ""}
       {LEAD_STATUS_LABELS[status]}
       {status === "LOST" && lostReason ? ` · ${LOST_REASON_LABELS[lostReason as keyof typeof LOST_REASON_LABELS]}` : ""}
     </Badge>

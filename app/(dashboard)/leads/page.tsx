@@ -4,6 +4,7 @@ import { getEffectivePermissions } from "@/lib/rbac";
 import {
   leadScopeWhere,
   leadViewScope,
+  buildCommittedQueue,
   buildFollowUps,
   serializeLead,
   LEAD_INCLUDE,
@@ -51,7 +52,7 @@ export default async function LeadsPage() {
     assignableWhere = { id: me.id };
   }
 
-  const [leadsRaw, followUps, products, packages, adCampaigns, leadCampaigns, assignable] =
+  const [leadsRaw, committed, followUps, products, packages, adCampaigns, leadCampaigns, assignable] =
     await Promise.all([
       prisma.lead.findMany({
         where: scope,
@@ -59,6 +60,7 @@ export default async function LeadsPage() {
         orderBy: { createdAt: "desc" },
         take: 300,
       }),
+      buildCommittedQueue(scope),
       buildFollowUps(scope),
       // Interested-in picker = the sellable catalog — component-only packing
       // materials are excluded (CORRECTIONS Products §1).
@@ -108,6 +110,7 @@ export default async function LeadsPage() {
   return (
     <LeadsClient
       leads={leadsRaw.map(serializeLead)}
+      committed={committed}
       todayCount={followUps.todayCount}
       overdueLeadIds={followUps.overdue.map((l) => l.id)}
       catalog={catalog}

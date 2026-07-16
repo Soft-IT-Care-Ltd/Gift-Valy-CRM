@@ -1006,6 +1006,9 @@ export interface LeadReport {
   lostReasons: LostReasonRow[];
   // Bulk counts per source (extra denominator context when detail is missing).
   bulkBySource: { source: LeadSourceValue; count: number }[];
+  // CORRECTIONS Leads §10 — draft→confirm pipeline: drafts saved in range vs
+  // drafts whose advance landed (DRAFT → CONFIRMED transition) in range.
+  draftPipeline: { created: number; confirmed: number; conversionPct: number };
 }
 
 interface LeadReportInput {
@@ -1013,6 +1016,9 @@ interface LeadReportInput {
   to?: Date;
   leadWhere: Prisma.LeadWhereInput; // scope (SE own / TL team / all)
   dailyCountWhere: Prisma.LeadDailyCountWhereInput;
+  // Order scope for the draft→confirm metric (CORRECTIONS Leads §10) — the
+  // caller's orderScopeWhere; omitted → the metric reports zeros.
+  orderWhere?: Prisma.OrderWhereInput;
   seId?: number;
   source?: LeadSourceValue;
   campaign?: string; // exact match; "" ignored
@@ -1134,6 +1140,42 @@ export async function buildLeadReport(
     .map(([source, count]) => ({ source, count }))
     .sort((a, b) => b.count - a.count);
 
+  // Draft→confirm pipeline (CORRECTIONS Leads §10): status-history transitions
+  // are the ground truth — a draft saved in range (created AS DRAFT) vs a
+  // draft whose advance landed in range (DRAFT → CONFIRMED).
+  let draftPipeline = { created: 0, confirmed: 0, conversionPct: 0 };
+  if (opts.orderWhere) {
+    const orderFilter = {
+      AND: [
+        opts.orderWhere,
+        ...(opts.seId ? [{ salesExecutiveId: opts.seId }] : []),
+      ],
+    };
+    const [created, confirmed] = await Promise.all([
+      db.orderStatusHistory.count({
+        where: {
+          fromStatus: null,
+          toStatus: "DRAFT",
+          at: { gte: from, lte: to },
+          order: orderFilter,
+        },
+      }),
+      db.orderStatusHistory.count({
+        where: {
+          fromStatus: "DRAFT",
+          toStatus: "CONFIRMED",
+          at: { gte: from, lte: to },
+          order: orderFilter,
+        },
+      }),
+    ]);
+    draftPipeline = {
+      created,
+      confirmed,
+      conversionPct: created > 0 ? round2((confirmed / created) * 100) : 0,
+    };
+  }
+
   return {
     range: { from: from.toISOString(), to: to.toISOString() },
     totalLeads,
@@ -1148,5 +1190,6 @@ export async function buildLeadReport(
     byDate,
     lostReasons,
     bulkBySource,
+    draftPipeline,
   };
 }

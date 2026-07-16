@@ -1,7 +1,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "./db";
 import { dhakaDateBound, dhakaDayStart, dhakaMonthStart } from "./orders";
-import { NON_SALE_STATUSES, type OrderStatusValue } from "./order-constants";
+import { EXCLUDED_SALE_STATUSES, type OrderStatusValue } from "./order-constants";
 import { PURCHASE_EXPENSE_CATEGORY } from "./stock";
 import { AD_COST_CATEGORY, type CostTypeValue } from "./expense-constants";
 import {
@@ -305,7 +305,7 @@ export async function buildPerOrderProfitReport(
       orderNo: o.orderNo,
       createdAt: o.createdAt.toISOString(),
       status: o.status as OrderStatusValue,
-      isSale: !NON_SALE_STATUSES.includes(o.status as OrderStatusValue),
+      isSale: !EXCLUDED_SALE_STATUSES.includes(o.status as OrderStatusValue),
       customerName: o.customer.name,
       district: o.district,
       salesExecutive: o.salesExecutive.name,
@@ -385,7 +385,7 @@ export async function buildDailySummary(
     db.order.findMany({
       where: {
         createdAt: { gte: from, lte: to },
-        status: { notIn: NON_SALE_STATUSES },
+        status: { notIn: EXCLUDED_SALE_STATUSES },
       },
       select: { createdAt: true, totalAmount: true },
     }),
@@ -567,7 +567,7 @@ async function buildPnlPeriod(
     orders = await db.order.findMany({
       where: {
         createdAt: { gte: start, lt: next },
-        status: { notIn: NON_SALE_STATUSES },
+        status: { notIn: EXCLUDED_SALE_STATUSES },
       },
       select: {
         totalAmount: true,

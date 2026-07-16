@@ -158,8 +158,8 @@ Verification pass for correction round 1. With seeded demo data:
 6. [CHANGE] Verify that everywhere a total lead count is shown (dashboard widget, lead report, conversion rate), the total = individual lead entries + bulk daily-count entries (lead_daily_counts) combined. E.g. 10 manual + 30 bulk on the same day must show 40 for that day.
 7. [CHANGE] Restructure the Leads page like the Orders page: landing page = the lead LIST. A **"New Lead"** button at the top-right opens a separate lead entry page. Users who have the bulk-entry permission see **two** buttons: "New Lead" and "Bulk Lead" (separate bulk entry page). Users without bulk permission see only "New Lead".
 8. [CHANGE] **Assign-on-entry**: users with the lead-assign permission get an "Assign to" select at the END of the New Lead form — default = their own name, but they can pick another SE while entering. Users WITHOUT the assign permission don't see this field at all (lead auto-assigns to themselves).
-9. [CHANGE] Add a new lead status **`Committed`** (after `Negotiating`, before `Converted`): customer has verbally confirmed the order and promised the advance payment but hasn't paid yet (will pay in an hour / 10 hours / next day). Important status — show a **"Committed" queue** prominently (SE dashboard + lead list filter) with time-since-commitment, because these need chasing until payment lands.
-10. [CHANGE] **Draft Order stage** (for Committed leads who already gave full details): add order status **`DRAFT`** before `CONFIRMED`.
+9. [FIXED] Add a new lead status **`Committed`** (after `Negotiating`, before `Converted`): customer has verbally confirmed the order and promised the advance payment but hasn't paid yet (will pay in an hour / 10 hours / next day). Important status — show a **"Committed" queue** prominently (SE dashboard + lead list filter) with time-since-commitment, because these need chasing until payment lands.
+10. [FIXED] **Draft Order stage** (for Committed leads who already gave full details): add order status **`DRAFT`** before `CONFIRMED`.
     - From a lead (or the order form), SE can save a full order (recipient details, address, items, amounts) as DRAFT — no advance payment required to save.
     - DRAFT orders: **no stock reserve, no invoice, excluded from sales/collection reports** — they are not sales yet.
     - When the advance payment arrives, SE opens the draft, records the payment (method + txn ID) → order flips to CONFIRMED via the existing rule (advance > 0), stock reserves, invoice generates — no data re-typing.
@@ -169,7 +169,7 @@ Verification pass for correction round 1. With seeded demo data:
 
 ## Orders
 
-1. [CHANGE] **Requested Delivery Date** on the order form (and draft orders): the date the customer wants the parcel delivered to the recipient. Three modes via a small selector:
+1. [FIXED] **Requested Delivery Date** on the order form (and draft orders): the date the customer wants the parcel delivered to the recipient. Three modes via a small selector:
    - **ASAP / Urgent** — deliver as soon as possible
    - **Any day** — no specific date (flexible)
    - **Fixed date** — date picker; must be delivered ON that date (birthdays/anniversaries — can be up to a month+ ahead)
@@ -181,14 +181,14 @@ Verification pass for correction round 1. With seeded demo data:
    - ASAP orders always appear in Today's section until handed over; "Any day" orders in a flexible group
    - Sort/filter the packing queue by requested delivery date so the team packs in the right priority order.
 3. [CHANGE] **Late-risk alert**: an order with a Fixed date of today/tomorrow that is still not PACKED / HANDED_TO_COURIER gets a red warning flag in the queue + a count on the dashboard (e.g. "2 fixed-date deliveries at risk").
-4. [CHANGE] New Order page — **Relation dropdown**: add an option covering girlfriend/boyfriend discreetly and smartly — label it **"Special One ❤"** (single option that covers both directions; most of the customer base sends to girlfriends). Keep existing options (Wife, Mother, Father, Sibling, Friend…).
-5. [CHANGE] New Order page — **remove the District and Thana/Upazila fields entirely**. Only the **Full Address** textarea remains (Steadfast only needs the address string).
+4. [FIXED] New Order page — **Relation dropdown**: add an option covering girlfriend/boyfriend discreetly and smartly — label it **"Special One ❤"** (single option that covers both directions; most of the customer base sends to girlfriends). Keep existing options (Wife, Mother, Father, Sibling, Friend…).
+5. [FIXED] New Order page — **remove the District and Thana/Upazila fields entirely**. Only the **Full Address** textarea remains (Steadfast only needs the address string).
    - **Customer-facing delivery charge: default FREE (৳0)** — Gift Valy usually absorbs delivery into product pricing. Keep the charge field on the order (editable) for exceptions.
    - Optional **per-product/package delivery charge** field in the catalog (default 0): if set, it auto-adds to the order's delivery charge when that item is added — for future use on specific products.
 6a. [CHANGE] **Order list — Customer column**: show the customer's phone number between the name and the country (Name → Phone → Country).
 6b. [CHANGE] **Order list — Recipient column**: show the recipient's phone number below the name.
 6c. [CHANGE] **Order list — replace the District column with an "Items" column**: shows what was ordered (package/product names). Design it so rows never break/overflow: show the first 1–2 item names as compact badges, then a **"+N more"** chip; hovering (tooltip) or clicking shows the full item list, with the order detail page as the fallback. Plan whatever looks cleanest — the key requirement is the row height stays fixed.
-6d. [CHANGE] **Notes system — 3 note types per order**: `Order Note` (internal), `Invoice Note` (printed on the invoice — customer visible), `Courier Note` (delivery instructions — this one should be sent as the `note` field to Steadfast on consignment creation).
+6d. [FIXED] **Notes system — 3 note types per order**: `Order Note` (internal), `Invoice Note` (printed on the invoice — customer visible), `Courier Note` (delivery instructions — this one should be sent as the `note` field to Steadfast on consignment creation).
    - New Order form: all 3 note inputs available (collapsible/tabbed like the reference screenshot)
    - Order list: a **Note column** with an icon/box — clicking opens a modal with 3 tabs (Order Note / Invoice Note / Courier Note) to view and update, matching the provided screenshot design ("View and update your note")
 6e. [CHANGE] **Order list — Action column**: three actions per row — **View details, Edit, Trash**.
@@ -226,7 +226,7 @@ Verification pass for correction round 1. With seeded demo data:
      - **OK items → automatically added back to sellable stock** (stock movement IN_RETURN) the moment status becomes Received
      - **Damaged items → recorded in a damage log** (product, qty, order ref, date, inspector) — NOT added to sellable stock; damaged value at cost counts as a loss in P&L and appears in a damaged-stock report
    - This receive-inspection flow REPLACES the earlier "Admin approval restores stock" return step — the Packaging team's Received action with inspection IS the approval. Fully audit-logged (who received, what was marked damaged).
-7. [CHANGE] **Occasion dates & reminders** (repeat-sale engine):
+7. [CHANGE] **Occasion dates & reminders** (repeat-sale engine): _(form fields + customer↔recipient profile schema [FIXED] in C2; Occasions menu, profile editing & reminders arrive with C8)_
    - Order entry form gets two optional date fields for the RECIPIENT: **Birthday** and **Anniversary** — saved permanently against the customer↔recipient profile, not just the order.
    - Customer profile (from the customer list) shows these occasion dates and lets anyone with access **add/edit them at any time** (occasions manageable outside orders too).
    - New separate menu **"Occasions"**: list of upcoming occasions with filters **Today, Tomorrow, Next 7 days, This Month, Custom date range** — each row: customer name + phone/WhatsApp, recipient name, relation, occasion type, date, days remaining, last order info, and a quick "Follow up" action for the SE.

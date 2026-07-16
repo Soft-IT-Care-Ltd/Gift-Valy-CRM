@@ -244,9 +244,13 @@ export async function renderInvoicePdf(
 
     doc.font("bn-b").fontSize(11).fillColor(INK);
     doc.text(order.customer.name, MARGIN, y, { width: colW });
+    // Emoji (e.g. the ❤ in "Special One ❤") are outside Noto Sans Bengali's
+    // glyph set — strip them so the PDF never renders tofu boxes.
+    const pdfSafe = (s: string) =>
+      s.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2764}️]/gu, "").trim();
     const recipientName =
       order.recipientName +
-      (order.recipientRelation ? `  (${order.recipientRelation})` : "");
+      (order.recipientRelation ? `  (${pdfSafe(order.recipientRelation)})` : "");
     doc.text(recipientName, rightX, y, { width: colW });
     const nameH = Math.max(
       doc.heightOfString(order.customer.name, { width: colW }),
@@ -261,12 +265,22 @@ export async function renderInvoicePdf(
 
     doc.fillColor(MUTED);
     const leftRest = order.customer.country;
-    const addr = `${order.deliveryAddress}, ${order.thana}, ${order.district}`;
+    // District/Thana are "" on new orders (CORRECTIONS Orders §5).
+    const addr = [order.deliveryAddress, order.thana, order.district]
+      .map((p) => p?.trim())
+      .filter(Boolean)
+      .join(", ");
+    // Delivery timing (CORRECTIONS Orders §1): fixed dates are the important
+    // ones — the parcel must arrive ON the day.
+    const deliveryLine =
+      order.deliveryDateMode === "FIXED" && order.requestedDeliveryDate
+        ? `Deliver ON: ${dhakaDate(order.requestedDeliveryDate)} (fixed date)`
+        : order.deliveryDateMode === "ASAP"
+          ? "Delivery: ASAP / Urgent"
+          : null;
     const extras = [
       order.occasion ? `Occasion: ${order.occasion}` : null,
-      order.requestedDeliveryDate
-        ? `Deliver by: ${dhakaDate(order.requestedDeliveryDate)}`
-        : null,
+      deliveryLine,
     ]
       .filter(Boolean)
       .join("  ·  ");
@@ -440,6 +454,30 @@ export async function renderInvoicePdf(
         { width: totalsW, align: "right" }
       );
       y += doc.currentLineHeight() + 2;
+    }
+
+    // ---------- Invoice note (CORRECTIONS Orders §6d — customer-visible) ----------
+    if (order.invoiceNote?.trim()) {
+      y += 14;
+      const note = order.invoiceNote.trim();
+      doc.font("bn").fontSize(8.5);
+      const noteH = doc.heightOfString(note, { width: CONTENT_W - 16 }) + 24;
+      if (y + noteH > BOTTOM) {
+        doc.addPage();
+        y = MARGIN;
+      }
+      doc.roundedRect(MARGIN, y, CONTENT_W, noteH, 4).lineWidth(0.75).stroke(BORDER);
+      doc
+        .font("bn-b")
+        .fontSize(7.5)
+        .fillColor(MUTED)
+        .text("Note (নোট)", MARGIN + 8, y + 6);
+      doc
+        .font("bn")
+        .fontSize(8.5)
+        .fillColor(INK)
+        .text(note, MARGIN + 8, y + 17, { width: CONTENT_W - 16 });
+      y += noteH;
     }
 
     // ---------- Footer terms ----------

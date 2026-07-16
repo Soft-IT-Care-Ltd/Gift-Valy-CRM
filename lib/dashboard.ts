@@ -10,7 +10,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./db";
 import { dhakaDayStart, dhakaMonthStart } from "./orders";
-import { NON_SALE_STATUSES, type OrderStatusValue } from "./order-constants";
+import { EXCLUDED_SALE_STATUSES, type OrderStatusValue } from "./order-constants";
 import { buildDailySummary, dhakaYmd, dhakaYm, monthLabel } from "./pnl";
 import {
   buildCollectionReport,
@@ -237,7 +237,7 @@ async function buildCountrySales(
   to: Date
 ): Promise<CountrySalesRow[]> {
   const orders = await prisma.order.findMany({
-    where: { createdAt: { gte: from, lte: to }, status: { notIn: NON_SALE_STATUSES } },
+    where: { createdAt: { gte: from, lte: to }, status: { notIn: EXCLUDED_SALE_STATUSES } },
     select: { totalAmount: true, customer: { select: { country: true } } },
   });
   const map = new Map<string, { orders: number; sales: number }>();

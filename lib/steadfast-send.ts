@@ -46,9 +46,9 @@ const sendOrderSelect = {
   deliveryAddress: true,
   district: true,
   thana: true,
-  occasion: true,
+  deliveryDateMode: true,
   requestedDeliveryDate: true,
-  notes: true,
+  courierNote: true,
   codAmount: true,
   customer: { select: { phoneForeign: true } },
   shipment: { select: { id: true, consignmentId: true } },
@@ -69,13 +69,24 @@ type SendOrder = Awaited<
 >[number];
 
 function buildPayload(o: SendOrder, phone: string): CreateOrderPayload {
-  const address = `${o.deliveryAddress}, ${o.thana}, ${o.district}`.slice(0, 250);
+  // District/Thana are "" on new orders (CORRECTIONS Orders §5) — the full
+  // address is all Steadfast needs; legacy parts are appended when present.
+  const address = [o.deliveryAddress, o.thana, o.district]
+    .map((p) => p?.trim())
+    .filter(Boolean)
+    .join(", ")
+    .slice(0, 250);
+  // The consignment note = the COURIER NOTE (delivery instructions, §6d) plus
+  // the fixed-date/ASAP timing hint (§1). Internal notes never leave the team.
   const noteParts: string[] = [];
-  if (o.occasion) noteParts.push(o.occasion);
-  if (o.requestedDeliveryDate) {
-    noteParts.push(`Deliver by ${o.requestedDeliveryDate.toISOString().slice(0, 10)}`);
+  if (o.courierNote) noteParts.push(o.courierNote);
+  if (o.deliveryDateMode === "FIXED" && o.requestedDeliveryDate) {
+    noteParts.push(
+      `Deliver ON ${o.requestedDeliveryDate.toISOString().slice(0, 10)} (fixed date)`
+    );
+  } else if (o.deliveryDateMode === "ASAP") {
+    noteParts.push("Deliver ASAP");
   }
-  if (o.notes) noteParts.push(o.notes);
   const items = o.items
     .map((it) => {
       const name = it.product?.name ?? it.package?.name ?? it.customName ?? "Item";

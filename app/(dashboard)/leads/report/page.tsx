@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { requirePagePermission } from "@/lib/page-auth";
 import { getEffectivePermissions } from "@/lib/rbac";
 import { leadScopeWhere, leadViewScope, dailyCountScopeWhere } from "@/lib/leads";
+import { orderScopeWhere } from "@/lib/orders";
 import { buildLeadReport } from "@/lib/reports";
 import { LEAD_SOURCES, type LeadSourceValue } from "@/lib/lead-constants";
 import { LeadReportClient } from "@/components/reports/lead-report-client";
@@ -33,6 +34,14 @@ export default async function LeadReportPage({
     dailyCountScopeWhere(session, permissions),
   ]);
   const viewScope = leadViewScope(permissions);
+  // Order scope for the draft→confirm metric (CORRECTIONS Leads §10) — a lead
+  // viewer without any order view permission falls back to their own orders.
+  let orderWhere: Prisma.OrderWhereInput;
+  try {
+    orderWhere = await orderScopeWhere(session, permissions);
+  } catch {
+    orderWhere = { salesExecutiveId: session.user.id };
+  }
 
   const from = sp.from && DATE_RE.test(sp.from) ? new Date(`${sp.from}T00:00:00+06:00`) : undefined;
   const to = sp.to && DATE_RE.test(sp.to) ? new Date(`${sp.to}T23:59:59+06:00`) : undefined;
@@ -48,6 +57,7 @@ export default async function LeadReportPage({
     to,
     leadWhere,
     dailyCountWhere,
+    orderWhere,
     seId,
     source,
     campaign,

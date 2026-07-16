@@ -44,13 +44,16 @@ import { PhotoField } from "@/components/catalog/photo-field";
 import { money, formatDate, formatDateTime } from "@/lib/format";
 import { StatusBadge } from "./orders-list-client";
 import {
+  DELIVERY_DATE_MODE_LABELS,
   MFS_METHODS,
   ORDER_STATUS_LABELS,
   PAYMENT_METHODS,
   PAYMENT_METHOD_LABELS,
   PAYMENT_TYPES,
   PAYMENT_TYPE_LABELS,
+  joinAddress,
   orderIsInvoiceable,
+  type DeliveryDateModeValue,
   type OrderStatusValue,
   type PaymentMethodValue,
   type PaymentTypeValue,
@@ -83,6 +86,7 @@ export interface OrderDetail {
   district: string;
   thana: string;
   occasion: string | null;
+  deliveryDateMode: DeliveryDateModeValue;
   requestedDeliveryDate: string | null;
   items: {
     id: number;
@@ -104,6 +108,8 @@ export interface OrderDetail {
   dueAmount: number;
   codAmount: number;
   notes: string | null;
+  invoiceNote: string | null;
+  courierNote: string | null;
   salesExecutive: { id: number; name: string };
   team: { id: number; name: string } | null;
   payments: {
@@ -448,6 +454,17 @@ export function OrderDetailClient({
         </div>
       )}
 
+      {/* Committed-but-unpaid draft (CORRECTIONS Leads §10) */}
+      {order.status === "DRAFT" && (
+        <div className="rounded-md border border-slate-300 bg-slate-50 p-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-300">
+          <span className="font-medium">Draft — awaiting advance payment.</span>{" "}
+          Nothing is reserved or invoiced yet.{" "}
+          {canAddPayment
+            ? "Record the advance below to confirm it — the real order number is assigned then."
+            : "Recording the advance payment confirms it (real order number, stock reserve, invoice)."}
+        </div>
+      )}
+
       {pendingRequest && (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
           <div className="flex flex-wrap items-center gap-2">
@@ -515,12 +532,22 @@ export function OrderDetailClient({
             </div>
             <div>{order.recipientPhoneBd}</div>
             <div className="text-muted-foreground">
-              {order.deliveryAddress}, {order.thana}, {order.district}
+              {joinAddress(order.deliveryAddress, order.thana, order.district)}
             </div>
-            <div className="text-muted-foreground">
-              {order.occasion && <span>Occasion: {order.occasion} · </span>}
-              {order.requestedDeliveryDate && (
-                <span>Deliver by: {formatDate(order.requestedDeliveryDate)}</span>
+            <div className="flex flex-wrap items-center gap-1.5 text-muted-foreground">
+              {order.occasion && <span>Occasion: {order.occasion} ·</span>}
+              {/* Delivery timing (CORRECTIONS Orders §1) — 🎯 highlights fixed dates */}
+              {order.deliveryDateMode === "FIXED" &&
+              order.requestedDeliveryDate ? (
+                <Badge className="bg-violet-100 text-violet-800 hover:bg-violet-100 dark:bg-violet-950 dark:text-violet-300">
+                  🎯 Deliver ON {formatDate(order.requestedDeliveryDate)}
+                </Badge>
+              ) : order.deliveryDateMode === "ASAP" ? (
+                <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-300">
+                  ⚡ {DELIVERY_DATE_MODE_LABELS.ASAP}
+                </Badge>
+              ) : (
+                <span>Delivery: {DELIVERY_DATE_MODE_LABELS.ANY_DAY}</span>
               )}
             </div>
           </CardContent>
@@ -1008,9 +1035,22 @@ export function OrderDetailClient({
             <CardTitle>Notes & edit requests</CardTitle>
           </CardHeader>
           <CardContent className="grid gap-3 text-sm">
+            {/* 3-note system (CORRECTIONS Orders §6d) */}
             <div>
-              <div className="text-muted-foreground">Internal notes</div>
+              <div className="text-muted-foreground">Order note (internal)</div>
               <div>{order.notes ?? "—"}</div>
+            </div>
+            <div>
+              <div className="text-muted-foreground">
+                Invoice note (printed — customer sees it)
+              </div>
+              <div>{order.invoiceNote ?? "—"}</div>
+            </div>
+            <div>
+              <div className="text-muted-foreground">
+                Courier note (sent to Steadfast)
+              </div>
+              <div>{order.courierNote ?? "—"}</div>
             </div>
             {order.editRequests.length > 0 && (
               <div className="grid gap-2">

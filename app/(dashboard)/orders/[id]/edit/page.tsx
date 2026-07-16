@@ -7,6 +7,7 @@ import { loadOrderFormOptions } from "@/lib/order-form-options";
 import type { StoredChoiceSelection } from "@/lib/bom";
 import { getOrderEditWindowMinutes } from "@/lib/settings";
 import { orderScopeWhere, withinEditWindow } from "@/lib/orders";
+import { findRecipientOccasions } from "@/lib/occasions";
 import { EDITABLE_STATUSES } from "@/lib/order-constants";
 import {
   OrderForm,
@@ -55,16 +56,23 @@ export default async function EditOrderPage({
 
   const catalog = await loadBomCatalog(prisma);
   const { products, packages } = await loadOrderFormOptions(prisma, catalog);
+  // Occasion dates prefill from the customer↔recipient profile (§7 form part).
+  const occasions = await findRecipientOccasions(
+    prisma,
+    order.customerId,
+    order.recipientPhoneBd
+  );
 
   const initial: OrderFormInitial = {
     recipientName: order.recipientName,
     recipientPhoneBd: order.recipientPhoneBd,
     recipientRelation: order.recipientRelation,
     deliveryAddress: order.deliveryAddress,
-    district: order.district,
-    thana: order.thana,
     deliveryZone: order.deliveryZone,
     occasion: order.occasion,
+    recipientBirthday: occasions.birthday,
+    recipientAnniversary: occasions.anniversary,
+    deliveryDateMode: order.deliveryDateMode,
     requestedDeliveryDate: order.requestedDeliveryDate
       ? order.requestedDeliveryDate.toISOString().slice(0, 10)
       : null,
@@ -81,6 +89,8 @@ export default async function EditOrderPage({
     courierCharge: Number(order.courierChargeCustomer),
     codAmount: Number(order.codAmount),
     notes: order.notes,
+    invoiceNote: order.invoiceNote,
+    courierNote: order.courierNote,
     customer: {
       name: order.customer.name,
       phoneForeign: order.customer.phoneForeign,

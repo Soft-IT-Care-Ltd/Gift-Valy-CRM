@@ -49,6 +49,8 @@ export async function POST(req: Request) {
         whatsappNumber: normalizePhone(data.whatsappNumber),
         interestedIn: interestedIn as unknown as Prisma.InputJsonValue,
         status: data.status as LeadStatus,
+        // CORRECTIONS Leads §9 — start the commitment clock for the queue.
+        committedAt: data.status === "COMMITTED" ? new Date() : null,
         followUpAt: data.followUpAt ? new Date(data.followUpAt) : null,
         lostReason: (data.lostReason ?? null) as LostReason | null,
         notes: data.notes,

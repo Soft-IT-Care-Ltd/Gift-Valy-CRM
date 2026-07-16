@@ -16,7 +16,12 @@ import {
 } from "../lib/stock";
 import { packageCost, productEffectiveCost } from "../lib/bom";
 import { loadBomCatalog } from "../lib/bom-db";
-import { applyStatusTransition, recomputeDue } from "../lib/orders";
+import {
+  applyStatusTransition,
+  confirmDraftTx,
+  nextDraftNo,
+  recomputeDue,
+} from "../lib/orders";
 import {
   applyHandover,
   applyShipmentStatus,
@@ -608,6 +613,129 @@ async function main() {
         }
         check("re-approval is blocked (no double stock/charge)", reApprovalBlocked);
         await invariant(tx, teddy.id, "after return approval");
+        console.log("");
+
+        // =====================================================================
+        // 9. DRAFT → CONFIRM (CORRECTIONS Leads §9/§10) — committed lead, draft
+        //    order (no reserve/no sale), advance lands → real number + reserve
+        //    + lead converted
+        // =====================================================================
+        console.log("9. DRAFT — committed lead, unpaid draft, confirm on payment");
+        const dLead = await tx.lead.create({
+          data: {
+            leadDate: new Date(),
+            source: "WHATSAPP",
+            customerName: "Draft Verify Customer",
+            whatsappNumber: "+966500000099",
+            status: "COMMITTED",
+            committedAt: new Date(),
+            assignedTo: admin.id,
+          },
+        });
+        const draftNo = await nextDraftNo(tx);
+        check(`draft number uses DRAFT- prefix (${draftNo})`, draftNo.startsWith("DRAFT-"));
+        const teddyBeforeDraft = await tx.product.findUniqueOrThrow({
+          where: { id: teddy.id },
+          select: { reservedQty: true },
+        });
+        const dTOTAL = 1600;
+        const dOrder = await tx.order.create({
+          data: {
+            orderNo: draftNo,
+            leadId: dLead.id,
+            customerId: customer.id,
+            recipientName: "Draft Recipient",
+            recipientPhoneBd: "01700000003",
+            deliveryAddress: "draft addr, Dhaka",
+            deliveryDateMode: "ASAP",
+            subtotal: dTOTAL,
+            totalAmount: dTOTAL,
+            dueAmount: dTOTAL,
+            codAmount: dTOTAL,
+            status: "DRAFT",
+            salesExecutiveId: admin.id,
+            items: {
+              create: [
+                { itemType: "PRODUCT", productId: teddy.id, qty: 2, unitPrice: 800, lineTotal: 1600 },
+              ],
+            },
+          },
+        });
+        await tx.orderStatusHistory.create({
+          data: { orderId: dOrder.id, fromStatus: null, toStatus: "DRAFT", byUser: admin.id },
+        });
+        const teddyAfterDraft = await tx.product.findUniqueOrThrow({
+          where: { id: teddy.id },
+          select: { reservedQty: true },
+        });
+        check(
+          "saving a draft reserves NOTHING",
+          teddyAfterDraft.reservedQty === teddyBeforeDraft.reservedQty
+        );
+
+        // Advance lands → the payments route records the payment, recomputes
+        // due, then confirms the draft (mirrored here).
+        const D_ADVANCE = 600;
+        await tx.payment.create({
+          data: {
+            orderId: dOrder.id,
+            type: "ADVANCE",
+            method: "BKASH",
+            amount: D_ADVANCE,
+            walletId: wallet.id,
+            transactionId: "VERIFY-TXN-0003",
+            createdBy: admin.id,
+            updatedBy: admin.id,
+          },
+        });
+        await recomputeDue(tx, dOrder.id);
+        const { orderNo: realNo } = await confirmDraftTx(
+          tx,
+          dOrder.id,
+          admin.id,
+          "advance received"
+        );
+        const dConfirmed = await tx.order.findUniqueOrThrow({
+          where: { id: dOrder.id },
+        });
+        check(
+          `confirm assigned the real GV number (${draftNo} → ${realNo})`,
+          /^GV-\d{4}-\d{4}$/.test(realNo) && dConfirmed.orderNo === realNo
+        );
+        check("draft is now CONFIRMED", dConfirmed.status === "CONFIRMED");
+        check(
+          `advance snapshot = paid amount (৳${Number(dConfirmed.advanceAmount)})`,
+          Number(dConfirmed.advanceAmount) === D_ADVANCE
+        );
+        check(
+          `due = total − advance (৳${Number(dConfirmed.dueAmount)})`,
+          Number(dConfirmed.dueAmount) === dTOTAL - D_ADVANCE
+        );
+        const teddyAfterConfirm = await tx.product.findUniqueOrThrow({
+          where: { id: teddy.id },
+          select: { reservedQty: true },
+        });
+        check(
+          "confirmation reserved the draft's stock (+2 Teddy)",
+          teddyAfterConfirm.reservedQty === teddyBeforeDraft.reservedQty + 2
+        );
+        const dLeadAfter = await tx.lead.findUniqueOrThrow({
+          where: { id: dLead.id },
+          select: { status: true },
+        });
+        check("linked lead flipped COMMITTED → CONVERTED", dLeadAfter.status === "CONVERTED");
+        const dHistory = await tx.orderStatusHistory.findMany({
+          where: { orderId: dOrder.id },
+          orderBy: { at: "asc" },
+        });
+        check(
+          "history shows DRAFT creation + DRAFT → CONFIRMED",
+          dHistory.length === 2 &&
+            dHistory[0].toStatus === "DRAFT" &&
+            dHistory[1].fromStatus === "DRAFT" &&
+            dHistory[1].toStatus === "CONFIRMED"
+        );
+        await invariant(tx, teddy.id, "after draft confirm");
 
         throw new Error(ROLLBACK);
       },

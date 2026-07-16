@@ -6,8 +6,8 @@ import { AuthzError } from "./authz";
 import { syncReservations, syncStockForStatus } from "./stock";
 import {
   ALLOWED_TRANSITIONS,
-  BD_DISTRICTS,
   CUSTOMER_COUNTRIES,
+  DELIVERY_DATE_MODES,
   DELIVERY_ZONES,
   MFS_METHODS,
   OCCASIONS,
@@ -17,6 +17,8 @@ import {
   type OrderStatusValue,
   type PaymentMethodValue,
 } from "./order-constants";
+import { upsertRecipientOccasions } from "./occasions";
+import { timeSince } from "./lead-constants";
 import {
   BomError,
   collectChoiceGroups,
@@ -118,6 +120,11 @@ export function buildOrderListFilters(
   const q = (params.q ?? "").trim();
   const rangeAll = params.range === "all";
 
+  const status =
+    params.status && ORDER_STATUSES.includes(params.status as OrderStatusValue)
+      ? (params.status as OrderStatusValue)
+      : null;
+
   const hasFrom = !!params.from && /^\d{4}-\d{2}-\d{2}$/.test(params.from);
   const hasTo = !!params.to && /^\d{4}-\d{2}-\d{2}$/.test(params.to);
   if (hasFrom) {
@@ -126,7 +133,10 @@ export function buildOrderListFilters(
   if (hasTo) {
     baseFilters.push({ createdAt: { lte: new Date(`${params.to}T23:59:59+06:00`) } });
   }
-  if (!hasFrom && !hasTo && !rangeAll && !q) {
+  // The Pending Payment (Drafts) tab ignores the implicit month default —
+  // a forgotten old draft must never fall out of view (CORRECTIONS Leads §10).
+  // Explicit dates still apply.
+  if (!hasFrom && !hasTo && !rangeAll && !q && status !== "DRAFT") {
     baseFilters.push({ createdAt: { gte: dhakaMonthStart() } });
   }
 
@@ -146,10 +156,6 @@ export function buildOrderListFilters(
   const seId = Number(params.seId);
   if (seId) baseFilters.push({ salesExecutiveId: seId });
 
-  const status =
-    params.status && ORDER_STATUSES.includes(params.status as OrderStatusValue)
-      ? (params.status as OrderStatusValue)
-      : null;
   const filters = status ? [...baseFilters, { status }] : [...baseFilters];
 
   const page = Math.max(1, Math.floor(Number(params.page)) || 1);
@@ -187,34 +193,61 @@ const enumOrNull = (values: readonly string[]) =>
     })
     .transform((v) => (v ? v : null));
 
+const nullableTrimmed = z
+  .string()
+  .nullable()
+  .optional()
+  .transform((v) => (v?.trim() ? v.trim() : null));
+
+const nullableYmd = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .nullable()
+  .optional();
+
 // Sections B + C + D(cod) + notes — everything an order edit may change (§4.2).
-export const orderCoreSchema = z.object({
-  recipientName: z.string().trim().min(1),
-  recipientPhoneBd: z.string().trim().min(6, "Recipient BD phone is required"),
-  recipientRelation: enumOrNull(RECIPIENT_RELATIONS),
-  deliveryAddress: z.string().trim().min(5, "Full delivery address is required"),
-  district: z.enum(BD_DISTRICTS),
-  thana: z.string().trim().min(1, "Thana is required"),
-  occasion: enumOrNull(OCCASIONS),
-  // CORRECTIONS Products §3 — recipient zone; the form auto-fills the delivery
-  // charge from item zone charges when set. Optional (free delivery default).
-  deliveryZone: enumOrNull(DELIVERY_ZONES),
-  requestedDeliveryDate: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .nullable()
-    .optional(),
-  items: z.array(itemSchema).min(1, "At least one line item is required"),
-  discountType: z.enum(["AMOUNT", "PERCENT"]).default("AMOUNT"),
-  discountValue: z.number().min(0).default(0),
-  courierCharge: z.number().min(0).default(0),
-  codAmount: z.number().min(0).nullable().optional(), // null → defaults to due
-  notes: z
-    .string()
-    .nullable()
-    .optional()
-    .transform((v) => (v?.trim() ? v.trim() : null)),
-});
+// District/Thana are gone from the form (CORRECTIONS Orders §5) — only the
+// full address remains; legacy columns keep "" for new orders.
+export const orderCoreSchema = z
+  .object({
+    recipientName: z.string().trim().min(1),
+    recipientPhoneBd: z.string().trim().min(6, "Recipient BD phone is required"),
+    recipientRelation: enumOrNull(RECIPIENT_RELATIONS),
+    deliveryAddress: z.string().trim().min(5, "Full delivery address is required"),
+    occasion: enumOrNull(OCCASIONS),
+    // CORRECTIONS Orders §7 (form part) — optional recipient occasion dates,
+    // persisted on the customer↔recipient profile.
+    recipientBirthday: nullableYmd,
+    recipientAnniversary: nullableYmd,
+    // CORRECTIONS Products §3 — recipient zone; the form auto-fills the delivery
+    // charge from item zone charges when set. Optional (free delivery default).
+    deliveryZone: enumOrNull(DELIVERY_ZONES),
+    // CORRECTIONS Orders §1 — ASAP / Any day / Fixed; only FIXED carries a date.
+    deliveryDateMode: z.enum(DELIVERY_DATE_MODES).default("ANY_DAY"),
+    requestedDeliveryDate: nullableYmd,
+    items: z.array(itemSchema).min(1, "At least one line item is required"),
+    discountType: z.enum(["AMOUNT", "PERCENT"]).default("AMOUNT"),
+    discountValue: z.number().min(0).default(0),
+    courierCharge: z.number().min(0).default(0),
+    codAmount: z.number().min(0).nullable().optional(), // null → defaults to due
+    notes: nullableTrimmed, // Order Note — internal (CORRECTIONS Orders §6d)
+    invoiceNote: nullableTrimmed, // printed on the invoice (customer-visible)
+    courierNote: nullableTrimmed, // sent to Steadfast as the consignment `note`
+  })
+  .refine(
+    (o) => o.deliveryDateMode !== "FIXED" || !!o.requestedDeliveryDate,
+    { message: "A fixed delivery date requires picking the date" }
+  );
+
+// The stored date only means something in FIXED mode (§1).
+export function deliveryDateForMode(payload: {
+  deliveryDateMode: (typeof DELIVERY_DATE_MODES)[number];
+  requestedDeliveryDate?: string | null;
+}): Date | null {
+  return payload.deliveryDateMode === "FIXED" && payload.requestedDeliveryDate
+    ? new Date(payload.requestedDeliveryDate)
+    : null;
+}
 
 export type OrderCorePayload = z.infer<typeof orderCoreSchema>;
 
@@ -254,6 +287,10 @@ export const createOrderSchema = z.object({
   // Set when the order is created from a lead (§3.2) — flips the lead to
   // Converted and links orders.lead_id (validated in the route).
   leadId: z.number().int().positive().nullable().optional(),
+  // CORRECTIONS Leads §10 — save the fully-detailed order as a DRAFT before
+  // the advance arrives: DRAFT-XXXX number, no reserve/invoice, source lead
+  // flips to COMMITTED instead of CONVERTED.
+  saveAsDraft: z.boolean().optional().default(false),
 });
 
 export type CreateOrderPayload = z.infer<typeof createOrderSchema>;
@@ -432,6 +469,78 @@ export async function nextOrderNo(db: Tx, prefix: string): Promise<string> {
   return `${prefix}${String(seq).padStart(4, "0")}`;
 }
 
+// CORRECTIONS Leads §10 — drafts get a temporary DRAFT-XXXX number (one global
+// sequence); the real GV-YYMM-XXXX is assigned at CONFIRM so sales numbering
+// stays clean. Same last-row + retry-on-P2002 pattern as nextOrderNo.
+export const DRAFT_NO_PREFIX = "DRAFT-";
+
+export async function nextDraftNo(db: Tx): Promise<string> {
+  return nextOrderNo(db, DRAFT_NO_PREFIX);
+}
+
+export function isDraftNo(orderNo: string): boolean {
+  return orderNo.startsWith(DRAFT_NO_PREFIX);
+}
+
+// ---------- draft → confirm (CORRECTIONS Leads §10) ----------
+
+// Everything that happens when a draft's advance finally lands, in ONE place so
+// the payments route (auto-confirm on payment) and the status route (manual
+// DRAFT → CONFIRMED override) behave identically:
+//   1. the real GV-YYMM-XXXX number replaces DRAFT-XXXX
+//   2. status DRAFT → CONFIRMED + history row (via applyStatusTransition)
+//   3. stock reserves (syncStockForStatus inside the transition)
+//   4. advance_amount snapshots the total actually paid so far
+//   5. the source lead (if any) flips COMMITTED → CONVERTED
+// Caller owns the transaction and the P2002 retry on the order-number unique
+// (concurrent confirms in the same month), plus invoice generation AFTER the
+// transaction commits (SPEC §5, non-fatal).
+export async function confirmDraftTx(
+  tx: Prisma.TransactionClient,
+  orderId: number,
+  userId: number,
+  note: string | null
+): Promise<{ orderNo: string }> {
+  const order = await tx.order.findUniqueOrThrow({
+    where: { id: orderId },
+    include: { payments: { select: { type: true, amount: true, isRejected: true } } },
+  });
+  if (order.status !== "DRAFT") {
+    throw new AuthzError(400, `Order ${order.orderNo} is not a draft`);
+  }
+
+  const orderNo = await nextOrderNo(tx, orderNoPrefix());
+  const paid = order.payments.reduce(
+    (s, p) =>
+      p.isRejected ? s : s + (p.type === "REFUND" ? -Number(p.amount) : Number(p.amount)),
+    0
+  );
+  await tx.order.update({
+    where: { id: orderId },
+    data: {
+      orderNo,
+      advanceAmount: Math.max(paid, 0), // §4.1 D snapshot — the advance that confirmed it
+      updatedBy: userId,
+    },
+  });
+  await applyStatusTransition(
+    tx,
+    { id: order.id, status: "DRAFT", cancelReason: order.cancelReason },
+    "CONFIRMED",
+    userId,
+    note ?? `Advance received — confirmed from draft ${order.orderNo}`
+  );
+  // Lead lifecycle (§10): draft creation put the lead at COMMITTED; the
+  // confirmation is the real conversion.
+  if (order.leadId != null) {
+    await tx.lead.update({
+      where: { id: order.leadId },
+      data: { status: "CONVERTED", updatedBy: userId },
+    });
+  }
+  return { orderNo };
+}
+
 // ---------- due recompute (CLAUDE.md rule 2 / SPEC integrity rule 1) ----------
 
 // due = total − Σ(payments ≠ REFUND) + Σ(REFUND). Runs inside the same
@@ -545,6 +654,8 @@ export async function applyOrderEdit(
         : undefined,
     })),
   });
+  // District/Thana intentionally untouched (CORRECTIONS Orders §5): removed
+  // from the form; legacy rows keep whatever they had.
   await tx.order.update({
     where: { id: orderId },
     data: {
@@ -552,20 +663,33 @@ export async function applyOrderEdit(
       recipientPhoneBd: payload.recipientPhoneBd,
       recipientRelation: payload.recipientRelation,
       deliveryAddress: payload.deliveryAddress,
-      district: payload.district,
-      thana: payload.thana,
       occasion: payload.occasion,
       deliveryZone: payload.deliveryZone as Prisma.OrderUpdateInput["deliveryZone"],
-      requestedDeliveryDate: payload.requestedDeliveryDate
-        ? new Date(payload.requestedDeliveryDate)
-        : null,
+      deliveryDateMode: payload.deliveryDateMode,
+      requestedDeliveryDate: deliveryDateForMode(payload),
       subtotal: totals.subtotal,
       discount: totals.discountAmount,
       courierChargeCustomer: payload.courierCharge,
       totalAmount: totals.total,
       notes: payload.notes,
+      invoiceNote: payload.invoiceNote,
+      courierNote: payload.courierNote,
       updatedBy: userId,
     },
+  });
+  // Occasion dates persist on the customer↔recipient profile (§7 form part).
+  const { customerId } = await tx.order.findUniqueOrThrow({
+    where: { id: orderId },
+    select: { customerId: true },
+  });
+  await upsertRecipientOccasions(tx, {
+    customerId,
+    recipientName: payload.recipientName,
+    recipientPhoneBd: payload.recipientPhoneBd,
+    relation: payload.recipientRelation,
+    birthday: payload.recipientBirthday,
+    anniversary: payload.recipientAnniversary,
+    userId,
   });
   const due = await recomputeDue(tx, orderId);
   // COD: explicit value wins, otherwise follow the recomputed due (never < 0).
@@ -659,6 +783,7 @@ export function serializeOrderDetail(o: OrderWithRelations, showCosts: boolean) 
     thana: o.thana,
     deliveryZone: o.deliveryZone,
     occasion: o.occasion,
+    deliveryDateMode: o.deliveryDateMode,
     requestedDeliveryDate: o.requestedDeliveryDate
       ? o.requestedDeliveryDate.toISOString().slice(0, 10)
       : null,
@@ -689,6 +814,8 @@ export function serializeOrderDetail(o: OrderWithRelations, showCosts: boolean) 
     dueAmount: Number(o.dueAmount),
     codAmount: Number(o.codAmount),
     notes: o.notes,
+    invoiceNote: o.invoiceNote,
+    courierNote: o.courierNote,
     salesExecutive: o.salesExecutive,
     team: o.team,
     payments: o.payments
@@ -826,6 +953,22 @@ export function serializeOrderListRow(o: OrderListRow) {
     totalAmount: Number(o.totalAmount),
     dueAmount: Number(o.dueAmount),
     status: o.status,
+    // Delivery timing (CORRECTIONS Orders §1) — 🎯 fixed-date badges in lists.
+    deliveryDateMode: o.deliveryDateMode,
+    requestedDeliveryDate: o.requestedDeliveryDate
+      ? o.requestedDeliveryDate.toISOString().slice(0, 10)
+      : null,
+    // Pending-Payment aging (CORRECTIONS Leads §10) — precomputed so the list
+    // renders without clock calls; red once a draft is unpaid > 24h.
+    draftAge:
+      o.status === "DRAFT" ? timeSince(o.createdAt.toISOString()) : null,
+    draftOverdue:
+      o.status === "DRAFT" &&
+      Date.now() - o.createdAt.getTime() > 24 * 60 * 60 * 1000,
+    // 3-note system (§6d) — the list's Note modal reads and updates these.
+    notes: o.notes,
+    invoiceNote: o.invoiceNote,
+    courierNote: o.courierNote,
     salesExecutive: o.salesExecutive.name,
     salesExecutiveId: o.salesExecutive.id,
   };

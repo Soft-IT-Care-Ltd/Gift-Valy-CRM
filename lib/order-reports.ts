@@ -17,9 +17,14 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // An order stops counting as a sale when its money came back or never landed
-// (§4.2) — same rule as targets/leaderboard so all screens agree.
+// (§4.2) — same rule as targets/leaderboard so all screens agree. DRAFT
+// (CORRECTIONS Leads §10) is not a sale EITHER — it's the unpaid pipeline —
+// but it is never "lost", so it stays out of the cancelled buckets.
 const LOST_STATUSES = NON_SALE_STATUSES; // CANCELLED, RETURNED, REFUNDED
 const DELIVERED_STATUSES: OrderStatusValue[] = ["DELIVERED", "COMPLETED"];
+
+const isSaleStatus = (s: OrderStatusValue) =>
+  !LOST_STATUSES.includes(s) && s !== "DRAFT";
 
 // YYYY-MM-DD for a Date in Asia/Dhaka (en-CA renders ISO date order).
 function dhakaYmd(d: Date): string {
@@ -148,13 +153,13 @@ export async function buildSalesReport(
     map: Map<string, SalesGroupRow>,
     key: string,
     label: string,
-    o: { isLost: boolean; isDelivered: boolean; amount: number }
+    o: { isLost: boolean; isSale: boolean; isDelivered: boolean; amount: number }
   ) => {
     const row =
       map.get(key) ??
       { key, label, orders: 0, salesValue: 0, delivered: 0, cancelled: 0 };
     row.orders += 1;
-    if (!o.isLost) row.salesValue = round2(row.salesValue + o.amount);
+    if (o.isSale) row.salesValue = round2(row.salesValue + o.amount);
     if (o.isDelivered) row.delivered += 1;
     if (o.isLost) row.cancelled += 1;
     map.set(key, row);
@@ -164,10 +169,11 @@ export async function buildSalesReport(
     const amount = Number(o.totalAmount);
     const status = o.status as OrderStatusValue;
     const isLost = LOST_STATUSES.includes(status);
+    const isSale = isSaleStatus(status);
     const isDelivered = DELIVERED_STATUSES.includes(status);
 
     totalValue = round2(totalValue + amount);
-    if (!isLost) {
+    if (isSale) {
       salesOrders += 1;
       salesValue = round2(salesValue + amount);
     }
@@ -186,7 +192,7 @@ export async function buildSalesReport(
     st.value = round2(st.value + amount);
     byStatus.set(status, st);
 
-    const info = { isLost, isDelivered, amount };
+    const info = { isLost, isSale, isDelivered, amount };
     const day = dhakaYmd(o.createdAt);
     bump(groups.byDay, day, day, info);
     bump(groups.bySE, String(o.salesExecutiveId), o.salesExecutive.name, info);
@@ -198,9 +204,9 @@ export async function buildSalesReport(
     );
     bump(groups.byCountry, o.customer.country, o.customer.country, info);
 
-    // Packages sold — over sale orders only, so a cancelled order's packages
-    // don't inflate "sold" quantities.
-    if (!isLost) {
+    // Packages sold — over sale orders only, so a cancelled or draft order's
+    // packages don't inflate "sold" quantities.
+    if (isSale) {
       for (const it of o.items) {
         const key = it.packageId === null ? "custom" : String(it.packageId);
         const label = it.package
@@ -510,7 +516,7 @@ export async function buildCustomerReport(opts: {
 
   const byCustomer = new Map<number, CustomerRow>();
   for (const o of orders) {
-    const isLost = LOST_STATUSES.includes(o.status as OrderStatusValue);
+    const isSale = isSaleStatus(o.status as OrderStatusValue);
     const at = o.createdAt.toISOString();
     const row =
       byCustomer.get(o.customerId) ??
@@ -526,7 +532,7 @@ export async function buildCustomerReport(opts: {
         lastOrderAt: at,
       };
     row.orders += 1;
-    if (!isLost) {
+    if (isSale) {
       row.saleOrders += 1;
       row.salesValue = round2(row.salesValue + Number(o.totalAmount));
     }

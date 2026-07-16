@@ -3,7 +3,7 @@ import type { Session } from "next-auth";
 import { z } from "zod";
 import { prisma } from "./db";
 import { AuthzError } from "./authz";
-import { NON_SALE_STATUSES } from "./order-constants";
+import { EXCLUDED_SALE_STATUSES } from "./order-constants";
 import { getOnboardingExcludeDays } from "./settings";
 import {
   assembleGauge,
@@ -23,7 +23,7 @@ type Tx = Prisma.TransactionClient | PrismaClient;
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Orders count toward achievement unless their money came back (§4.2). Cast once.
 const SALE_STATUS_FILTER = {
-  notIn: NON_SALE_STATUSES as unknown as OrderStatus[],
+  notIn: EXCLUDED_SALE_STATUSES as unknown as OrderStatus[],
 };
 
 // ---------- month → Date key / instant window ----------

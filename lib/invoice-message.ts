@@ -34,7 +34,8 @@ export function buildInvoiceMessage(
     `মোট: ${amt(o.totalAmount)}`,
     `অগ্রিম জমা: ${amt(o.advanceAmount)}`,
     `বাকি (ডেলিভারিতে): ${amt(o.dueAmount)}`,
-    `প্রাপক: ${o.recipientName}, ${o.district}`,
+    // District is "" on new orders (CORRECTIONS Orders §5) — only append when set.
+    `প্রাপক: ${o.recipientName}${o.district?.trim() ? `, ${o.district}` : ""}`,
   ];
   if (currency) {
     lines.push(`(${rateLine(currency)} — ${currency.code} amounts আনুমানিক)`);
