@@ -4,6 +4,7 @@ import { getEffectivePermissions } from "@/lib/rbac";
 import {
   ORDER_PAGE_SIZE,
   buildOrderListFilters,
+  orderListInclude,
   orderScopeWhere,
   orderViewScope,
   serializeOrderListRow,
@@ -28,32 +29,37 @@ export default async function OrdersPage({
   // Status stays out of the base filters: the tab counts reflect the current
   // window/search/SE selection across ALL statuses — and the active tab's
   // count doubles as the pagination total (no extra COUNT query).
-  const { baseFilters, filters, page, status, q, rangeAll } =
+  const { baseFilters, filters, trashFilters, page, status, q, rangeAll, trash } =
     buildOrderListFilters(params, scope);
 
-  const [orders, grouped] = await Promise.all([
+  // Trash tab (CORRECTIONS Orders §6f) — visible only with orders.trash.
+  const canTrash = permissions.includes("orders.trash");
+
+  const [orders, grouped, trashCount] = await Promise.all([
     prisma.order.findMany({
       where: { AND: filters },
-      orderBy: { createdAt: "desc" },
+      orderBy: trash ? { deletedAt: "desc" } : { createdAt: "desc" },
       skip: (page - 1) * ORDER_PAGE_SIZE,
       take: ORDER_PAGE_SIZE,
-      include: {
-        customer: { select: { name: true, phoneForeign: true, country: true } },
-        salesExecutive: { select: { id: true, name: true } },
-      },
+      include: orderListInclude,
     }),
     prisma.order.groupBy({
       by: ["status"],
       where: { AND: baseFilters },
       _count: { _all: true },
     }),
+    canTrash
+      ? prisma.order.count({ where: { AND: trashFilters } })
+      : Promise.resolve(0),
   ]);
   const statusCounts = Object.fromEntries(
     grouped.map((g) => [g.status, g._count._all])
   ) as Partial<Record<OrderStatusValue, number>>;
-  const total = status
-    ? (statusCounts[status] ?? 0)
-    : Object.values(statusCounts).reduce((s, n) => s + (n ?? 0), 0);
+  const total = trash
+    ? trashCount
+    : status
+      ? (statusCounts[status] ?? 0)
+      : Object.values(statusCounts).reduce((s, n) => s + (n ?? 0), 0);
 
   // "Send to Steadfast" on the PACKED tab needs courier.manage + an enabled
   // integration (STEADFAST_INTEGRATION.md §2).
@@ -91,6 +97,7 @@ export default async function OrdersPage({
     <OrdersListClient
       orders={orders.map(serializeOrderListRow)}
       statusCounts={statusCounts}
+      trashCount={trashCount}
       total={total}
       page={page}
       pageSize={ORDER_PAGE_SIZE}
@@ -100,6 +107,11 @@ export default async function OrdersPage({
       canCreate={permissions.includes("orders.create")}
       canManageCourier={canManageCourier}
       steadfastEnabled={steadfastEnabled}
+      canTrash={canTrash}
+      canEditOrders={permissions.includes("orders.edit")}
+      canCancelOrders={permissions.includes("orders.cancel")}
+      canPackOrders={permissions.includes("orders.pack")}
+      canPrintInvoices={permissions.includes("invoice.generate")}
     />
   );
 }

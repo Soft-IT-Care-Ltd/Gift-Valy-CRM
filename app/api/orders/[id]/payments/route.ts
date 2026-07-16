@@ -56,7 +56,9 @@ export async function POST(req: Request, { params }: Params) {
     // Scope: SE/TL restricted to their own/team orders; Accounts (payments.verify)
     // may record payments against any order even without an orders view permission.
     const order = await prisma.order.findUnique({ where: { id } });
-    if (!order) {
+    // findUnique bypasses the trash auto-filter — no payments on a trashed
+    // order (§6f); restore it first.
+    if (!order || order.deletedAt) {
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
     }
     if (!permissions.includes("payments.verify")) {

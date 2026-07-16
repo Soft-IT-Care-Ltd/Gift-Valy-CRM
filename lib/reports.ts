@@ -318,6 +318,9 @@ export async function buildCourierReport(): Promise<CourierReport> {
       },
     }),
     prisma.shipment.findMany({
+      // shipment-level query — exclude trashed orders explicitly (§6f); the
+      // trash auto-filter only covers top-level Order queries.
+      where: { order: { deletedAt: null } },
       include: {
         courier: { select: { id: true, name: true } },
         order: { select: { id: true, orderNo: true, recipientName: true, district: true } },
@@ -552,9 +555,14 @@ export async function buildCollectionReport(opts: {
   const now = Date.now();
 
   const [payments, dueOrders, rejectedAgg] = await Promise.all([
-    // Rejected payments (money never received) are excluded from collections.
+    // Rejected payments (money never received) are excluded from collections,
+    // and so are payments on trashed orders (§6f — nested filter needed).
     prisma.payment.findMany({
-      where: { paymentDate: { gte: from, lte: to }, isRejected: false },
+      where: {
+        paymentDate: { gte: from, lte: to },
+        isRejected: false,
+        order: { deletedAt: null },
+      },
       orderBy: { paymentDate: "desc" },
       include: {
         wallet: { select: { id: true, name: true, type: true } },
@@ -588,7 +596,11 @@ export async function buildCollectionReport(opts: {
     }),
     // Rejected in-range, for transparency (shown as a KPI, not counted).
     prisma.payment.aggregate({
-      where: { paymentDate: { gte: from, lte: to }, isRejected: true },
+      where: {
+        paymentDate: { gte: from, lte: to },
+        isRejected: true,
+        order: { deletedAt: null },
+      },
       _sum: { amount: true },
       _count: true,
     }),
@@ -754,14 +766,27 @@ export async function buildWalletBalances(): Promise<WalletBalances> {
       // Inflow: everything except refunds, grouped by wallet. Rejected payments
       // (money never received, SPEC §8) are excluded so the balance reconciles
       // with the actual wallet statement.
+      // Trashed orders' payments are excluded (§6f) — the purge hard-deletes
+      // them after 30 days, so counting them meanwhile would make balances
+      // jump when the cron runs.
       prisma.payment.groupBy({
         by: ["walletId"],
-        where: { walletId: { not: null }, type: { not: "REFUND" }, isRejected: false },
+        where: {
+          walletId: { not: null },
+          type: { not: "REFUND" },
+          isRejected: false,
+          order: { deletedAt: null },
+        },
         _sum: { amount: true },
       }),
       prisma.payment.groupBy({
         by: ["walletId"],
-        where: { walletId: { not: null }, type: "REFUND", isRejected: false },
+        where: {
+          walletId: { not: null },
+          type: "REFUND",
+          isRejected: false,
+          order: { deletedAt: null },
+        },
         _sum: { amount: true },
       }),
       prisma.expense.groupBy({
@@ -770,7 +795,12 @@ export async function buildWalletBalances(): Promise<WalletBalances> {
         _sum: { amount: true },
       }),
       prisma.payment.aggregate({
-        where: { walletId: null, type: { not: "REFUND" }, isRejected: false },
+        where: {
+          walletId: null,
+          type: { not: "REFUND" },
+          isRejected: false,
+          order: { deletedAt: null },
+        },
         _sum: { amount: true },
       }),
     ]);

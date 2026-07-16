@@ -12,6 +12,7 @@ import {
   mfsTxnRequired,
   nextDraftNo,
   nextOrderNo,
+  orderListInclude,
   orderNoPrefix,
   orderScopeWhere,
   recomputeDue,
@@ -39,10 +40,7 @@ export async function GET(req: Request) {
         orderBy: { createdAt: "desc" },
         skip: (page - 1) * ORDER_PAGE_SIZE,
         take: ORDER_PAGE_SIZE,
-        include: {
-          customer: { select: { name: true, phoneForeign: true, country: true } },
-          salesExecutive: { select: { id: true, name: true } },
-        },
+        include: orderListInclude,
       }),
       prisma.order.count({ where: { AND: filters } }),
     ]);

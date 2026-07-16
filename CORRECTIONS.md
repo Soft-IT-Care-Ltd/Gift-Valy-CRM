@@ -185,19 +185,19 @@ Verification pass for correction round 1. With seeded demo data:
 5. [FIXED] New Order page — **remove the District and Thana/Upazila fields entirely**. Only the **Full Address** textarea remains (Steadfast only needs the address string).
    - **Customer-facing delivery charge: default FREE (৳0)** — Gift Valy usually absorbs delivery into product pricing. Keep the charge field on the order (editable) for exceptions.
    - Optional **per-product/package delivery charge** field in the catalog (default 0): if set, it auto-adds to the order's delivery charge when that item is added — for future use on specific products.
-6a. [CHANGE] **Order list — Customer column**: show the customer's phone number between the name and the country (Name → Phone → Country).
-6b. [CHANGE] **Order list — Recipient column**: show the recipient's phone number below the name.
-6c. [CHANGE] **Order list — replace the District column with an "Items" column**: shows what was ordered (package/product names). Design it so rows never break/overflow: show the first 1–2 item names as compact badges, then a **"+N more"** chip; hovering (tooltip) or clicking shows the full item list, with the order detail page as the fallback. Plan whatever looks cleanest — the key requirement is the row height stays fixed.
+6a. [FIXED] **Order list — Customer column**: show the customer's phone number between the name and the country (Name → Phone → Country).
+6b. [FIXED] **Order list — Recipient column**: show the recipient's phone number below the name.
+6c. [FIXED] **Order list — replace the District column with an "Items" column**: shows what was ordered (package/product names). Design it so rows never break/overflow: show the first 1–2 item names as compact badges, then a **"+N more"** chip; hovering (tooltip) or clicking shows the full item list, with the order detail page as the fallback. Plan whatever looks cleanest — the key requirement is the row height stays fixed.
 6d. [FIXED] **Notes system — 3 note types per order**: `Order Note` (internal), `Invoice Note` (printed on the invoice — customer visible), `Courier Note` (delivery instructions — this one should be sent as the `note` field to Steadfast on consignment creation).
    - New Order form: all 3 note inputs available (collapsible/tabbed like the reference screenshot)
    - Order list: a **Note column** with an icon/box — clicking opens a modal with 3 tabs (Order Note / Invoice Note / Courier Note) to view and update, matching the provided screenshot design ("View and update your note")
-6e. [CHANGE] **Order list — Action column**: three actions per row — **View details, Edit, Trash**.
-6f. [CHANGE] **Order Trash (soft delete)**: a "Trash" tab on the Orders page. Trashed orders sit there for **30 days**, restorable by anyone with permission during that window, then **auto-deleted permanently** after 30 days (scheduled cleanup job). Trashing/restoring writes to the audit log; trashed orders are excluded from all reports/stock reservations (release reserves on trash).
-6g. [CHANGE] **Status change without opening details**:
+6e. [FIXED] **Order list — Action column**: three actions per row — **View details, Edit, Trash**.
+6f. [FIXED] **Order Trash (soft delete)**: a "Trash" tab on the Orders page. Trashed orders sit there for **30 days**, restorable by anyone with permission during that window, then **auto-deleted permanently** after 30 days (scheduled cleanup job). Trashing/restoring writes to the audit log; trashed orders are excluded from all reports/stock reservations (release reserves on trash).
+6g. [FIXED] **Status change without opening details**:
    - Single order: the status cell in the list is a dropdown showing only the statuses that order is **eligible** to move to (per the lifecycle rules) — change directly from the list
    - Multi-select: select multiple orders → a "Change status" action offering only the statuses ALL selected orders are eligible for. All existing side effects (stock reserve/deduct, history logging) must still fire exactly as they do from the detail page.
-6h. [CHANGE] **Bulk invoice print** from the CONFIRMED tab **and** the PACKED tab: multi-select (e.g. 20 orders) → "Print Invoices" → one print job/PDF containing all selected invoices.
-6i. [CHANGE] **Invoice size = half A4**: redesign the invoice so **2 invoices fit on one A4 page** (A5 landscape halves, cut line between them). Bulk print fills A4 pages two-up automatically.
+6h. [FIXED] **Bulk invoice print** from the CONFIRMED tab **and** the PACKED tab: multi-select (e.g. 20 orders) → "Print Invoices" → one print job/PDF containing all selected invoices.
+6i. [FIXED] **Invoice size = half A4**: redesign the invoice so **2 invoices fit on one A4 page** (A5 landscape halves, cut line between them). Bulk print fills A4 pages two-up automatically.
 6j. [CHANGE] **Send to Steadfast from CONFIRMED tab too** (not only PACKED): multi-select confirmed orders → Send to Steadfast. This implicitly passes through PACKED — the system must automatically apply the PACKED transition (BOM stock deduction, cost snapshot, history entry) before the handover, so the stock math stays identical. Same for the manual "direct to Handed to Courier" path.
 6k. [CHANGE] **Handed to Courier tab — 2 new columns**:
    - **Courier/Consignment ID** — Steadfast's consignment_id, auto-filled after API entry

@@ -390,7 +390,12 @@ export async function buildDailySummary(
       select: { createdAt: true, totalAmount: true },
     }),
     db.payment.findMany({
-      where: { paymentDate: { gte: from, lte: to }, isRejected: false },
+      // order-nested filter: trashed orders' payments stay out of P&L (§6f).
+      where: {
+        paymentDate: { gte: from, lte: to },
+        isRejected: false,
+        order: { deletedAt: null },
+      },
       select: { paymentDate: true, amount: true, type: true },
     }),
     db.expense.findMany({

@@ -43,7 +43,9 @@ export async function POST(req: Request, { params }: Params) {
       where: { id },
       include: { payments: { select: { type: true, amount: true, isRejected: true } } },
     });
-    if (!order) {
+    // findUnique bypasses the trash auto-filter — a trashed order (§6f) is
+    // frozen until restored.
+    if (!order || order.deletedAt) {
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
     }
 

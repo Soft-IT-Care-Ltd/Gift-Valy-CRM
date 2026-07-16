@@ -33,6 +33,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -40,17 +47,29 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { NotebookPen } from "lucide-react";
+import {
+  ArchiveRestore,
+  ChevronDown,
+  Eye,
+  NotebookPen,
+  Pencil,
+  Printer,
+  Trash2,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DateFilter } from "@/components/ui/date-filter";
 import { detectPreset } from "@/lib/date-filter";
 import { money, formatDate } from "@/lib/format";
 import {
+  ALLOWED_TRANSITIONS,
+  EDITABLE_STATUSES,
   ORDER_STATUS_LABELS,
+  TRASHABLE_STATUSES,
   joinAddress,
   type DeliveryDateModeValue,
   type OrderStatusValue,
 } from "@/lib/order-constants";
+import { COURIER_STAGE_STATUSES } from "@/lib/courier-constants";
 
 export interface OrderRow {
   id: number;
@@ -75,6 +94,11 @@ export interface OrderRow {
   notes: string | null;
   invoiceNote: string | null;
   courierNote: string | null;
+  // Items column (§6c) — resolved item names + qty
+  items: { id: number; name: string; qty: number }[];
+  // Trash (§6f) — set only on the Trash tab
+  deletedAt: string | null;
+  purgeInDays: number | null;
   salesExecutive: string;
   salesExecutiveId: number;
 }
@@ -137,6 +161,7 @@ const STATUS_TAB_LABELS: Partial<Record<OrderStatusValue, string>> = {
 export function OrdersListClient({
   orders,
   statusCounts,
+  trashCount,
   total,
   page,
   pageSize,
@@ -146,9 +171,15 @@ export function OrdersListClient({
   canCreate,
   canManageCourier,
   steadfastEnabled,
+  canTrash,
+  canEditOrders,
+  canCancelOrders,
+  canPackOrders,
+  canPrintInvoices,
 }: {
   orders: OrderRow[];
   statusCounts: Partial<Record<OrderStatusValue, number>>; // for current window/search/SE
+  trashCount: number; // trashed orders in scope (§6f)
   total: number; // active tab's count — drives pagination
   page: number;
   pageSize: number;
@@ -158,22 +189,52 @@ export function OrdersListClient({
   canCreate: boolean;
   canManageCourier: boolean; // courier.manage — may send to Steadfast
   steadfastEnabled: boolean; // integration on
+  canTrash: boolean; // orders.trash — trash/restore + sees the Trash tab (§6e/§6f)
+  canEditOrders: boolean; // orders.edit
+  canCancelOrders: boolean; // orders.cancel
+  canPackOrders: boolean; // orders.pack
+  canPrintInvoices: boolean; // invoice.generate — bulk print (§6h)
 }) {
   const router = useRouter();
   const params = useSearchParams();
 
-  // ---- Send to Steadfast (§2): selection is offered only on the PACKED tab,
-  // to a courier.manage user, when the integration is enabled. ----
   const activeStatus = params.get("status");
+  const isTrashTab = activeStatus === "TRASH";
+
+  // ---- Inline status change (§6g): which targets may THIS user move an
+  // order to, mirroring statusChangePermitted (lib/orders.ts) + the detail
+  // page's rule that courier-stage moves only happen through a shipment. ----
+  function eligibleTargets(from: OrderStatusValue): OrderStatusValue[] {
+    return ALLOWED_TRANSITIONS[from].filter((to) => {
+      if (COURIER_STAGE_STATUSES.includes(to)) return false;
+      if (to === "PACKED") return canPackOrders || canEditOrders;
+      if (to === "CANCELLED") return canCancelOrders;
+      return canEditOrders;
+    });
+  }
+
+  // ---- Selection: any specific status tab offers checkboxes when at least
+  // one bulk action applies (§6g/§6h + Steadfast §2). All orders on one tab
+  // share a status, so the §6g "intersection of eligible statuses" is simply
+  // the tab status's eligible set. ----
+  const tabStatus = STATUS_TABS.includes(activeStatus as OrderStatusValue)
+    ? (activeStatus as OrderStatusValue)
+    : null;
+  const bulkTargets = tabStatus ? eligibleTargets(tabStatus) : [];
   const showSend =
     canManageCourier && steadfastEnabled && activeStatus === "PACKED";
+  const showPrint =
+    canPrintInvoices &&
+    (activeStatus === "CONFIRMED" || activeStatus === "PACKED");
+  const showCheckboxes =
+    !!tabStatus && (bulkTargets.length > 0 || showSend || showPrint);
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [results, setResults] = useState<SendResult[] | null>(null);
 
-  // Selection is meaningful only within one page of PACKED orders — reset it
+  // Selection is meaningful only within one page of one tab — reset it
   // whenever the tab or page changes so stale ids never leak into a send. Done
   // during render (React's "reset state on prop change" pattern) rather than in
   // an effect, so it applies before paint without a cascading re-render.
@@ -241,6 +302,146 @@ export function OrdersListClient({
     setResults(null);
   }
 
+  // ---- Bulk invoice print (§6h): one PDF, two half-A4 invoices per page (§6i) ----
+  const [printing, setPrinting] = useState(false);
+
+  async function printInvoices() {
+    if (selectedOrders.length === 0 || printing) return;
+    setPrinting(true);
+    try {
+      const res = await fetch("/api/orders/print-invoices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderIds: selectedOrders.map((o) => o.id) }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        toast.error(data?.error ?? "Failed to build the print job");
+        return;
+      }
+      const skipped = Number(res.headers.get("X-Skipped-Count") ?? 0);
+      const blob = await res.blob();
+      window.open(URL.createObjectURL(blob), "_blank");
+      const count = selectedOrders.length - skipped;
+      toast.success(
+        `Print job ready — ${count} invoice${count === 1 ? "" : "s"} on ${Math.ceil(count / 2)} A4 page${count > 2 ? "s" : ""}`
+      );
+      if (skipped > 0) {
+        toast.warning(`${skipped} selected order${skipped === 1 ? "" : "s"} had nothing to print`);
+      }
+    } finally {
+      setPrinting(false);
+    }
+  }
+
+  // ---- Status change (§6g): single (row dropdown) and bulk share one dialog ----
+  interface StatusChange {
+    orders: OrderRow[]; // 1 = single, >1 = bulk
+    to: OrderStatusValue;
+  }
+  const [statusChange, setStatusChange] = useState<StatusChange | null>(null);
+  const [statusNote, setStatusNote] = useState("");
+  const [statusBusy, setStatusBusy] = useState(false);
+  const [statusResults, setStatusResults] = useState<
+    { orderNo: string; ok: boolean; error?: string }[] | null
+  >(null);
+
+  function openStatusChange(orders: OrderRow[], to: OrderStatusValue) {
+    setStatusChange({ orders, to });
+    setStatusNote("");
+    setStatusResults(null);
+  }
+
+  // Each order goes through the SAME endpoint the detail page uses, so every
+  // side effect (stock reserve/deduct/release, history, draft-confirm,
+  // invoice v1) fires identically (§6g).
+  async function applyStatusChange() {
+    if (!statusChange || statusBusy) return;
+    setStatusBusy(true);
+    try {
+      const outcomes: { orderNo: string; ok: boolean; error?: string }[] = [];
+      for (const o of statusChange.orders) {
+        const res = await fetch(`/api/orders/${o.id}/status`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            to: statusChange.to,
+            note: statusNote.trim() || null,
+          }),
+        });
+        const data = await res.json().catch(() => null);
+        outcomes.push({
+          orderNo: o.orderNo,
+          ok: res.ok,
+          error: res.ok ? undefined : (data?.error ?? "Failed"),
+        });
+      }
+      const okCount = outcomes.filter((r) => r.ok).length;
+      if (okCount > 0) {
+        toast.success(
+          `${okCount} order${okCount === 1 ? "" : "s"} moved to ${ORDER_STATUS_LABELS[statusChange.to]}`
+        );
+        setSelected(new Set());
+        router.refresh();
+      }
+      if (okCount === statusChange.orders.length) {
+        setStatusChange(null);
+      } else {
+        setStatusResults(outcomes); // keep the dialog open to show failures
+        if (okCount === 0) toast.error("No orders were moved — see details");
+      }
+    } finally {
+      setStatusBusy(false);
+    }
+  }
+
+  // ---- Trash / restore (§6e/§6f) ----
+  const [trashOrder, setTrashOrder] = useState<OrderRow | null>(null);
+  const [trashBusy, setTrashBusy] = useState(false);
+  const [restoringId, setRestoringId] = useState<number | null>(null);
+
+  async function confirmTrash() {
+    if (!trashOrder || trashBusy) return;
+    setTrashBusy(true);
+    try {
+      const res = await fetch(`/api/orders/${trashOrder.id}/trash`, {
+        method: "POST",
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        toast.error(data?.error ?? "Failed to trash the order");
+        return;
+      }
+      toast.success(
+        `${trashOrder.orderNo} moved to Trash — restorable for 30 days`
+      );
+      setTrashOrder(null);
+      router.refresh();
+    } finally {
+      setTrashBusy(false);
+    }
+  }
+
+  async function restoreOrder(o: OrderRow) {
+    if (restoringId) return;
+    setRestoringId(o.id);
+    try {
+      const res = await fetch(`/api/orders/${o.id}/restore`, { method: "POST" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        toast.error(data?.error ?? "Failed to restore the order");
+        return;
+      }
+      toast.success(`${o.orderNo} restored`);
+      router.refresh();
+    } finally {
+      setRestoringId(null);
+    }
+  }
+
+  // ---- Items dialog (§6c): the "+N more" chip opens the full list ----
+  const [itemsOrder, setItemsOrder] = useState<OrderRow | null>(null);
+
   // ---- Note modal (CORRECTIONS Orders §6d): view + update the 3 notes ----
   const [noteOrder, setNoteOrder] = useState<OrderRow | null>(null);
   const [noteTab, setNoteTab] = useState<"order" | "invoice" | "courier">("order");
@@ -305,6 +506,8 @@ export function OrdersListClient({
   const to = Math.min(page * pageSize, total);
   const lastPage = Math.max(1, Math.ceil(total / pageSize));
 
+  const colCount = (showCheckboxes ? 1 : 0) + 11;
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
@@ -312,11 +515,13 @@ export function OrdersListClient({
           <CardTitle>Orders</CardTitle>
           <CardDescription>
             {total} order{total === 1 ? "" : "s"}
-            {q
-              ? " matching your search (all time)"
-              : rangeAll || hasExplicitDates
-                ? " in the selected range"
-                : " this month"}
+            {isTrashTab
+              ? " in the trash"
+              : q
+                ? " matching your search (all time)"
+                : rangeAll || hasExplicitDates
+                  ? " in the selected range"
+                  : " this month"}
           </CardDescription>
         </div>
         {canCreate && (
@@ -329,12 +534,17 @@ export function OrdersListClient({
         {/* Status tabs — counts follow the active date/SE filters */}
         <div className="flex flex-wrap gap-1 border-b pb-2">
           {(() => {
-            const active = params.get("status") ?? "ALL";
-            const total = STATUS_TABS.reduce(
+            const active = activeStatus ?? "ALL";
+            const allCount = STATUS_TABS.reduce(
               (s, t) => s + (statusCounts[t] ?? 0),
               0
             );
-            const tab = (value: string, label: string, count: number) => (
+            const tab = (
+              value: string,
+              label: string,
+              count: number,
+              extraClass?: string
+            ) => (
               <button
                 key={value}
                 onClick={() => setParam("status", value)}
@@ -342,7 +552,8 @@ export function OrdersListClient({
                   "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
                   active === value
                     ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                  extraClass
                 )}
               >
                 {label}
@@ -359,7 +570,7 @@ export function OrdersListClient({
               </button>
             );
             return [
-              tab("ALL", "All", total),
+              tab("ALL", "All", allCount),
               ...STATUS_TABS.map((s) =>
                 tab(
                   s,
@@ -367,6 +578,19 @@ export function OrdersListClient({
                   statusCounts[s] ?? 0
                 )
               ),
+              // Trash tab (§6f) — only for orders.trash holders
+              ...(canTrash
+                ? [
+                    tab(
+                      "TRASH",
+                      "Trash",
+                      trashCount,
+                      active === "TRASH"
+                        ? "bg-destructive text-white"
+                        : "text-destructive/80 hover:text-destructive"
+                    ),
+                  ]
+                : []),
             ];
           })()}
         </div>
@@ -381,36 +605,38 @@ export function OrdersListClient({
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <DateFilter
-            showAllTime
-            value={
-              rangeAll
-                ? "all"
-                : detectPreset(
-                    params.get("from") ?? "",
-                    params.get("to") ?? "",
-                    "month" // list defaults to this month when no dates set
-                  )
-            }
-            from={params.get("from") ?? ""}
-            to={params.get("to") ?? ""}
-            onApply={(preset, from, to) => {
-              const next = new URLSearchParams(params.toString());
-              next.delete("page");
-              if (preset === "all") {
-                next.set("range", "all");
-                next.delete("from");
-                next.delete("to");
-              } else {
-                next.delete("range");
-                if (from) next.set("from", from);
-                else next.delete("from");
-                if (to) next.set("to", to);
-                else next.delete("to");
+          {!isTrashTab && (
+            <DateFilter
+              showAllTime
+              value={
+                rangeAll
+                  ? "all"
+                  : detectPreset(
+                      params.get("from") ?? "",
+                      params.get("to") ?? "",
+                      "month" // list defaults to this month when no dates set
+                    )
               }
-              router.push(`/orders?${next.toString()}`);
-            }}
-          />
+              from={params.get("from") ?? ""}
+              to={params.get("to") ?? ""}
+              onApply={(preset, from, to) => {
+                const next = new URLSearchParams(params.toString());
+                next.delete("page");
+                if (preset === "all") {
+                  next.set("range", "all");
+                  next.delete("from");
+                  next.delete("to");
+                } else {
+                  next.delete("range");
+                  if (from) next.set("from", from);
+                  else next.delete("from");
+                  if (to) next.set("to", to);
+                  else next.delete("to");
+                }
+                router.push(`/orders?${next.toString()}`);
+              }}
+            />
+          )}
           {seOptions.length > 0 && (
             <div className="grid gap-1">
               <Label className="text-xs">Sales Executive</Label>
@@ -462,31 +688,81 @@ export function OrdersListClient({
           </div>
         )}
 
-        {/* Send to Steadfast bar — PACKED tab only (§2) */}
-        {showSend && (
+        {/* Trash helper — CORRECTIONS Orders §6f */}
+        {isTrashTab && (
+          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+            Trashed orders are excluded from every list, report and stock
+            reservation. Each order is deleted permanently 30 days after it was
+            trashed — restore it before the countdown ends to bring it back
+            (a confirmed order re-reserves its stock on restore).
+          </div>
+        )}
+
+        {/* Bulk action bar — status change (§6g), invoice print (§6h), Steadfast (§2) */}
+        {showCheckboxes && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/40 px-3 py-2">
             <span className="text-sm text-muted-foreground">
               {selected.size > 0
                 ? `${selected.size} order${selected.size === 1 ? "" : "s"} selected`
-                : "Select packed orders to hand over via Steadfast."}
+                : "Select orders for bulk actions."}
             </span>
-            <Button
-              size="sm"
-              disabled={selected.size === 0}
-              onClick={() => {
-                setResults(null);
-                setConfirmOpen(true);
-              }}
-            >
-              Send to Steadfast{selected.size > 0 ? ` (${selected.size})` : ""}
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              {bulkTargets.length > 0 && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button size="sm" variant="outline" disabled={selected.size === 0}>
+                      Change status
+                      <ChevronDown className="ml-1 size-3.5" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuLabel>
+                      Move {selected.size} order{selected.size === 1 ? "" : "s"} to
+                    </DropdownMenuLabel>
+                    {bulkTargets.map((to) => (
+                      <DropdownMenuItem
+                        key={to}
+                        onClick={() => openStatusChange(selectedOrders, to)}
+                      >
+                        {ORDER_STATUS_LABELS[to]}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+              {showPrint && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={selected.size === 0 || printing}
+                  onClick={printInvoices}
+                >
+                  <Printer className="mr-1 size-3.5" />
+                  {printing
+                    ? "Preparing…"
+                    : `Print invoices${selected.size > 0 ? ` (${selected.size})` : ""}`}
+                </Button>
+              )}
+              {showSend && (
+                <Button
+                  size="sm"
+                  disabled={selected.size === 0}
+                  onClick={() => {
+                    setResults(null);
+                    setConfirmOpen(true);
+                  }}
+                >
+                  Send to Steadfast{selected.size > 0 ? ` (${selected.size})` : ""}
+                </Button>
+              )}
+            </div>
           </div>
         )}
 
         <Table>
           <TableHeader>
             <TableRow>
-              {showSend && (
+              {showCheckboxes && (
                 <TableHead className="w-8">
                   <Checkbox
                     checked={allOnPageSelected}
@@ -499,24 +775,31 @@ export function OrdersListClient({
               <TableHead>Date</TableHead>
               <TableHead>Customer</TableHead>
               <TableHead>Recipient</TableHead>
-              <TableHead>District</TableHead>
+              <TableHead>Items</TableHead>
               <TableHead className="text-right">Total</TableHead>
               <TableHead className="text-right">Due</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Note</TableHead>
               <TableHead>SE</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {orders.map((o) => {
               const hasNote = !!(o.notes || o.invoiceNote || o.courierNote);
+              const rowTargets = isTrashTab ? [] : eligibleTargets(o.status);
+              const itemsTitle = o.items
+                .map((it) => `${it.qty}× ${it.name}`)
+                .join(", ");
               return (
               <TableRow
                 key={o.id}
-                className="cursor-pointer"
-                onClick={() => router.push(`/orders/${o.id}`)}
+                className={cn(!isTrashTab && "cursor-pointer")}
+                onClick={
+                  isTrashTab ? undefined : () => router.push(`/orders/${o.id}`)
+                }
               >
-                {showSend && (
+                {showCheckboxes && (
                   <TableCell onClick={(e) => e.stopPropagation()}>
                     <Checkbox
                       checked={selected.has(o.id)}
@@ -526,18 +809,22 @@ export function OrdersListClient({
                   </TableCell>
                 )}
                 <TableCell className="font-mono text-xs">
-                  <Link
-                    href={`/orders/${o.id}`}
-                    className="hover:underline"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {o.orderNo}
-                  </Link>
+                  {isTrashTab ? (
+                    o.orderNo
+                  ) : (
+                    <Link
+                      href={`/orders/${o.id}`}
+                      className="hover:underline"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {o.orderNo}
+                    </Link>
+                  )}
                 </TableCell>
                 <TableCell>
                   {formatDate(o.createdAt)}
                   {/* Pending-Payment aging (§10) — red after 24h unpaid */}
-                  {o.status === "DRAFT" && o.draftAge && (
+                  {!isTrashTab && o.status === "DRAFT" && o.draftAge && (
                     <div
                       className={cn(
                         "text-xs",
@@ -549,15 +836,36 @@ export function OrdersListClient({
                       unpaid {o.draftAge}
                     </div>
                   )}
+                  {/* Purge countdown (§6f) */}
+                  {isTrashTab && o.purgeInDays != null && (
+                    <div
+                      className={cn(
+                        "text-xs font-medium",
+                        o.purgeInDays <= 5
+                          ? "text-destructive"
+                          : "text-muted-foreground"
+                      )}
+                    >
+                      deletes in {o.purgeInDays}d
+                    </div>
+                  )}
                 </TableCell>
+                {/* Customer (§6a): Name → Phone → Country */}
                 <TableCell>
                   <div className="font-medium">{o.customerName}</div>
+                  <div className="font-mono text-xs text-muted-foreground">
+                    {o.customerPhone}
+                  </div>
                   <div className="text-xs text-muted-foreground">
                     {o.customerCountry}
                   </div>
                 </TableCell>
+                {/* Recipient (§6b): phone below the name */}
                 <TableCell>
                   {o.recipientName}
+                  <div className="font-mono text-xs text-muted-foreground">
+                    {o.recipientPhone}
+                  </div>
                   {o.deliveryDateMode === "FIXED" && o.requestedDeliveryDate && (
                     <div className="text-xs font-medium text-violet-700 dark:text-violet-400">
                       🎯 {formatDate(o.requestedDeliveryDate)}
@@ -569,7 +877,39 @@ export function OrdersListClient({
                     </div>
                   )}
                 </TableCell>
-                <TableCell>{o.district || "—"}</TableCell>
+                {/* Items (§6c): 1–2 compact badges + "+N more" chip; the row
+                    never grows — badges truncate, the chip opens the full list */}
+                <TableCell onClick={(e) => e.stopPropagation()}>
+                  <div
+                    className="flex max-w-[190px] items-center gap-1 whitespace-nowrap"
+                    title={itemsTitle}
+                  >
+                    {o.items.length === 0 && (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                    {o.items.slice(0, 2).map((it) => (
+                      <Badge
+                        key={it.id}
+                        variant="outline"
+                        className="max-w-[92px] overflow-hidden font-normal"
+                      >
+                        <span className="truncate">
+                          {it.qty > 1 ? `${it.qty}× ` : ""}
+                          {it.name}
+                        </span>
+                      </Badge>
+                    ))}
+                    {o.items.length > 2 && (
+                      <button
+                        type="button"
+                        onClick={() => setItemsOrder(o)}
+                        className="rounded-full border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                      >
+                        +{o.items.length - 2} more
+                      </button>
+                    )}
+                  </div>
+                </TableCell>
                 <TableCell className="text-right">
                   {money(o.totalAmount)}
                 </TableCell>
@@ -580,38 +920,131 @@ export function OrdersListClient({
                     <span className="text-muted-foreground">—</span>
                   )}
                 </TableCell>
-                <TableCell>
-                  <StatusBadge status={o.status} />
+                {/* Status (§6g): dropdown of eligible-only targets, straight
+                    from the list — same endpoint/side effects as the detail page */}
+                <TableCell onClick={(e) => e.stopPropagation()}>
+                  {rowTargets.length > 0 ? (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger className="group flex items-center gap-0.5 rounded-md outline-none">
+                        <StatusBadge status={o.status} />
+                        <ChevronDown className="size-3.5 text-muted-foreground transition-colors group-hover:text-foreground" />
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start">
+                        <DropdownMenuLabel className="text-xs">
+                          Move {o.orderNo} to
+                        </DropdownMenuLabel>
+                        {rowTargets.map((to) => (
+                          <DropdownMenuItem
+                            key={to}
+                            disabled={to === "COMPLETED" && o.dueAmount !== 0}
+                            onClick={() => openStatusChange([o], to)}
+                          >
+                            {ORDER_STATUS_LABELS[to]}
+                            {to === "COMPLETED" && o.dueAmount !== 0 && (
+                              <span className="ml-1 text-xs text-muted-foreground">
+                                (due must be 0)
+                              </span>
+                            )}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  ) : (
+                    <StatusBadge status={o.status} />
+                  )}
                 </TableCell>
                 <TableCell onClick={(e) => e.stopPropagation()}>
-                  <button
-                    type="button"
-                    onClick={() => openNotes(o)}
-                    className={cn(
-                      "rounded-md border p-1.5 transition-colors hover:bg-muted",
-                      hasNote
-                        ? "border-primary/40 text-primary"
-                        : "text-muted-foreground"
-                    )}
-                    title={
-                      hasNote ? "View / update notes" : "Add a note"
-                    }
-                    aria-label={`Notes for ${o.orderNo}`}
-                  >
-                    <NotebookPen className="size-4" />
-                  </button>
+                  {isTrashTab ? (
+                    <span className="text-muted-foreground">—</span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => openNotes(o)}
+                      className={cn(
+                        "rounded-md border p-1.5 transition-colors hover:bg-muted",
+                        hasNote
+                          ? "border-primary/40 text-primary"
+                          : "text-muted-foreground"
+                      )}
+                      title={hasNote ? "View / update notes" : "Add a note"}
+                      aria-label={`Notes for ${o.orderNo}`}
+                    >
+                      <NotebookPen className="size-4" />
+                    </button>
+                  )}
                 </TableCell>
                 <TableCell>{o.salesExecutive}</TableCell>
+                {/* Actions (§6e): view / edit / trash — restore on the Trash tab */}
+                <TableCell onClick={(e) => e.stopPropagation()}>
+                  {isTrashTab ? (
+                    <div className="flex justify-end">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={restoringId === o.id}
+                        onClick={() => restoreOrder(o)}
+                      >
+                        <ArchiveRestore className="mr-1 size-3.5" />
+                        {restoringId === o.id ? "Restoring…" : "Restore"}
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-end gap-0.5">
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="size-7"
+                        title="View details"
+                        asChild
+                      >
+                        <Link href={`/orders/${o.id}`}>
+                          <Eye className="size-4" />
+                        </Link>
+                      </Button>
+                      {EDITABLE_STATUSES.includes(o.status) && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="size-7"
+                          title="Edit order"
+                          asChild
+                        >
+                          <Link href={`/orders/${o.id}/edit`}>
+                            <Pencil className="size-4" />
+                          </Link>
+                        </Button>
+                      )}
+                      {canTrash && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="size-7 text-muted-foreground hover:text-destructive"
+                          title={
+                            TRASHABLE_STATUSES.includes(o.status)
+                              ? "Move to trash"
+                              : "This status cannot be trashed"
+                          }
+                          disabled={!TRASHABLE_STATUSES.includes(o.status)}
+                          onClick={() => setTrashOrder(o)}
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </TableCell>
               </TableRow>
               );
             })}
             {orders.length === 0 && (
               <TableRow>
                 <TableCell
-                  colSpan={showSend ? 11 : 10}
+                  colSpan={colCount}
                   className="text-center text-muted-foreground"
                 >
-                  No orders match the current filters.
+                  {isTrashTab
+                    ? "The trash is empty."
+                    : "No orders match the current filters."}
                 </TableCell>
               </TableRow>
             )}
@@ -745,6 +1178,155 @@ export function OrdersListClient({
               ) : (
                 <Button onClick={closeSendDialog}>Close</Button>
               )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Status change confirm (§6g) — single & bulk; failures listed inline */}
+        <Dialog
+          open={statusChange !== null}
+          onOpenChange={(o) => !o && !statusBusy && setStatusChange(null)}
+        >
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>
+                Move to {statusChange ? ORDER_STATUS_LABELS[statusChange.to] : ""}
+              </DialogTitle>
+              <DialogDescription>
+                {statusChange && statusChange.orders.length === 1
+                  ? `${statusChange.orders[0].orderNo}: ${ORDER_STATUS_LABELS[statusChange.orders[0].status]} → ${ORDER_STATUS_LABELS[statusChange.to]}.`
+                  : `${statusChange?.orders.length ?? 0} orders move to ${
+                      statusChange ? ORDER_STATUS_LABELS[statusChange.to] : ""
+                    }.`}{" "}
+                Stock and history behave exactly as on the order page.
+              </DialogDescription>
+            </DialogHeader>
+            {statusResults ? (
+              <div className="max-h-[40vh] overflow-auto rounded-md border">
+                <Table>
+                  <TableBody>
+                    {statusResults.map((r) => (
+                      <TableRow key={r.orderNo}>
+                        <TableCell className="font-mono text-xs">{r.orderNo}</TableCell>
+                        <TableCell className="text-xs">
+                          {r.ok ? (
+                            <span className="text-green-700">✓ moved</span>
+                          ) : (
+                            <span className="text-destructive">✗ {r.error}</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            ) : (
+              <div className="grid gap-1.5">
+                <Label className="text-xs">
+                  {statusChange?.to === "CANCELLED"
+                    ? "Cancellation reason (required)"
+                    : "Note (optional)"}
+                </Label>
+                <Textarea
+                  rows={2}
+                  value={statusNote}
+                  onChange={(e) => setStatusNote(e.target.value)}
+                  placeholder={
+                    statusChange?.to === "CANCELLED"
+                      ? "Why is this order cancelled?"
+                      : "Logged in the status history"
+                  }
+                />
+              </div>
+            )}
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setStatusChange(null)}
+                disabled={statusBusy}
+              >
+                {statusResults ? "Close" : "Cancel"}
+              </Button>
+              {!statusResults && (
+                <Button
+                  onClick={applyStatusChange}
+                  disabled={
+                    statusBusy ||
+                    (statusChange?.to === "CANCELLED" && !statusNote.trim())
+                  }
+                >
+                  {statusBusy
+                    ? "Applying…"
+                    : `Move ${statusChange?.orders.length ?? 0} order${
+                        (statusChange?.orders.length ?? 0) === 1 ? "" : "s"
+                      }`}
+                </Button>
+              )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Trash confirm (§6f) */}
+        <Dialog
+          open={trashOrder !== null}
+          onOpenChange={(o) => !o && !trashBusy && setTrashOrder(null)}
+        >
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Move {trashOrder?.orderNo} to Trash?</DialogTitle>
+              <DialogDescription>
+                The order disappears from all lists and reports and any reserved
+                stock is released. It stays restorable from the Trash tab for 30
+                days, then it is deleted permanently.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setTrashOrder(null)}
+                disabled={trashBusy}
+              >
+                Cancel
+              </Button>
+              <Button variant="destructive" onClick={confirmTrash} disabled={trashBusy}>
+                {trashBusy ? "Trashing…" : "Move to Trash"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Full item list (§6c) — the "+N more" chip target */}
+        <Dialog open={itemsOrder !== null} onOpenChange={(o) => !o && setItemsOrder(null)}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Items — {itemsOrder?.orderNo}</DialogTitle>
+              <DialogDescription>
+                {itemsOrder?.items.length} line item
+                {(itemsOrder?.items.length ?? 0) === 1 ? "" : "s"} on this order.
+              </DialogDescription>
+            </DialogHeader>
+            <ul className="grid max-h-[50vh] gap-1.5 overflow-auto text-sm">
+              {itemsOrder?.items.map((it) => (
+                <li
+                  key={it.id}
+                  className="flex items-center justify-between rounded-md border px-3 py-1.5"
+                >
+                  <span className="min-w-0 truncate">{it.name}</span>
+                  <span className="ml-3 shrink-0 text-muted-foreground">
+                    × {it.qty}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <DialogFooter className="sm:justify-between">
+              {itemsOrder && !isTrashTab ? (
+                <Button variant="outline" asChild>
+                  <Link href={`/orders/${itemsOrder.id}`}>Open order</Link>
+                </Button>
+              ) : (
+                <span />
+              )}
+              <Button onClick={() => setItemsOrder(null)}>Close</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

@@ -647,6 +647,11 @@ model Order {
   courierNote           String?     @map("courier_note")
   salesExecutiveId      Int         @map("sales_executive_id")
   teamId                Int?        @map("team_id")
+  // CORRECTIONS Orders §6f — soft delete (Trash). A trashed order keeps its row
+  // for 30 days (restorable), is excluded from every list/report/stock query
+  // (lib/db.ts auto-filter), then the cron purge deletes it permanently.
+  deletedAt             DateTime?   @map("deleted_at")
+  deletedBy             Int?        @map("deleted_by")
   createdAt             DateTime    @default(now()) @map("created_at")
   updatedAt             DateTime    @updatedAt @map("updated_at")
   createdBy             Int?        @map("created_by")
@@ -671,6 +676,7 @@ model Order {
   @@index([teamId, createdAt])
   @@index([createdAt])
   @@index([recipientPhoneBd])
+  @@index([deletedAt])
   @@map("orders")
 }
 
@@ -772,7 +778,10 @@ model Payment {
   createdBy       Int?          @map("created_by")
   updatedBy       Int?          @map("updated_by")
 
-  order  Order   @relation(fields: [orderId], references: [id])
+  // Cascade: the 30-day trash purge (CORRECTIONS Orders §6f) hard-deletes the
+  // order row; its payments go with it (the order was already excluded from
+  // collections/wallets the moment it was trashed).
+  order  Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   wallet Wallet? @relation(fields: [walletId], references: [id])
 
   @@index([orderId])

@@ -100,6 +100,25 @@ export const EXCLUDED_SALE_STATUSES: OrderStatusValue[] = [
   ...PRE_SALE_STATUSES,
 ];
 
+// CORRECTIONS Orders §6f — Trash (soft delete). Statuses where stock is
+// physically out or money is settled stay untrashable: a PACKED box must be
+// cancelled first (which restores stock), an in-courier parcel must finish its
+// journey, and DELIVERED/COMPLETED are real sales (cancel/refund flows apply).
+// Every trashable status holds at most a reservation, which trash releases.
+export const TRASHABLE_STATUSES: OrderStatusValue[] = [
+  "DRAFT",
+  "LEAD",
+  "FOLLOW_UP",
+  "CONFIRMED",
+  "ON_HOLD",
+  "CANCELLED",
+  "RETURNED",
+  "REFUNDED",
+];
+
+// Days a trashed order stays restorable before the cron purge deletes it.
+export const TRASH_RETENTION_DAYS = 30;
+
 export const PAYMENT_TYPES = [
   "ADVANCE",
   "PARTIAL",

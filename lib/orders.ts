@@ -14,6 +14,7 @@ import {
   ORDER_STATUSES,
   PAYMENT_METHODS,
   RECIPIENT_RELATIONS,
+  TRASH_RETENTION_DAYS,
   type OrderStatusValue,
   type PaymentMethodValue,
 } from "./order-constants";
@@ -101,12 +102,17 @@ export { dhakaDateBound, dbDate } from "./order-constants";
 export interface OrderListQuery {
   // every non-status filter — tab counts group over these
   baseFilters: Prisma.OrderWhereInput[];
-  // baseFilters + status — the visible list
+  // baseFilters + status — the visible list; in trash mode: the trashed rows
   filters: Prisma.OrderWhereInput[];
+  // scope + search + SE, no dates — the Trash tab ignores the date window
+  // (a trashed order must stay visible for its whole 30-day countdown), and
+  // its tab count is computed over these (CORRECTIONS Orders §6f).
+  trashFilters: Prisma.OrderWhereInput[];
   page: number;
   status: OrderStatusValue | null;
   q: string;
   rangeAll: boolean;
+  trash: boolean; // ?status=TRASH — the Trash tab is active
 }
 
 // URL params → Prisma filters. Defaults to the current Dhaka month unless the
@@ -116,15 +122,35 @@ export function buildOrderListFilters(
   params: Record<string, string | undefined>,
   scope: Prisma.OrderWhereInput
 ): OrderListQuery {
-  const baseFilters: Prisma.OrderWhereInput[] = [scope];
   const q = (params.q ?? "").trim();
   const rangeAll = params.range === "all";
+  const trash = params.status === "TRASH";
 
   const status =
-    params.status && ORDER_STATUSES.includes(params.status as OrderStatusValue)
+    !trash &&
+    params.status &&
+    ORDER_STATUSES.includes(params.status as OrderStatusValue)
       ? (params.status as OrderStatusValue)
       : null;
 
+  // scope + search + SE — shared by the dated live list and the Trash tab.
+  const nonDateFilters: Prisma.OrderWhereInput[] = [scope];
+  if (q) {
+    const digits = q.replace(/\D/g, "");
+    const or: Prisma.OrderWhereInput[] = [
+      { orderNo: { contains: q, mode: "insensitive" } },
+      { customer: { is: { name: { contains: q, mode: "insensitive" } } } },
+    ];
+    if (digits.length >= 4) {
+      or.push({ recipientPhoneBd: { contains: digits } });
+      or.push({ customer: { is: { phoneForeign: { contains: digits } } } });
+    }
+    nonDateFilters.push({ OR: or });
+  }
+  const seId = Number(params.seId);
+  if (seId) nonDateFilters.push({ salesExecutiveId: seId });
+
+  const baseFilters: Prisma.OrderWhereInput[] = [...nonDateFilters];
   const hasFrom = !!params.from && /^\d{4}-\d{2}-\d{2}$/.test(params.from);
   const hasTo = !!params.to && /^\d{4}-\d{2}-\d{2}$/.test(params.to);
   if (hasFrom) {
@@ -140,26 +166,20 @@ export function buildOrderListFilters(
     baseFilters.push({ createdAt: { gte: dhakaMonthStart() } });
   }
 
-  if (q) {
-    const digits = q.replace(/\D/g, "");
-    const or: Prisma.OrderWhereInput[] = [
-      { orderNo: { contains: q, mode: "insensitive" } },
-      { customer: { is: { name: { contains: q, mode: "insensitive" } } } },
-    ];
-    if (digits.length >= 4) {
-      or.push({ recipientPhoneBd: { contains: digits } });
-      or.push({ customer: { is: { phoneForeign: { contains: digits } } } });
-    }
-    baseFilters.push({ OR: or });
-  }
+  // The explicit deletedAt mention opts these out of the lib/db.ts auto-filter.
+  const trashFilters: Prisma.OrderWhereInput[] = [
+    ...nonDateFilters,
+    { deletedAt: { not: null } },
+  ];
 
-  const seId = Number(params.seId);
-  if (seId) baseFilters.push({ salesExecutiveId: seId });
-
-  const filters = status ? [...baseFilters, { status }] : [...baseFilters];
+  const filters = trash
+    ? trashFilters
+    : status
+      ? [...baseFilters, { status }]
+      : [...baseFilters];
 
   const page = Math.max(1, Math.floor(Number(params.page)) || 1);
-  return { baseFilters, filters, page, status, q, rangeAll };
+  return { baseFilters, filters, trashFilters, page, status, q, rangeAll, trash };
 }
 
 // ---------- payload validation (shared by create, edit, edit-request) ----------
@@ -461,7 +481,14 @@ export function orderNoPrefix(date = new Date()): string {
 
 export async function nextOrderNo(db: Tx, prefix: string): Promise<string> {
   const last = await db.order.findFirst({
-    where: { orderNo: { startsWith: prefix } },
+    // The OR spans both trash states ON PURPOSE: mentioning deletedAt opts out
+    // of the lib/db.ts trash auto-filter. A trashed order keeps its number
+    // until the purge — hiding it here would reissue that number and the
+    // unique(order_no) insert would collide forever (§6f).
+    where: {
+      orderNo: { startsWith: prefix },
+      OR: [{ deletedAt: null }, { deletedAt: { not: null } }],
+    },
     orderBy: { orderNo: "desc" },
     select: { orderNo: true },
   });
@@ -927,11 +954,24 @@ export function serializeOrderDetail(o: OrderWithRelations, showCosts: boolean) 
   };
 }
 
+// Shared include for list queries (page + GET /api/orders) — items feed the
+// Items column badges (CORRECTIONS Orders §6c).
+export const orderListInclude = {
+  customer: { select: { name: true, phoneForeign: true, country: true } },
+  salesExecutive: { select: { id: true, name: true } },
+  items: {
+    select: {
+      id: true,
+      qty: true,
+      customName: true,
+      product: { select: { name: true } },
+      package: { select: { name: true } },
+    },
+  },
+} satisfies Prisma.OrderInclude;
+
 export type OrderListRow = Prisma.OrderGetPayload<{
-  include: {
-    customer: { select: { name: true; phoneForeign: true; country: true } };
-    salesExecutive: { select: { id: true; name: true } };
-  };
+  include: typeof orderListInclude;
 }>;
 
 export function serializeOrderListRow(o: OrderListRow) {
@@ -969,6 +1009,22 @@ export function serializeOrderListRow(o: OrderListRow) {
     notes: o.notes,
     invoiceNote: o.invoiceNote,
     courierNote: o.courierNote,
+    // Items column (§6c): resolved names + qty, first 1–2 shown as badges,
+    // the rest behind a "+N more" chip.
+    items: o.items.map((it) => ({
+      id: it.id,
+      name: it.product?.name ?? it.package?.name ?? it.customName ?? "(custom)",
+      qty: it.qty,
+    })),
+    // Trash tab (§6f): when trashed, days until the 30-day purge.
+    deletedAt: o.deletedAt ? o.deletedAt.toISOString() : null,
+    purgeInDays: o.deletedAt
+      ? Math.max(
+          0,
+          TRASH_RETENTION_DAYS -
+            Math.floor((Date.now() - o.deletedAt.getTime()) / (24 * 60 * 60 * 1000))
+        )
+      : null,
     salesExecutive: o.salesExecutive.name,
     salesExecutiveId: o.salesExecutive.id,
   };

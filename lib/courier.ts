@@ -365,7 +365,13 @@ export interface CodPendingRow {
 // delivery date (Date.now lives here, not in the page component, per the purity rule).
 export async function buildCodPending(): Promise<CodPendingRow[]> {
   const shipments = await prisma.shipment.findMany({
-    where: { status: "DELIVERED", codReceived: false, codAmount: { gt: 0 } },
+    where: {
+      status: "DELIVERED",
+      codReceived: false,
+      codAmount: { gt: 0 },
+      // §6f — trashed orders' COD stops being chased (nested filter needed).
+      order: { deletedAt: null },
+    },
     orderBy: { deliveredAt: "asc" },
     include: {
       courier: { select: { name: true, codFeePercent: true } },

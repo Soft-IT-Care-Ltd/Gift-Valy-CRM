@@ -44,6 +44,7 @@ export const PERMISSION_DEFS: PermissionDef[] = [
   { key: "orders.edit", label: "Edit orders", group: "Orders" },
   { key: "orders.approve_edit", label: "Approve order edits", group: "Orders" },
   { key: "orders.cancel", label: "Cancel orders", group: "Orders" },
+  { key: "orders.trash", label: "Trash & restore orders", group: "Orders" },
   { key: "orders.pack", label: "Packing queue & mark packed", group: "Orders" },
   { key: "invoice.generate", label: "Generate invoices", group: "Orders" },
   // Money
@@ -92,7 +93,8 @@ export const ROLE_MATRIX: Record<RoleName, string[]> = {
     "leads.create", "leads.view_own", "leads.view_team", "leads.view_all",
     "leads.edit", "leads.reassign",
     "orders.create", "orders.view_own", "orders.view_team", "orders.view_all",
-    "orders.edit", "orders.approve_edit", "orders.cancel", "orders.pack",
+    "orders.edit", "orders.approve_edit", "orders.cancel", "orders.trash",
+    "orders.pack",
     "invoice.generate",
     "payments.create", "payments.verify", "wallets.manage",
     "expenses.create", "purchases.create",

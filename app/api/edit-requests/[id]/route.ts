@@ -35,8 +35,10 @@ export async function POST(req: Request, { params }: Params) {
     const { action, note } = bodySchema.parse(await req.json());
 
     const scope = await orderScopeWhere(session, permissions);
+    // Nested relation filters bypass the lib/db.ts trash auto-filter — exclude
+    // trashed orders explicitly (an approved edit would re-reserve their stock).
     const request = await prisma.orderEditRequest.findFirst({
-      where: { AND: [{ id }, { order: scope }] },
+      where: { AND: [{ id }, { order: { AND: [scope, { deletedAt: null }] } }] },
       include: { order: true },
     });
     if (!request) {
