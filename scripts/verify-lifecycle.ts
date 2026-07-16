@@ -14,6 +14,8 @@ import {
   weightedAvgCost,
   orderStockRequirements,
 } from "../lib/stock";
+import { packageCost, productEffectiveCost } from "../lib/bom";
+import { loadBomCatalog } from "../lib/bom-db";
 import { applyStatusTransition, recomputeDue } from "../lib/orders";
 import {
   applyHandover,
@@ -148,8 +150,8 @@ async function main() {
 
         // top up every stock-tracked PKG-001 component so PACK never runs short
         const componentLines = pkg.items
-          .filter((i) => i.product.isStockTracked && i.productId !== teddy.id)
-          .map((i) => ({ productId: i.productId, qty: 50, unitCost: 100 }));
+          .filter((i) => i.product!.isStockTracked && i.productId !== teddy.id)
+          .map((i) => ({ productId: i.productId!, qty: 50, unitCost: 100 }));
 
         const expensesBefore = (
           await tx.expense.aggregate({ _sum: { amount: true } })
@@ -307,29 +309,20 @@ async function main() {
         const items = await tx.orderItem.findMany({ where: { orderId: order.id } });
         const prodLine = items.find((i) => i.itemType === "PRODUCT")!;
         const pkgLine = items.find((i) => i.itemType === "PACKAGE")!;
-        const teddyPacked = await tx.product.findUniqueOrThrow({
-          where: { id: teddy.id },
-        });
-        // Expected package cost = Σ(current component avg × BOM qty). Must read the
-        // CURRENT avg — step 1 topped up every component, so their weighted avgs
-        // moved; freezeCostSnapshots freezes the live avg at PACKED (SPEC §14 rule 4).
-        const compAvg = new Map(
-          (
-            await tx.product.findMany({
-              where: { id: { in: pkg.items.map((i) => i.productId) } },
-              select: { id: true, avgCost: true },
-            })
-          ).map((p) => [p.id, Number(p.avgCost)])
-        );
-        const expectedPkgCost = round2(
-          pkg.items.reduce((s, i) => s + i.qty * (compAvg.get(i.productId) ?? 0), 0)
+        // Expected costs via the recursive BOM engine (CORRECTIONS Products
+        // §2/§4/§5): the full explosion — nested lines, product packing
+        // materials — priced at the CURRENT avg (step 1 topped up components,
+        // so the weighted avgs moved; freezeCostSnapshots freezes the live
+        // values at PACKED, SPEC §14 rule 4).
+        const catalogAtPack = await loadBomCatalog(tx);
+        const expectedPkgCost = packageCost(catalogAtPack, pkg.id);
+        check(
+          "PRODUCT line cost snapshot = current effective cost",
+          Number(prodLine.unitCostSnapshot) ===
+            productEffectiveCost(catalogAtPack, teddy.id)
         );
         check(
-          "PRODUCT line cost snapshot = current avg cost",
-          Number(prodLine.unitCostSnapshot) === Number(teddyPacked.avgCost)
-        );
-        check(
-          `PACKAGE line cost snapshot = Σ component avg × qty (৳${expectedPkgCost})`,
+          `PACKAGE line cost snapshot = recursive BOM cost (৳${expectedPkgCost})`,
           Number(pkgLine.unitCostSnapshot) === expectedPkgCost
         );
         check(

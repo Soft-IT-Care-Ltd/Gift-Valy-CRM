@@ -60,8 +60,10 @@ export default async function LeadsPage() {
         take: 300,
       }),
       buildFollowUps(scope),
+      // Interested-in picker = the sellable catalog — component-only packing
+      // materials are excluded (CORRECTIONS Products §1).
       prisma.product.findMany({
-        where: { isActive: true },
+        where: { isActive: true, productType: "SELLABLE" },
         orderBy: { name: "asc" },
         select: { id: true, name: true },
       }),

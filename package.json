@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test:bom": "tsx --test tests/bom.test.ts",
     "verify:stock": "tsx scripts/verify-stock.ts",
     "verify:steadfast": "tsx scripts/verify-steadfast.ts",
     "verify:lifecycle": "tsx scripts/verify-lifecycle.ts",

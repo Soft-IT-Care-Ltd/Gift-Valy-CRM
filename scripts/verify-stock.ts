@@ -10,6 +10,8 @@ import {
   deductStockAtPack,
   weightedAvgCost,
 } from "../lib/stock";
+import { packageCost, productEffectiveCost } from "../lib/bom";
+import { loadBomCatalog } from "../lib/bom-db";
 
 const prisma = new PrismaClient();
 const ROLLBACK = "ROLLBACK_SENTINEL";
@@ -86,7 +88,7 @@ async function main() {
     `Baseline — ${teddy.name}: on-hand ${teddy.stockQty}, reserved ${teddy.reservedQty}, avg ৳${teddy.avgCost}`
   );
   console.log(
-    `Package ${pkg.name} BOM: ${pkg.items.map((i) => `${i.qty}×${i.product.sku}`).join(", ")}\n`
+    `Package ${pkg.name} BOM: ${pkg.items.map((i) => `${i.qty}×${i.product!.sku}`).join(", ")}\n`
   );
 
   try {
@@ -135,8 +137,8 @@ async function main() {
         console.log("2. CONFIRM — order of 1 × PKG-001 + 2 × Teddy → reserve");
         const reservedBefore: Record<number, number> = {};
         for (const it of pkg.items) {
-          const p = await tx.product.findUniqueOrThrow({ where: { id: it.productId } });
-          reservedBefore[it.productId] = p.reservedQty;
+          const p = await tx.product.findUniqueOrThrow({ where: { id: it.productId! } });
+          reservedBefore[it.productId!] = p.reservedQty;
         }
         const teddyReservedBefore = (
           await tx.product.findUniqueOrThrow({ where: { id: teddy.id } })
@@ -176,14 +178,14 @@ async function main() {
         );
         // A non-Teddy tracked BOM component reserved by exactly its BOM qty
         const otherComp = pkg.items.find(
-          (i) => i.productId !== teddy.id && i.product.isStockTracked
+          (i) => i.productId !== teddy.id && i.product!.isStockTracked
         )!;
         const otherAfter = await tx.product.findUniqueOrThrow({
-          where: { id: otherComp.productId },
+          where: { id: otherComp.productId! },
         });
         check(
-          `${otherComp.product.sku} reserved +${otherComp.qty}`,
-          otherAfter.reservedQty === reservedBefore[otherComp.productId] + otherComp.qty
+          `${otherComp.product!.sku} reserved +${otherComp.qty}`,
+          otherAfter.reservedQty === reservedBefore[otherComp.productId!] + otherComp.qty
         );
         check(
           "on-hand unchanged by reservation",
@@ -215,19 +217,14 @@ async function main() {
         const pkgLine = items.find((i) => i.itemType === "PACKAGE")!;
         const prodLine = items.find((i) => i.itemType === "PRODUCT")!;
         // Σ(component avg × BOM qty) with Teddy's post-purchase avg substituted.
-        const expectedPkgCost =
-          Math.round(
-            pkg.items.reduce((s, i) => {
-              const avg =
-                i.productId === teddy.id
-                  ? Number(teddyPacked.avgCost)
-                  : Number(i.product.avgCost);
-              return s + i.qty * avg;
-            }, 0) * 100
-          ) / 100;
+        // Expected costs via the recursive BOM engine (CORRECTIONS Products
+        // §2/§4/§5) — includes product-level packing materials.
+        const catalogAtPack = await loadBomCatalog(tx);
+        const expectedPkgCost = packageCost(catalogAtPack, pkg.id);
         check(
-          "PRODUCT line unit_cost_snapshot frozen to current avg cost",
-          Number(prodLine.unitCostSnapshot) === Number(teddyPacked.avgCost)
+          "PRODUCT line unit_cost_snapshot frozen to current effective cost",
+          Number(prodLine.unitCostSnapshot) ===
+            productEffectiveCost(catalogAtPack, teddy.id)
         );
         check(
           `PACKAGE line unit_cost_snapshot = Σ component avg × BOM qty (৳${expectedPkgCost})`,

@@ -8,6 +8,7 @@ import {
   ALLOWED_TRANSITIONS,
   BD_DISTRICTS,
   CUSTOMER_COUNTRIES,
+  DELIVERY_ZONES,
   MFS_METHODS,
   OCCASIONS,
   ORDER_STATUSES,
@@ -16,6 +17,13 @@ import {
   type OrderStatusValue,
   type PaymentMethodValue,
 } from "./order-constants";
+import {
+  BomError,
+  collectChoiceGroups,
+  resolveChoice,
+  type StoredChoiceSelection,
+} from "./bom";
+import { loadBomCatalog } from "./bom-db";
 
 type Tx = Prisma.TransactionClient | PrismaClient;
 
@@ -157,6 +165,13 @@ const itemSchema = z
     packageId: z.number().int().positive().nullable().optional(),
     qty: z.number().int().min(1),
     unitPrice: z.number().min(0),
+    // CORRECTIONS Products §5 — the SE's variant picks for the package's
+    // choice groups: { [groupId (package_items.id)]: productId }. Missing
+    // groups fall back to the group's default (validated server-side).
+    choiceSelections: z
+      .record(z.string(), z.number().int().positive())
+      .nullable()
+      .optional(),
   })
   .refine((it) => (it.itemType === "PRODUCT" ? !!it.productId : !!it.packageId), {
     message: "Line item must reference a product or a package",
@@ -181,6 +196,9 @@ export const orderCoreSchema = z.object({
   district: z.enum(BD_DISTRICTS),
   thana: z.string().trim().min(1, "Thana is required"),
   occasion: enumOrNull(OCCASIONS),
+  // CORRECTIONS Products §3 — recipient zone; the form auto-fills the delivery
+  // charge from item zone charges when set. Optional (free delivery default).
+  deliveryZone: enumOrNull(DELIVERY_ZONES),
   requestedDeliveryDate: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -255,6 +273,9 @@ export interface ResolvedLine {
   unitPrice: number;
   priceFloor: number;
   lineTotal: number;
+  // Resolved variant picks (CORRECTIONS Products §5) — null for PRODUCT lines
+  // and packages without choice groups.
+  choiceSelections: StoredChoiceSelection[] | null;
 }
 
 export interface ResolvedTotals {
@@ -289,15 +310,27 @@ export async function resolveItemsAndTotals(
   const productById = new Map(products.map((p) => [p.id, p]));
   const packageById = new Map(packages.map((p) => [p.id, p]));
 
+  // Choice-group resolution (CORRECTIONS Products §5) needs the BOM graph —
+  // only loaded when a package line exists.
+  const catalog = packageIds.length > 0 ? await loadBomCatalog(db) : null;
+
   const lines: ResolvedLine[] = [];
   const floorBreaches: string[] = [];
   for (const it of payload.items) {
     let name: string;
     let priceFloor: number;
+    let choiceSelections: StoredChoiceSelection[] | null = null;
     if (it.itemType === "PRODUCT") {
       const p = productById.get(it.productId!);
       if (!p) throw new AuthzError(400, `Product #${it.productId} not found`);
       if (!p.isActive) throw new AuthzError(400, `Product "${p.name}" is inactive`);
+      // CORRECTIONS Products §1 — packing materials are never sold standalone.
+      if (p.productType === "COMPONENT") {
+        throw new AuthzError(
+          400,
+          `"${p.name}" is a packing material (component only) and cannot be sold standalone`
+        );
+      }
       name = p.name;
       priceFloor = Number(p.priceFloor);
     } else {
@@ -306,6 +339,42 @@ export async function resolveItemsAndTotals(
       if (!p.isActive) throw new AuthzError(400, `Package "${p.name}" is inactive`);
       name = p.name;
       priceFloor = Number(p.priceFloor);
+      // Resolve every choice group in the package tree: the SE's pick must be
+      // a real option; missing picks fall back to the group's default. The
+      // resolved set is snapshotted (label + product name) on the order item.
+      try {
+        const groups = collectChoiceGroups(catalog!, p.id);
+        if (groups.length > 0) {
+          const picks = new Map<number, number>();
+          for (const [key, productId] of Object.entries(it.choiceSelections ?? {})) {
+            picks.set(Number(key), productId);
+          }
+          choiceSelections = groups.map((g) => {
+            const chosen = resolveChoice(
+              {
+                id: g.groupId,
+                kind: "CHOICE",
+                productId: null,
+                childPackageId: null,
+                choiceLabel: g.label,
+                qty: g.qty,
+                options: g.options,
+              },
+              picks
+            );
+            const product = catalog!.products.get(chosen);
+            return {
+              groupId: g.groupId,
+              label: g.label,
+              productId: chosen,
+              name: product?.name ?? `#${chosen}`,
+            };
+          });
+        }
+      } catch (e) {
+        if (e instanceof BomError) throw new AuthzError(400, e.message);
+        throw e;
+      }
     }
     if (it.unitPrice < priceFloor) {
       floorBreaches.push(
@@ -321,6 +390,7 @@ export async function resolveItemsAndTotals(
       unitPrice: round2(it.unitPrice),
       priceFloor,
       lineTotal: round2(it.qty * it.unitPrice),
+      choiceSelections,
     });
   }
 
@@ -470,6 +540,9 @@ export async function applyOrderEdit(
       qty: l.qty,
       unitPrice: l.unitPrice,
       lineTotal: l.lineTotal,
+      choiceSelections: l.choiceSelections
+        ? (l.choiceSelections as unknown as Prisma.InputJsonValue)
+        : undefined,
     })),
   });
   await tx.order.update({
@@ -482,6 +555,7 @@ export async function applyOrderEdit(
       district: payload.district,
       thana: payload.thana,
       occasion: payload.occasion,
+      deliveryZone: payload.deliveryZone as Prisma.OrderUpdateInput["deliveryZone"],
       requestedDeliveryDate: payload.requestedDeliveryDate
         ? new Date(payload.requestedDeliveryDate)
         : null,
@@ -526,6 +600,7 @@ export type OrderWithRelations = Prisma.OrderGetPayload<{
     statusHistory: { include: { user: { select: { name: true } } } };
     editRequests: { include: { requester: { select: { name: true } } } };
     invoices: true;
+    whatsappMessages: true;
     shipment: {
       include: {
         courier: { select: { name: true } };
@@ -549,6 +624,9 @@ export const orderDetailInclude = {
   statusHistory: { include: { user: { select: { name: true } } } },
   editRequests: { include: { requester: { select: { name: true } } } },
   invoices: true,
+  // latest WhatsApp API send attempt (SPEC §5 / §16 Phase 4) — the invoice
+  // card shows whether the customer actually got the PDF.
+  whatsappMessages: { orderBy: { createdAt: "desc" as const }, take: 1 },
   shipment: {
     include: {
       courier: { select: { name: true } },
@@ -579,6 +657,7 @@ export function serializeOrderDetail(o: OrderWithRelations, showCosts: boolean) 
     deliveryAddress: o.deliveryAddress,
     district: o.district,
     thana: o.thana,
+    deliveryZone: o.deliveryZone,
     occasion: o.occasion,
     requestedDeliveryDate: o.requestedDeliveryDate
       ? o.requestedDeliveryDate.toISOString().slice(0, 10)
@@ -594,6 +673,10 @@ export function serializeOrderDetail(o: OrderWithRelations, showCosts: boolean) 
       qty: it.qty,
       unitPrice: Number(it.unitPrice),
       lineTotal: Number(it.lineTotal),
+      // Chosen variants (CORRECTIONS Products §5) — label/name snapshots.
+      choiceSelections: (it.choiceSelections as
+        | { groupId: number; label: string; productId: number; name: string }[]
+        | null) ?? null,
       ...(showCosts && it.unitCostSnapshot != null
         ? { unitCostSnapshot: Number(it.unitCostSnapshot) }
         : {}),
@@ -658,6 +741,15 @@ export function serializeOrderDetail(o: OrderWithRelations, showCosts: boolean) 
         version: inv.version,
         generatedAt: inv.generatedAt.toISOString(),
       })),
+    whatsappSend: o.whatsappMessages[0]
+      ? {
+          status: o.whatsappMessages[0].status,
+          trigger: o.whatsappMessages[0].trigger,
+          toPhone: o.whatsappMessages[0].toPhone,
+          error: o.whatsappMessages[0].error,
+          createdAt: o.whatsappMessages[0].createdAt.toISOString(),
+        }
+      : null,
     // SPEC §7 — the courier shipment, if handed over. courier_cost_actual is a
     // COST field, so it is only included for cost-visible roles.
     shipment: o.shipment

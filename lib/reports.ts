@@ -1,5 +1,11 @@
 import { prisma } from "@/lib/db";
-import { packageAvailable, packageCost } from "@/lib/catalog";
+import {
+  BomError,
+  explodePackage,
+  packageAvailability,
+  packageCost,
+} from "@/lib/bom";
+import { loadBomCatalog } from "@/lib/bom-db";
 import { dhakaDateBound, dhakaDayStart, dhakaMonthStart } from "@/lib/orders";
 import type {
   PaymentMethodValue,
@@ -144,30 +150,48 @@ export interface PackageReport {
 export async function buildPackageReport(
   showCosts: boolean
 ): Promise<PackageReport> {
-  const packages = await prisma.package.findMany({
-    orderBy: { name: "asc" },
-    include: {
-      items: {
-        include: { product: true },
-        orderBy: { id: "asc" },
-      },
-    },
-  });
+  const [packages, catalog, skuById] = await Promise.all([
+    prisma.package.findMany({
+      orderBy: { name: "asc" },
+      select: { id: true, code: true, name: true, isActive: true, sellingPrice: true },
+    }),
+    loadBomCatalog(prisma),
+    prisma.product
+      .findMany({ select: { id: true, sku: true, unit: true } })
+      .then((rows) => new Map(rows.map((r) => [r.id, r]))),
+  ]);
 
+  // CORRECTIONS Products §2/§4/§5 — components come from the full recursive
+  // explosion (nested sub-packages with default variants, plus every product's
+  // auto-included packing materials), so buildable counts match what packing
+  // will actually deduct. A structurally broken BOM degrades to an empty row.
   const rows: PackageReportRow[] = packages.map((pkg) => {
-    const buildable = packageAvailable(pkg); // number | null (SPEC §6.2)
+    let leaves: [number, number][] = [];
+    let buildable: number | null = null;
+    let cost: number | undefined;
+    try {
+      leaves = [...explodePackage(catalog, pkg.id, 1)];
+      buildable = packageAvailability(catalog, pkg.id);
+      cost = showCosts ? packageCost(catalog, pkg.id) : undefined;
+    } catch (e) {
+      if (!(e instanceof BomError)) throw e;
+    }
 
-    const components: PackageComponentRow[] = pkg.items.map((it) => ({
-      productName: it.product.name,
-      sku: it.product.sku,
-      unit: it.product.unit,
-      qtyPerPackage: it.qty,
-      isStockTracked: it.product.isStockTracked,
-      stockQty: it.product.stockQty,
-      buildableFrom: it.product.isStockTracked
-        ? Math.floor(it.product.stockQty / it.qty)
-        : null,
-    }));
+    const components: PackageComponentRow[] = leaves.map(([productId, qty]) => {
+      const p = catalog.products.get(productId)!;
+      const meta = skuById.get(productId);
+      return {
+        productName: p.name,
+        sku: meta?.sku ?? "",
+        unit: meta?.unit ?? "pcs",
+        qtyPerPackage: qty,
+        isStockTracked: p.isStockTracked,
+        stockQty: p.stockQty,
+        buildableFrom: p.isStockTracked
+          ? Math.floor(p.stockQty / qty)
+          : null,
+      };
+    });
 
     // The binding constraint(s): tracked components whose per-component cap
     // equals the package's buildable qty — what to restock to make more.
@@ -179,14 +203,13 @@ export async function buildPackageReport(
       limitedBy = binding.length > 0 ? binding.join(", ") : null;
     }
 
-    const cost = showCosts ? round2(packageCost(pkg)) : undefined;
     return {
       id: pkg.id,
       code: pkg.code,
       name: pkg.name,
       isActive: pkg.isActive,
       sellingPrice: Number(pkg.sellingPrice),
-      componentCount: pkg.items.length,
+      componentCount: components.length,
       buildable,
       limitedBy,
       ...(showCosts

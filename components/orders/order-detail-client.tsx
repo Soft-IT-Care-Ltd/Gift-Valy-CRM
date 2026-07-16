@@ -60,6 +60,8 @@ import {
   type ShipmentStatusValue,
 } from "@/lib/courier-constants";
 import { WALLET_TYPE_LABELS, type WalletOption } from "@/lib/wallet";
+import { buildInvoiceMessage } from "@/lib/invoice-message";
+import type { CurrencyDisplay } from "@/lib/currency-constants";
 
 export interface OrderDetail {
   id: number;
@@ -90,6 +92,9 @@ export interface OrderDetail {
     qty: number;
     unitPrice: number;
     lineTotal: number;
+    choiceSelections?:
+      | { groupId: number; label: string; productId: number; name: string }[]
+      | null;
   }[];
   subtotal: number;
   discount: number;
@@ -137,6 +142,13 @@ export interface OrderDetail {
     version: number;
     generatedAt: string;
   }[];
+  whatsappSend: {
+    status: "SENT" | "FAILED";
+    trigger: "AUTO_CONFIRM" | "AUTO_EDIT" | "MANUAL";
+    toPhone: string;
+    error: string | null;
+    createdAt: string;
+  } | null; // latest WhatsApp API send attempt for this order
   shipment: {
     id: number;
     courier: string;
@@ -174,6 +186,8 @@ export function OrderDetailClient({
   canApprove,
   allowedTransitions,
   wallets,
+  waApiEnabled,
+  currency,
 }: {
   order: OrderDetail;
   canEdit: boolean; // direct edit (privileged or within window)
@@ -184,6 +198,8 @@ export function OrderDetailClient({
   canApprove: boolean;
   allowedTransitions: OrderStatusValue[]; // already permission-filtered
   wallets: WalletOption[]; // active receiving wallets for the payment dialog
+  waApiEnabled: boolean; // WhatsApp Cloud API configured + enabled (SPEC §5 Phase 4)
+  currency: CurrencyDisplay | null; // customer-currency rate for this customer's country (§5)
 }) {
   const router = useRouter();
 
@@ -202,6 +218,9 @@ export function OrderDetailClient({
   // ---- payment reject dialog ----
   const [rejectId, setRejectId] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+
+  // ---- WhatsApp API send (SPEC §5 / §16 Phase 4) ----
+  const [waSending, setWaSending] = useState(false);
 
   const payMfsMissingTxn =
     !!payMethod && MFS_METHODS.includes(payMethod) && !payTxn.trim();
@@ -351,20 +370,41 @@ export function OrderDetailClient({
   }
 
   // wa.me pre-filled message to the customer (SPEC §5) — the SE attaches the
-  // downloaded PDF in the same chat.
-  const waText = [
-    `আসসালামু আলাইকুম ${order.customer.name}!`,
-    `Gift Valy-তে অর্ডার করার জন্য আপনাকে ধন্যবাদ। আপনার ইনভয়েস:`,
-    ``,
-    `🧾 Invoice: ${order.orderNo}`,
-    `মোট: ${money(order.totalAmount)}`,
-    `অগ্রিম জমা: ${money(order.advanceAmount)}`,
-    `বাকি (ডেলিভারিতে): ${money(order.dueAmount)}`,
-    `প্রাপক: ${order.recipientName}, ${order.district}`,
-    ``,
-    `ইনভয়েস PDF টি এই চ্যাটে পাঠানো হচ্ছে। যেকোনো প্রয়োজনে মেসেজ করুন। — Gift Valy`,
-  ].join("\n");
+  // downloaded PDF in the same chat. Same builder as the API-send caption, so
+  // both paths read identically (incl. the customer-currency approx lines).
+  const waText = buildInvoiceMessage(
+    {
+      orderNo: order.orderNo,
+      customerName: order.customer.name,
+      totalAmount: order.totalAmount,
+      advanceAmount: order.advanceAmount,
+      dueAmount: order.dueAmount,
+      recipientName: order.recipientName,
+      district: order.district,
+    },
+    currency
+  );
   const waHref = `https://wa.me/${order.customer.phoneForeign.replace(/\D/g, "")}?text=${encodeURIComponent(waText)}`;
+
+  // API send (SPEC §5 / §16 Phase 4): pushes the PDF into the customer's chat
+  // directly — no download/attach step.
+  async function sendWhatsApp() {
+    setWaSending(true);
+    try {
+      const res = await fetch(`/api/orders/${order.id}/invoice/whatsapp`, {
+        method: "POST",
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "WhatsApp send failed");
+      toast.success(`Invoice sent to +${body.toPhone} on WhatsApp`);
+      router.refresh();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "WhatsApp send failed");
+      router.refresh(); // the failed attempt is logged — show it
+    } finally {
+      setWaSending(false);
+    }
+  }
 
   return (
     <div className="mx-auto grid max-w-5xl gap-4">
@@ -660,20 +700,60 @@ export function OrderDetailClient({
               <Button variant="outline" onClick={printInvoice}>
                 <Printer className="mr-1 size-4" /> Print
               </Button>
-              <Button asChild className="bg-green-600 text-white hover:bg-green-700">
-                <a href={waHref} target="_blank" rel="noreferrer">
-                  <MessageCircle className="mr-1 size-4" /> Send via WhatsApp
-                </a>
-              </Button>
+              {waApiEnabled ? (
+                <>
+                  <Button
+                    onClick={sendWhatsApp}
+                    disabled={waSending}
+                    className="bg-green-600 text-white hover:bg-green-700"
+                  >
+                    <MessageCircle className="mr-1 size-4" />
+                    {waSending ? "Sending…" : "Send via WhatsApp"}
+                  </Button>
+                  <Button variant="outline" asChild>
+                    <a href={waHref} target="_blank" rel="noreferrer">
+                      Open chat
+                    </a>
+                  </Button>
+                </>
+              ) : (
+                <Button asChild className="bg-green-600 text-white hover:bg-green-700">
+                  <a href={waHref} target="_blank" rel="noreferrer">
+                    <MessageCircle className="mr-1 size-4" /> Send via WhatsApp
+                  </a>
+                </Button>
+              )}
             </div>
           )}
         </CardHeader>
         {invoiceAvailable && (
           <CardContent className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span>
-              WhatsApp opens the customer&apos;s chat with the message pre-filled —
-              attach the downloaded PDF there.
-            </span>
+            {waApiEnabled ? (
+              order.whatsappSend ? (
+                order.whatsappSend.status === "SENT" ? (
+                  <span className="text-green-700 dark:text-green-500">
+                    ✓ Sent to +{order.whatsappSend.toPhone} ·{" "}
+                    {order.whatsappSend.trigger === "MANUAL"
+                      ? "manual"
+                      : "automatic"}{" "}
+                    · {formatDateTime(order.whatsappSend.createdAt)}
+                  </span>
+                ) : (
+                  <span className="text-destructive">
+                    ✗ Last WhatsApp send failed (
+                    {formatDateTime(order.whatsappSend.createdAt)})
+                    {order.whatsappSend.error ? ` — ${order.whatsappSend.error}` : ""}
+                  </span>
+                )
+              ) : (
+                <span>Not sent via WhatsApp yet.</span>
+              )
+            ) : (
+              <span>
+                WhatsApp opens the customer&apos;s chat with the message pre-filled —
+                attach the downloaded PDF there.
+              </span>
+            )}
             {order.invoices.length > 1 && (
               <span className="ml-auto">
                 Older versions:{" "}
@@ -717,6 +797,13 @@ export function OrderDetailClient({
                     {it.code && (
                       <span className="ml-2 font-mono text-xs text-muted-foreground">
                         {it.code}
+                      </span>
+                    )}
+                    {(it.choiceSelections?.length ?? 0) > 0 && (
+                      <span className="block text-xs text-muted-foreground">
+                        {it.choiceSelections!
+                          .map((s) => `${s.label}: ${s.name}`)
+                          .join(" · ")}
                       </span>
                     )}
                   </TableCell>

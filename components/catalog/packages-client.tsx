@@ -41,16 +41,44 @@ import {
 import { money } from "./products-client";
 import { PhotoField } from "./photo-field";
 
+type LineKind = "PRODUCT" | "PACKAGE" | "CHOICE";
+
 interface PackageItemRow {
   id: number;
-  productId: number;
-  productName: string;
-  sku: string;
-  unit: string;
+  kind: LineKind;
+  productId: number | null;
+  childPackageId: number | null;
+  choiceLabel: string | null;
+  name: string;
+  code: string | null;
+  unit: string | null;
   qty: number;
   isStockTracked: boolean;
-  stockQty: number;
+  stockQty: number | null;
+  options: { productId: number; name: string; isDefault: boolean }[];
   unitCost?: number;
+}
+
+interface ChoiceGroupRow {
+  groupId: number;
+  label: string;
+  qty: number;
+  path: string[];
+  options: {
+    productId: number;
+    name: string;
+    isDefault: boolean;
+    stockQty: number;
+    availability: number | null;
+  }[];
+}
+
+interface ExplosionRow {
+  productId: number;
+  name: string;
+  qty: number;
+  isComponentType: boolean;
+  autoIncludedQty: number;
 }
 
 interface PackageRow {
@@ -62,7 +90,14 @@ interface PackageRow {
   priceFloor: number;
   isActive: boolean;
   availableToSell: number | null;
+  weightKg: number | null; // manual override
+  autoWeightKg: number | null; // BOM-summed
+  deliveryChargeInsideDhaka: number;
+  deliveryChargeSubDhaka: number;
+  deliveryChargeOutsideDhaka: number;
   items: PackageItemRow[];
+  choiceGroups: ChoiceGroupRow[];
+  explosion: ExplosionRow[];
   cost?: number; // absent for roles without cost visibility
   margin?: number;
 }
@@ -72,14 +107,24 @@ interface ProductOption {
   name: string;
   sku: string;
   unit: string;
+  productType: "SELLABLE" | "COMPONENT";
   stockQty: number;
   isStockTracked: boolean;
   avgCost?: number;
 }
 
-interface BomLine {
-  productId: string; // "" = not picked yet
+interface OptionState {
+  productId: string;
+  isDefault: boolean;
+}
+
+interface BomLineState {
+  kind: LineKind;
+  productId: string; // kind=PRODUCT, "" = not picked yet
+  childPackageId: string; // kind=PACKAGE
+  choiceLabel: string; // kind=CHOICE
   qty: string;
+  options: OptionState[]; // kind=CHOICE
 }
 
 export function PackagesClient({
@@ -103,9 +148,22 @@ export function PackagesClient({
   const [priceFloor, setPriceFloor] = useState("0");
   const [isActive, setIsActive] = useState(true);
   const [photoUrl, setPhotoUrl] = useState("");
-  const [lines, setLines] = useState<BomLine[]>([]);
+  const [weightKg, setWeightKg] = useState(""); // "" = auto
+  const [chargeInside, setChargeInside] = useState("0");
+  const [chargeSub, setChargeSub] = useState("0");
+  const [chargeOutside, setChargeOutside] = useState("0");
+  const [lines, setLines] = useState<BomLineState[]>([]);
 
   const productById = new Map(products.map((p) => [p.id, p]));
+
+  const emptyLine = (kind: LineKind = "PRODUCT"): BomLineState => ({
+    kind,
+    productId: "",
+    childPackageId: "",
+    choiceLabel: "",
+    qty: "1",
+    options: kind === "CHOICE" ? [{ productId: "", isDefault: true }] : [],
+  });
 
   function openCreate() {
     setEditing(null);
@@ -114,7 +172,11 @@ export function PackagesClient({
     setPriceFloor("0");
     setIsActive(true);
     setPhotoUrl("");
-    setLines([{ productId: "", qty: "1" }]);
+    setWeightKg("");
+    setChargeInside("0");
+    setChargeSub("0");
+    setChargeOutside("0");
+    setLines([emptyLine()]);
     setDialogOpen(true);
   }
 
@@ -125,27 +187,68 @@ export function PackagesClient({
     setPriceFloor(String(pkg.priceFloor));
     setIsActive(pkg.isActive);
     setPhotoUrl(pkg.photoUrl ?? "");
+    setWeightKg(pkg.weightKg == null ? "" : String(pkg.weightKg));
+    setChargeInside(String(pkg.deliveryChargeInsideDhaka));
+    setChargeSub(String(pkg.deliveryChargeSubDhaka));
+    setChargeOutside(String(pkg.deliveryChargeOutsideDhaka));
     setLines(
       pkg.items.map((it) => ({
-        productId: String(it.productId),
+        kind: it.kind,
+        productId: it.productId ? String(it.productId) : "",
+        childPackageId: it.childPackageId ? String(it.childPackageId) : "",
+        choiceLabel: it.choiceLabel ?? "",
         qty: String(it.qty),
+        options: it.options.map((o) => ({
+          productId: String(o.productId),
+          isDefault: o.isDefault,
+        })),
       }))
     );
     setDialogOpen(true);
   }
 
-  function setLine(idx: number, patch: Partial<BomLine>) {
+  function setLine(idx: number, patch: Partial<BomLineState>) {
     setLines((prev) =>
       prev.map((l, i) => (i === idx ? { ...l, ...patch } : l))
     );
   }
 
-  const validLines = lines.filter(
-    (l) => l.productId !== "" && Number(l.qty) >= 1
+  function lineComplete(l: BomLineState): boolean {
+    if (Number(l.qty) < 1) return false;
+    if (l.kind === "PRODUCT") return l.productId !== "";
+    if (l.kind === "PACKAGE") return l.childPackageId !== "";
+    return (
+      l.choiceLabel.trim() !== "" &&
+      l.options.length >= 2 &&
+      l.options.every((o) => o.productId !== "") &&
+      l.options.filter((o) => o.isDefault).length === 1
+    );
+  }
+
+  const allComplete = lines.length > 0 && lines.every(lineComplete);
+
+  // Live cost preview (cost-visible roles): product lines from avg cost,
+  // sub-package lines from the server-computed package cost, choice groups
+  // from their default option. Product-level packing materials are added
+  // server-side — the saved cost can be slightly higher.
+  const packageCostById = new Map(
+    packages.filter((p) => p.cost != null).map((p) => [p.id, p.cost!])
   );
-  const previewCost = validLines.reduce((sum, l) => {
-    const p = productById.get(Number(l.productId));
-    return sum + (p?.avgCost ?? 0) * Number(l.qty);
+  const previewCost = lines.reduce((sum, l) => {
+    const qty = Number(l.qty) || 0;
+    if (l.kind === "PRODUCT" && l.productId) {
+      return sum + qty * (productById.get(Number(l.productId))?.avgCost ?? 0);
+    }
+    if (l.kind === "PACKAGE" && l.childPackageId) {
+      return sum + qty * (packageCostById.get(Number(l.childPackageId)) ?? 0);
+    }
+    if (l.kind === "CHOICE") {
+      const def = l.options.find((o) => o.isDefault) ?? l.options[0];
+      if (def?.productId) {
+        return sum + qty * (productById.get(Number(def.productId))?.avgCost ?? 0);
+      }
+    }
+    return sum;
   }, 0);
 
   async function save() {
@@ -156,9 +259,23 @@ export function PackagesClient({
       priceFloor: Number(priceFloor) || 0,
       isActive,
       photoUrl: photoUrl.trim() || null,
-      items: validLines.map((l) => ({
-        productId: Number(l.productId),
+      weightKg: weightKg.trim() === "" ? null : Number(weightKg) || 0,
+      deliveryChargeInsideDhaka: Number(chargeInside) || 0,
+      deliveryChargeSubDhaka: Number(chargeSub) || 0,
+      deliveryChargeOutsideDhaka: Number(chargeOutside) || 0,
+      items: lines.map((l) => ({
+        kind: l.kind,
+        productId: l.kind === "PRODUCT" ? Number(l.productId) : null,
+        childPackageId: l.kind === "PACKAGE" ? Number(l.childPackageId) : null,
+        choiceLabel: l.kind === "CHOICE" ? l.choiceLabel.trim() : null,
         qty: Number(l.qty),
+        options:
+          l.kind === "CHOICE"
+            ? l.options.map((o) => ({
+                productId: Number(o.productId),
+                isDefault: o.isDefault,
+              }))
+            : [],
       })),
     };
     const res = await fetch(
@@ -192,14 +309,26 @@ export function PackagesClient({
     router.refresh();
   }
 
+  const contentsLabel = (pkg: PackageRow) =>
+    pkg.items
+      .map((it) =>
+        it.kind === "CHOICE"
+          ? `${it.qty}× [${it.choiceLabel}: ${it.options
+              .map((o) => o.name + (o.isDefault ? "*" : ""))
+              .join(" / ")}]`
+          : `${it.qty}× ${it.name}${it.kind === "PACKAGE" ? " (pkg)" : ""}`
+      )
+      .join(", ");
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <div>
           <CardTitle>Packages</CardTitle>
           <CardDescription>
-            Sellable bundles built from products (BOM). “Can make” = how many
-            more can be assembled from current stock.
+            Sellable bundles built from products, sub-packages and choice
+            groups (BOM). “Can make” = how many more can be assembled from
+            current stock, full explosion included.
           </CardDescription>
         </div>
         {canManage && <Button onClick={openCreate}>New package</Button>}
@@ -214,6 +343,7 @@ export function PackagesClient({
               <TableHead className="text-right">Price</TableHead>
               {showCosts && <TableHead className="text-right">Cost</TableHead>}
               {showCosts && <TableHead className="text-right">Margin</TableHead>}
+              <TableHead className="text-right">Weight</TableHead>
               <TableHead className="text-right">Can make</TableHead>
               <TableHead>Status</TableHead>
               {canManage && <TableHead className="text-right">Actions</TableHead>}
@@ -237,16 +367,14 @@ export function PackagesClient({
                   </span>
                 </TableCell>
                 <TableCell className="max-w-xs text-sm text-muted-foreground">
-                  {pkg.items
-                    .map((it) => `${it.qty}× ${it.productName}`)
-                    .join(", ")}
+                  {contentsLabel(pkg)}
                 </TableCell>
                 <TableCell className="text-right">
                   {money(pkg.sellingPrice)}
                 </TableCell>
                 {showCosts && (
                   <TableCell className="text-right">
-                    {money(pkg.cost ?? 0)}
+                    {pkg.cost == null ? "—" : money(pkg.cost)}
                   </TableCell>
                 )}
                 {showCosts && (
@@ -255,9 +383,16 @@ export function PackagesClient({
                       (pkg.margin ?? 0) < 0 ? "text-destructive" : ""
                     }`}
                   >
-                    {money(pkg.margin ?? 0)}
+                    {pkg.margin == null ? "—" : money(pkg.margin)}
                   </TableCell>
                 )}
+                <TableCell className="text-right text-muted-foreground">
+                  {pkg.weightKg != null
+                    ? `${pkg.weightKg} kg`
+                    : pkg.autoWeightKg
+                      ? `~${pkg.autoWeightKg} kg`
+                      : "—"}
+                </TableCell>
                 <TableCell className="text-right">
                   {pkg.availableToSell === null ? (
                     <Badge variant="outline">per-order</Badge>
@@ -303,7 +438,7 @@ export function PackagesClient({
             {packages.length === 0 && (
               <TableRow>
                 <TableCell
-                  colSpan={showCosts ? 9 : 7}
+                  colSpan={showCosts ? 10 : 8}
                   className="text-center text-muted-foreground"
                 >
                   No packages yet.
@@ -315,7 +450,7 @@ export function PackagesClient({
       </CardContent>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-xl">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>
               {editing ? `Edit ${editing.name}` : "New package"}
@@ -356,59 +491,260 @@ export function PackagesClient({
             <div className="grid gap-2">
               <Label>Contents (BOM)</Label>
               {lines.map((line, idx) => (
-                <div key={idx} className="flex items-center gap-2">
-                  <div className="flex-1">
+                <div key={idx} className="grid gap-2 rounded-md border p-2">
+                  <div className="flex items-center gap-2">
                     <Select
-                      value={line.productId}
-                      onValueChange={(v) => setLine(idx, { productId: v })}
+                      value={line.kind}
+                      onValueChange={(v) => {
+                        const kind = v as LineKind;
+                        setLine(idx, {
+                          kind,
+                          options:
+                            kind === "CHOICE" && line.options.length === 0
+                              ? [{ productId: "", isDefault: true }]
+                              : line.options,
+                        });
+                      }}
                     >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Pick a product" />
+                      <SelectTrigger className="w-32 shrink-0">
+                        <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {products.map((p) => (
-                          <SelectItem key={p.id} value={String(p.id)}>
-                            {p.name} ({p.sku})
-                            {p.isStockTracked ? ` — stock ${p.stockQty}` : " — per-order"}
-                          </SelectItem>
-                        ))}
+                        <SelectItem value="PRODUCT">Product</SelectItem>
+                        <SelectItem value="PACKAGE">Sub-package</SelectItem>
+                        <SelectItem value="CHOICE">Choice group</SelectItem>
                       </SelectContent>
                     </Select>
+
+                    {line.kind === "PRODUCT" && (
+                      <div className="flex-1">
+                        <Select
+                          value={line.productId}
+                          onValueChange={(v) => setLine(idx, { productId: v })}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Pick a product" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {products.map((p) => (
+                              <SelectItem key={p.id} value={String(p.id)}>
+                                {p.name} ({p.sku})
+                                {p.productType === "COMPONENT" ? " [component]" : ""}
+                                {p.isStockTracked
+                                  ? ` — stock ${p.stockQty}`
+                                  : " — per-order"}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                    {line.kind === "PACKAGE" && (
+                      <div className="flex-1">
+                        <Select
+                          value={line.childPackageId}
+                          onValueChange={(v) =>
+                            setLine(idx, { childPackageId: v })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Pick a package" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {packages
+                              .filter((p) => !editing || p.id !== editing.id)
+                              .map((p) => (
+                                <SelectItem key={p.id} value={String(p.id)}>
+                                  {p.name} ({p.code})
+                                </SelectItem>
+                              ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                    {line.kind === "CHOICE" && (
+                      <Input
+                        className="flex-1"
+                        placeholder='Label, e.g. "Teddy colour"'
+                        value={line.choiceLabel}
+                        onChange={(e) =>
+                          setLine(idx, { choiceLabel: e.target.value })
+                        }
+                      />
+                    )}
+
+                    <Input
+                      className="w-20"
+                      type="number"
+                      min="1"
+                      value={line.qty}
+                      onChange={(e) => setLine(idx, { qty: e.target.value })}
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        setLines((prev) => prev.filter((_, i) => i !== idx))
+                      }
+                      disabled={lines.length <= 1}
+                    >
+                      ✕
+                    </Button>
                   </div>
-                  <Input
-                    className="w-20"
-                    type="number"
-                    min="1"
-                    value={line.qty}
-                    onChange={(e) => setLine(idx, { qty: e.target.value })}
-                  />
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() =>
-                      setLines((prev) => prev.filter((_, i) => i !== idx))
-                    }
-                    disabled={lines.length <= 1}
-                  >
-                    ✕
-                  </Button>
+
+                  {line.kind === "CHOICE" && (
+                    <div className="grid gap-1 pl-2">
+                      <span className="text-xs text-muted-foreground">
+                        Options — pick one as default (used for catalog
+                        estimates; the SE picks the real one at order entry)
+                      </span>
+                      {line.options.map((opt, oIdx) => (
+                        <div key={oIdx} className="flex items-center gap-2">
+                          <input
+                            type="radio"
+                            name={`default-${idx}`}
+                            checked={opt.isDefault}
+                            onChange={() =>
+                              setLine(idx, {
+                                options: line.options.map((o, i) => ({
+                                  ...o,
+                                  isDefault: i === oIdx,
+                                })),
+                              })
+                            }
+                          />
+                          <div className="flex-1">
+                            <Select
+                              value={opt.productId}
+                              onValueChange={(v) =>
+                                setLine(idx, {
+                                  options: line.options.map((o, i) =>
+                                    i === oIdx ? { ...o, productId: v } : o
+                                  ),
+                                })
+                              }
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Pick a variant product" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {products
+                                  .filter((p) => p.productType === "SELLABLE")
+                                  .map((p) => (
+                                    <SelectItem key={p.id} value={String(p.id)}>
+                                      {p.name} ({p.sku})
+                                      {p.isStockTracked
+                                        ? ` — stock ${p.stockQty}`
+                                        : ""}
+                                    </SelectItem>
+                                  ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() =>
+                              setLine(idx, {
+                                options: line.options.filter(
+                                  (_, i) => i !== oIdx
+                                ),
+                              })
+                            }
+                            disabled={line.options.length <= 1}
+                          >
+                            ✕
+                          </Button>
+                        </div>
+                      ))}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-fit"
+                        onClick={() =>
+                          setLine(idx, {
+                            options: [
+                              ...line.options,
+                              { productId: "", isDefault: false },
+                            ],
+                          })
+                        }
+                      >
+                        + Add option
+                      </Button>
+                    </div>
+                  )}
                 </div>
               ))}
               <Button
                 variant="outline"
                 size="sm"
                 className="w-fit"
-                onClick={() =>
-                  setLines((prev) => [...prev, { productId: "", qty: "1" }])
-                }
+                onClick={() => setLines((prev) => [...prev, emptyLine()])}
               >
-                + Add item
+                + Add line
               </Button>
+              <p className="text-xs text-muted-foreground">
+                List products and package-level materials only — each
+                product’s own packing materials are added automatically (see
+                the explosion below), so don’t re-list them.
+              </p>
             </div>
 
-            {showCosts && validLines.length > 0 && (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-2">
+                <Label>Weight (kg)</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.001"
+                  placeholder={
+                    editing?.autoWeightKg
+                      ? `auto: ${editing.autoWeightKg} kg`
+                      : "auto-sums from BOM"
+                  }
+                  value={weightKg}
+                  onChange={(e) => setWeightKg(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Leave empty to auto-sum from the BOM (incl. components).
+                </p>
+              </div>
+              <div className="grid gap-2">
+                <Label>Delivery charge by zone (৳)</Label>
+                <div className="grid grid-cols-3 gap-2">
+                  <Input
+                    type="number"
+                    min="0"
+                    title="Inside Dhaka"
+                    value={chargeInside}
+                    onChange={(e) => setChargeInside(e.target.value)}
+                  />
+                  <Input
+                    type="number"
+                    min="0"
+                    title="Sub Dhaka"
+                    value={chargeSub}
+                    onChange={(e) => setChargeSub(e.target.value)}
+                  />
+                  <Input
+                    type="number"
+                    min="0"
+                    title="Outside Dhaka"
+                    value={chargeOutside}
+                    onChange={(e) => setChargeOutside(e.target.value)}
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Inside / Sub / Outside Dhaka — 0 = free delivery.
+                </p>
+              </div>
+            </div>
+
+            {showCosts && allComplete && (
               <div className="rounded-md border bg-muted/50 p-3 text-sm">
-                Package cost {money(previewCost)} · margin{" "}
+                Estimated cost {money(Math.round(previewCost * 100) / 100)} ·
+                margin{" "}
                 <span
                   className={
                     (Number(sellingPrice) || 0) - previewCost < 0
@@ -416,8 +752,71 @@ export function PackagesClient({
                       : ""
                   }
                 >
-                  {money((Number(sellingPrice) || 0) - previewCost)}
+                  {money(
+                    Math.round(((Number(sellingPrice) || 0) - previewCost) * 100) /
+                      100
+                  )}
+                </span>{" "}
+                <span className="text-xs text-muted-foreground">
+                  (final cost adds product packing materials on save)
                 </span>
+              </div>
+            )}
+
+            {editing && editing.explosion.length > 0 && (
+              <div className="grid gap-1 rounded-md border p-3">
+                <Label>Full explosion (per 1 package, default variants)</Label>
+                <p className="text-xs text-muted-foreground">
+                  What packing will actually deduct — auto-included packing
+                  materials shown with ⊕.
+                </p>
+                <ul className="text-sm">
+                  {editing.explosion.map((row) => (
+                    <li key={row.productId} className="flex justify-between">
+                      <span>
+                        {row.qty}× {row.name}
+                        {row.autoIncludedQty > 0 && (
+                          <span
+                            className="text-muted-foreground"
+                            title={`${row.autoIncludedQty} auto-included from product packing materials`}
+                          >
+                            {" "}
+                            ⊕
+                          </span>
+                        )}
+                        {row.isComponentType && (
+                          <Badge variant="outline" className="ml-2">
+                            component
+                          </Badge>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {editing && editing.choiceGroups.length > 0 && (
+              <div className="grid gap-1 rounded-md border p-3">
+                <Label>Per-variant availability</Label>
+                <ul className="text-sm">
+                  {editing.choiceGroups.map((g) => (
+                    <li key={g.groupId}>
+                      <span className="font-medium">
+                        {g.path.length > 0 ? `${g.path.join(" → ")} · ` : ""}
+                        {g.label}:
+                      </span>{" "}
+                      {g.options
+                        .map(
+                          (o) =>
+                            `${o.name}${o.isDefault ? "*" : ""} (can make ${
+                              o.availability ?? "∞"
+                            })`
+                        )
+                        .join(" · ")}
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
 
@@ -432,13 +831,7 @@ export function PackagesClient({
             </Button>
             <Button
               onClick={save}
-              disabled={
-                saving ||
-                !name.trim() ||
-                !sellingPrice ||
-                validLines.length === 0 ||
-                validLines.length !== lines.length
-              }
+              disabled={saving || !name.trim() || !sellingPrice || !allComplete}
             >
               {saving ? "Saving…" : "Save"}
             </Button>

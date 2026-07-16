@@ -27,17 +27,26 @@ import { money } from "@/lib/format";
 import {
   BD_DISTRICTS,
   CUSTOMER_COUNTRIES,
+  DELIVERY_ZONES,
+  DELIVERY_ZONE_LABELS,
   MFS_METHODS,
   OCCASIONS,
   ORDER_STATUS_LABELS,
   PAYMENT_METHOD_LABELS,
   RECIPIENT_RELATIONS,
+  type DeliveryZoneValue,
   type OrderStatusValue,
   type PaymentMethodValue,
 } from "@/lib/order-constants";
 import { WALLET_TYPE_LABELS, type WalletOption } from "@/lib/wallet";
 
 // ---- option shapes (page passes catalog without any cost fields) ----
+
+export interface ZoneCharges {
+  INSIDE_DHAKA: number;
+  SUB_DHAKA: number;
+  OUTSIDE_DHAKA: number;
+}
 
 export interface ProductOption {
   id: number;
@@ -46,6 +55,21 @@ export interface ProductOption {
   sellingPrice: number;
   priceFloor: number;
   unit: string;
+  zoneCharges: ZoneCharges;
+}
+
+// CORRECTIONS Products §5 — the choice groups of a package's whole nested
+// tree; the SE picks one option per group when the package is added.
+export interface ChoiceGroupOption {
+  groupId: number;
+  label: string;
+  path: string[];
+  options: {
+    productId: number;
+    name: string;
+    isDefault: boolean;
+    stockQty: number;
+  }[];
 }
 
 export interface PackageOption {
@@ -55,6 +79,8 @@ export interface PackageOption {
   sellingPrice: number;
   priceFloor: number;
   availableToSell: number | null;
+  zoneCharges: ZoneCharges;
+  choiceGroups: ChoiceGroupOption[];
 }
 
 interface LineState {
@@ -63,6 +89,8 @@ interface LineState {
   itemId: string; // product or package id as string for Select
   qty: string;
   unitPrice: string;
+  // groupId → productId (as strings for Select) — package lines only.
+  selections: Record<string, string>;
 }
 
 export interface OrderFormInitial {
@@ -72,6 +100,7 @@ export interface OrderFormInitial {
   deliveryAddress: string;
   district: string;
   thana: string;
+  deliveryZone: string | null;
   occasion: string | null;
   requestedDeliveryDate: string | null;
   items: {
@@ -80,6 +109,7 @@ export interface OrderFormInitial {
     packageId: number | null;
     qty: number;
     unitPrice: number;
+    choiceSelections?: { groupId: number; productId: number }[] | null;
   }[];
   discount: number;
   courierCharge: number;
@@ -168,11 +198,30 @@ export function OrderForm({
   const [district, setDistrict] = useState(initial?.district ?? "");
   const [thana, setThana] = useState(initial?.thana ?? "");
   const [occasion, setOccasion] = useState(initial?.occasion ?? "");
+  const [deliveryZone, setDeliveryZone] = useState<DeliveryZoneValue | "">(
+    (initial?.deliveryZone as DeliveryZoneValue | null) ?? ""
+  );
   const [deliveryDate, setDeliveryDate] = useState(
     initial?.requestedDeliveryDate ?? ""
   );
 
-  // Section C — items
+  // Section C — items. Choice picks (§5) prefill from the saved order (edit)
+  // or the group defaults.
+  const defaultSelections = useCallback(
+    (packageId: number | null): Record<string, string> => {
+      const pkg = packages.find((p) => p.id === packageId);
+      if (!pkg) return {};
+      return Object.fromEntries(
+        pkg.choiceGroups.map((g) => [
+          String(g.groupId),
+          String(
+            (g.options.find((o) => o.isDefault) ?? g.options[0])?.productId ?? ""
+          ),
+        ])
+      );
+    },
+    [packages]
+  );
   const [lines, setLines] = useState<LineState[]>(() =>
     initial
       ? initial.items.map((it) => ({
@@ -181,8 +230,26 @@ export function OrderForm({
           itemId: String(it.itemType === "PRODUCT" ? it.productId : it.packageId),
           qty: String(it.qty),
           unitPrice: String(it.unitPrice),
+          selections: {
+            ...defaultSelections(it.packageId),
+            ...Object.fromEntries(
+              (it.choiceSelections ?? []).map((s) => [
+                String(s.groupId),
+                String(s.productId),
+              ])
+            ),
+          },
         }))
-      : [{ key: lineKey++, itemType: "PACKAGE", itemId: "", qty: "1", unitPrice: "" }]
+      : [
+          {
+            key: lineKey++,
+            itemType: "PACKAGE",
+            itemId: "",
+            qty: "1",
+            unitPrice: "",
+            selections: {},
+          },
+        ]
   );
   const [discountType, setDiscountType] = useState<"AMOUNT" | "PERCENT">("AMOUNT");
   const [discountValue, setDiscountValue] = useState(
@@ -246,15 +313,51 @@ export function OrderForm({
   function updateLine(key: number, patch: Partial<LineState>) {
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
   }
+
+  // CORRECTIONS Products §3 — Σ(qty × item's charge for the zone). 0 when no
+  // zone picked or nothing carries a zone charge (free delivery default).
+  const zoneChargeFor = useCallback(
+    (zone: DeliveryZoneValue | "", ls: LineState[]): number => {
+      if (!zone) return 0;
+      return ls.reduce((sum, l) => {
+        const opt =
+          l.itemType === "PRODUCT"
+            ? productById.get(l.itemId)
+            : packageById.get(l.itemId);
+        if (!opt) return sum;
+        return sum + (Number(l.qty) || 0) * opt.zoneCharges[zone];
+      }, 0);
+    },
+    [productById, packageById]
+  );
+
+  // Auto-fill the delivery charge on zone/item events (stays editable).
+  function autofillCharge(zone: DeliveryZoneValue | "", ls: LineState[]) {
+    if (!zone) return;
+    const sum = zoneChargeFor(zone, ls);
+    if (sum > 0) setCourierCharge(String(sum));
+  }
+
   function selectItem(line: LineState, itemId: string) {
     const opt =
       line.itemType === "PRODUCT"
         ? productById.get(itemId)
         : packageById.get(itemId);
-    updateLine(line.key, {
-      itemId,
-      unitPrice: opt ? String(opt.sellingPrice) : line.unitPrice,
-    });
+    const nextLines = lines.map((l) =>
+      l.key === line.key
+        ? {
+            ...l,
+            itemId,
+            unitPrice: opt ? String(opt.sellingPrice) : l.unitPrice,
+            selections:
+              line.itemType === "PACKAGE"
+                ? defaultSelections(Number(itemId))
+                : {},
+          }
+        : l
+    );
+    setLines(nextLines);
+    autofillCharge(deliveryZone, nextLines);
   }
   function lineFloor(line: LineState): number | null {
     const opt =
@@ -314,6 +417,7 @@ export function OrderForm({
       deliveryAddress: address,
       district,
       thana,
+      deliveryZone: deliveryZone || null,
       occasion: occasion || null,
       requestedDeliveryDate: deliveryDate || null,
       items: lines.map((l) => ({
@@ -322,6 +426,14 @@ export function OrderForm({
         packageId: l.itemType === "PACKAGE" ? Number(l.itemId) : null,
         qty: Number(l.qty),
         unitPrice: Number(l.unitPrice) || 0,
+        choiceSelections:
+          l.itemType === "PACKAGE" && Object.keys(l.selections).length > 0
+            ? Object.fromEntries(
+                Object.entries(l.selections)
+                  .filter(([, v]) => v !== "")
+                  .map(([k, v]) => [k, Number(v)])
+              )
+            : null,
       })),
       discountType,
       discountValue: Number(discountValue) || 0,
@@ -574,6 +686,33 @@ export function OrderForm({
               placeholder="House, road, area, landmarks…"
             />
           </div>
+          <div className="grid gap-2">
+            <Label>Delivery zone (optional)</Label>
+            <Select
+              value={deliveryZone}
+              onValueChange={(v) => {
+                const zone = v as DeliveryZoneValue;
+                setDeliveryZone(zone);
+                autofillCharge(zone, lines);
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Inside Dhaka / Sub Dhaka / Outside Dhaka" />
+              </SelectTrigger>
+              <SelectContent>
+                {DELIVERY_ZONES.map((z) => (
+                  <SelectItem key={z} value={z}>
+                    {DELIVERY_ZONE_LABELS[z]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              If any ordered item has a zone delivery charge, the order’s
+              delivery charge auto-fills from the matching zone (editable
+              below). Default is free delivery.
+            </p>
+          </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="grid gap-2">
               <Label>Occasion (optional)</Label>
@@ -632,6 +771,7 @@ export function OrderForm({
                           itemType: v as "PRODUCT" | "PACKAGE",
                           itemId: "",
                           unitPrice: "",
+                          selections: {},
                         })
                       }
                     >
@@ -717,6 +857,52 @@ export function OrderForm({
                       : "needs TL/Admin approval"}
                   </p>
                 )}
+                {/* CORRECTIONS Products §5 — variant picks for this package */}
+                {line.itemType === "PACKAGE" &&
+                  (packageById.get(line.itemId)?.choiceGroups.length ?? 0) >
+                    0 && (
+                    <div className="grid gap-2 rounded-md border bg-muted/30 p-2 sm:grid-cols-2">
+                      {packageById
+                        .get(line.itemId)!
+                        .choiceGroups.map((g) => (
+                          <div key={g.groupId} className="grid gap-1">
+                            <Label className="text-xs">
+                              {g.path.length > 0
+                                ? `${g.path.join(" → ")} · `
+                                : ""}
+                              {g.label}
+                            </Label>
+                            <Select
+                              value={line.selections[String(g.groupId)] ?? ""}
+                              onValueChange={(v) =>
+                                updateLine(line.key, {
+                                  selections: {
+                                    ...line.selections,
+                                    [String(g.groupId)]: v,
+                                  },
+                                })
+                              }
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Choose…" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {g.options.map((o) => (
+                                  <SelectItem
+                                    key={o.productId}
+                                    value={String(o.productId)}
+                                  >
+                                    {o.name}
+                                    {o.isDefault ? " (default)" : ""} — stock{" "}
+                                    {o.stockQty}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        ))}
+                    </div>
+                  )}
               </div>
             );
           })}
@@ -734,6 +920,7 @@ export function OrderForm({
                     itemId: "",
                     qty: "1",
                     unitPrice: "",
+                    selections: {},
                   },
                 ])
               }

@@ -1,6 +1,15 @@
 import type { Prisma, PrismaClient, StockMovementType } from "@prisma/client";
 import { AuthzError } from "./authz";
 import { dhakaDateBound } from "./order-constants";
+import {
+  explodePackage,
+  explodeProduct,
+  packageCost,
+  productEffectiveCost,
+  selectionsFromJson,
+  type Explosion,
+} from "./bom";
+import { loadBomCatalog } from "./bom-db";
 
 type Tx = Prisma.TransactionClient | PrismaClient;
 
@@ -64,10 +73,12 @@ export async function applyMovements(
   }
 }
 
-// ---------- order requirements (BOM expansion, SPEC §6.2) ----------
+// ---------- order requirements (recursive BOM explosion, SPEC §6.2 + CORRECTIONS Products §2/§4/§5) ----------
 
-// What an order needs from stock, per stock-tracked product: PRODUCT lines
-// count themselves, PACKAGE lines expand to qty × each BOM component.
+// What an order needs from stock, per stock-tracked LEAF product: PRODUCT
+// lines explode into themselves + their packing materials; PACKAGE lines
+// explode recursively (nested sub-packages, choice groups following the picks
+// stored on the order item, every product's own components).
 // Non-stock-tracked products (perishables, §6.1) never touch the ledger.
 export async function orderStockRequirements(
   tx: Tx,
@@ -75,26 +86,34 @@ export async function orderStockRequirements(
 ): Promise<Map<number, number>> {
   const items = await tx.orderItem.findMany({
     where: { orderId },
-    include: {
-      product: { select: { id: true, isStockTracked: true } },
-      package: {
-        include: {
-          items: {
-            include: { product: { select: { id: true, isStockTracked: true } } },
-          },
-        },
-      },
+    select: {
+      itemType: true,
+      productId: true,
+      packageId: true,
+      qty: true,
+      choiceSelections: true,
     },
   });
   const need = new Map<number, number>();
-  const add = (productId: number, qty: number) =>
-    need.set(productId, (need.get(productId) ?? 0) + qty);
+  if (items.length === 0) return need;
+  const catalog = await loadBomCatalog(tx);
   for (const it of items) {
-    if (it.itemType === "PRODUCT" && it.product?.isStockTracked) {
-      add(it.product.id, it.qty);
-    } else if (it.itemType === "PACKAGE" && it.package) {
-      for (const bom of it.package.items) {
-        if (bom.product.isStockTracked) add(bom.product.id, it.qty * bom.qty);
+    let leaves: Explosion;
+    if (it.itemType === "PRODUCT" && it.productId != null) {
+      leaves = explodeProduct(catalog, it.productId, it.qty);
+    } else if (it.itemType === "PACKAGE" && it.packageId != null) {
+      leaves = explodePackage(
+        catalog,
+        it.packageId,
+        it.qty,
+        selectionsFromJson(it.choiceSelections)
+      );
+    } else {
+      continue; // custom line — no catalog footprint
+    }
+    for (const [productId, qty] of leaves) {
+      if (catalog.products.get(productId)?.isStockTracked) {
+        need.set(productId, (need.get(productId) ?? 0) + qty);
       }
     }
   }
@@ -221,28 +240,34 @@ export async function deductStockAtPack(tx: Tx, orderId: number, userId: number)
   await freezeCostSnapshots(tx, orderId);
 }
 
-// unit_cost_snapshot at PACKED: PRODUCT lines freeze the product's current
-// weighted-avg cost; PACKAGE lines freeze Σ(component avg cost × BOM qty) for
-// one package (incl. per-order components — their cost is still real).
-// Custom lines have no catalog cost → stay null.
+// unit_cost_snapshot at PACKED: PRODUCT lines freeze the product's effective
+// cost (own avg cost + its packing materials, CORRECTIONS Products §2);
+// PACKAGE lines freeze the full recursive explosion cost using the variant
+// the SE actually chose for each choice group (§5) — incl. per-order
+// components, whose cost is still real. Custom lines have no catalog cost →
+// stay null.
 async function freezeCostSnapshots(tx: Tx, orderId: number) {
   const items = await tx.orderItem.findMany({
     where: { orderId },
-    include: {
-      product: { select: { avgCost: true } },
-      package: {
-        include: { items: { include: { product: { select: { avgCost: true } } } } },
-      },
+    select: {
+      id: true,
+      itemType: true,
+      productId: true,
+      packageId: true,
+      choiceSelections: true,
     },
   });
+  if (items.length === 0) return;
+  const catalog = await loadBomCatalog(tx);
   for (const it of items) {
     let cost: number | null = null;
-    if (it.itemType === "PRODUCT" && it.product) {
-      cost = Number(it.product.avgCost);
-    } else if (it.itemType === "PACKAGE" && it.package) {
-      cost = it.package.items.reduce(
-        (s, bom) => s + bom.qty * Number(bom.product.avgCost),
-        0
+    if (it.itemType === "PRODUCT" && it.productId != null) {
+      cost = productEffectiveCost(catalog, it.productId);
+    } else if (it.itemType === "PACKAGE" && it.packageId != null) {
+      cost = packageCost(
+        catalog,
+        it.packageId,
+        selectionsFromJson(it.choiceSelections)
       );
     }
     if (cost != null) {

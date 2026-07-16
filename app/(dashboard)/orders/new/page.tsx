@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/db";
 import { requirePagePermission } from "@/lib/page-auth";
 import { getEffectivePermissions } from "@/lib/rbac";
-import { packageAvailable } from "@/lib/catalog";
+import { loadBomCatalog } from "@/lib/bom-db";
+import { loadOrderFormOptions } from "@/lib/order-form-options";
 import { leadScopeWhere } from "@/lib/leads";
 import { CUSTOMER_COUNTRIES } from "@/lib/order-constants";
 import { LEAD_SOURCE_LABELS, type InterestedItem } from "@/lib/lead-constants";
@@ -28,20 +29,13 @@ export default async function NewOrderPage({
   const { leadId: leadIdParam } = await searchParams;
   const leadId = Number(leadIdParam) || null;
 
-  const [user, products, packages, wallets] = await Promise.all([
+  const catalog = await loadBomCatalog(prisma);
+  const [user, options, wallets] = await Promise.all([
     prisma.user.findUniqueOrThrow({
       where: { id: session.user.id },
       select: { name: true, team: { select: { name: true } } },
     }),
-    prisma.product.findMany({
-      where: { isActive: true },
-      orderBy: { name: "asc" },
-    }),
-    prisma.package.findMany({
-      where: { isActive: true },
-      orderBy: { name: "asc" },
-      include: { items: { include: { product: true } } },
-    }),
+    loadOrderFormOptions(prisma, catalog),
     prisma.wallet.findMany({
       where: { isActive: true },
       orderBy: { name: "asc" },
@@ -49,22 +43,8 @@ export default async function NewOrderPage({
     }),
   ]);
 
-  const productOptions: ProductOption[] = products.map((p) => ({
-    id: p.id,
-    sku: p.sku,
-    name: p.name,
-    sellingPrice: Number(p.sellingPrice),
-    priceFloor: Number(p.priceFloor),
-    unit: p.unit,
-  }));
-  const packageOptions: PackageOption[] = packages.map((p) => ({
-    id: p.id,
-    code: p.code,
-    name: p.name,
-    sellingPrice: Number(p.sellingPrice),
-    priceFloor: Number(p.priceFloor),
-    availableToSell: packageAvailable(p),
-  }));
+  const productOptions: ProductOption[] = options.products;
+  const packageOptions: PackageOption[] = options.packages;
 
   // Lead conversion prefill (§3.2). Only leads the creator may see convert; an
   // already-converted lead is blocked server-side, so we surface that here too.
@@ -128,6 +108,7 @@ export default async function NewOrderPage({
         deliveryAddress: "",
         district: "",
         thana: "",
+        deliveryZone: null,
         occasion: null,
         requestedDeliveryDate: null,
         items,

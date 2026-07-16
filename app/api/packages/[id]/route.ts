@@ -3,7 +3,16 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { requirePermission, requirePermissionCtx, apiError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
-import { canSeeCosts, serializePackage } from "@/lib/catalog";
+import {
+  canSeeCosts,
+  packageSerializeInclude,
+  serializePackage,
+} from "@/lib/catalog";
+import {
+  loadBomCatalog,
+  validatePackageBomInput,
+  writePackageItems,
+} from "@/lib/bom-db";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -11,22 +20,36 @@ export async function GET(req: Request, { params }: Params) {
   try {
     const { permissions } = await requirePermissionCtx("catalog.view");
     const id = Number((await params).id);
-    const pkg = await prisma.package.findUnique({
-      where: { id },
-      include: { items: { include: { product: true }, orderBy: { id: "asc" } } },
-    });
+    const [pkg, catalog] = await Promise.all([
+      prisma.package.findUnique({
+        where: { id },
+        include: packageSerializeInclude,
+      }),
+      loadBomCatalog(prisma),
+    ]);
     if (!pkg) {
       return NextResponse.json({ error: "Package not found" }, { status: 404 });
     }
-    return NextResponse.json(serializePackage(pkg, canSeeCosts(permissions)));
+    return NextResponse.json(
+      serializePackage(pkg, catalog, canSeeCosts(permissions))
+    );
   } catch (e) {
     return apiError(e);
   }
 }
 
+const optionSchema = z.object({
+  productId: z.number().int().positive(),
+  isDefault: z.boolean().default(false),
+});
+
 const itemSchema = z.object({
-  productId: z.number().int(),
+  kind: z.enum(["PRODUCT", "PACKAGE", "CHOICE"]).default("PRODUCT"),
+  productId: z.number().int().positive().nullable().optional(),
+  childPackageId: z.number().int().positive().nullable().optional(),
+  choiceLabel: z.string().trim().nullable().optional(),
   qty: z.number().int().min(1),
+  options: z.array(optionSchema).default([]),
 });
 
 const updateSchema = z
@@ -36,6 +59,10 @@ const updateSchema = z
     sellingPrice: z.number().min(0).optional(),
     priceFloor: z.number().min(0).optional(),
     isActive: z.boolean().optional(),
+    weightKg: z.number().min(0).nullable().optional(),
+    deliveryChargeInsideDhaka: z.number().min(0).optional(),
+    deliveryChargeSubDhaka: z.number().min(0).optional(),
+    deliveryChargeOutsideDhaka: z.number().min(0).optional(),
     items: z.array(itemSchema).min(1).optional(),
   })
   .refine(
@@ -44,12 +71,6 @@ const updateSchema = z
       d.sellingPrice === undefined ||
       d.priceFloor <= d.sellingPrice,
     { message: "Price floor cannot exceed selling price", path: ["priceFloor"] }
-  )
-  .refine(
-    (d) =>
-      d.items === undefined ||
-      new Set(d.items.map((i) => i.productId)).size === d.items.length,
-    { message: "Duplicate product in BOM — increase qty instead", path: ["items"] }
   );
 
 export async function PATCH(req: Request, { params }: Params) {
@@ -60,32 +81,26 @@ export async function PATCH(req: Request, { params }: Params) {
 
     const before = await prisma.package.findUnique({
       where: { id },
-      include: { items: true },
+      include: { items: { include: { options: true } } },
     });
     if (!before) {
       return NextResponse.json({ error: "Package not found" }, { status: 404 });
     }
     if (data.items) {
-      const productIds = data.items.map((i) => i.productId);
-      const found = await prisma.product.count({
-        where: { id: { in: productIds } },
-      });
-      if (found !== productIds.length) {
-        return NextResponse.json(
-          { error: "One or more BOM products do not exist" },
-          { status: 400 }
-        );
+      // Cycle + nesting + per-kind shape validation (CORRECTIONS Products §5).
+      const bomError = await validatePackageBomInput(prisma, id, data.items);
+      if (bomError) {
+        return NextResponse.json({ error: bomError }, { status: 400 });
       }
     }
 
     // BOM replace affects future orders only — past orders keep their
-    // unit_cost_snapshot (SPEC §6.2).
+    // unit_cost_snapshot (SPEC §6.2). NOTE: replacing lines re-issues
+    // package_items ids, so pending (not yet packed) orders whose choice
+    // selections point at old group ids fall back to the new defaults.
     const after = await prisma.$transaction(async (tx) => {
       if (data.items) {
-        await tx.packageItem.deleteMany({ where: { packageId: id } });
-        await tx.packageItem.createMany({
-          data: data.items.map((i) => ({ ...i, packageId: id })),
-        });
+        await writePackageItems(tx, id, data.items);
       }
       return tx.package.update({
         where: { id },
@@ -95,6 +110,10 @@ export async function PATCH(req: Request, { params }: Params) {
           sellingPrice: data.sellingPrice,
           priceFloor: data.priceFloor,
           isActive: data.isActive,
+          weightKg: data.weightKg === undefined ? undefined : data.weightKg,
+          deliveryChargeInsideDhaka: data.deliveryChargeInsideDhaka,
+          deliveryChargeSubDhaka: data.deliveryChargeSubDhaka,
+          deliveryChargeOutsideDhaka: data.deliveryChargeOutsideDhaka,
           updatedBy: session.user.id,
         },
         include: { items: true },
@@ -121,7 +140,10 @@ export async function DELETE(req: Request, { params }: Params) {
     const id = Number((await params).id);
     const pkg = await prisma.package.findUnique({
       where: { id },
-      include: { items: true, _count: { select: { orderItems: true } } },
+      include: {
+        items: true,
+        _count: { select: { orderItems: true, usedIn: true } },
+      },
     });
     if (!pkg) {
       return NextResponse.json({ error: "Package not found" }, { status: 404 });
@@ -135,7 +157,17 @@ export async function DELETE(req: Request, { params }: Params) {
         { status: 400 }
       );
     }
-    await prisma.package.delete({ where: { id } }); // items cascade
+    // CORRECTIONS Products §5 — a sub-package of a combo can't just vanish.
+    if (pkg._count.usedIn > 0) {
+      return NextResponse.json(
+        {
+          error:
+            "Package is a sub-package of another package — remove it from the combo first",
+        },
+        { status: 400 }
+      );
+    }
+    await prisma.package.delete({ where: { id } }); // items + options cascade
     await logAudit({
       userId: session.user.id,
       action: "package.delete",

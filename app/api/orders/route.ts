@@ -197,6 +197,8 @@ export async function POST(req: Request) {
               deliveryAddress: data.order.deliveryAddress,
               district: data.order.district,
               thana: data.order.thana,
+              deliveryZone: data.order
+                .deliveryZone as Prisma.OrderCreateInput["deliveryZone"],
               occasion: data.order.occasion,
               requestedDeliveryDate: data.order.requestedDeliveryDate
                 ? new Date(data.order.requestedDeliveryDate)
@@ -225,6 +227,9 @@ export async function POST(req: Request) {
               qty: l.qty,
               unitPrice: l.unitPrice,
               lineTotal: l.lineTotal,
+              choiceSelections: l.choiceSelections
+                ? (l.choiceSelections as unknown as Prisma.InputJsonValue)
+                : undefined,
             })),
           });
           if (adv.amount > 0) {

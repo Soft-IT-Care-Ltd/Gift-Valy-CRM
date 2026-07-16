@@ -217,19 +217,44 @@ model Category {
   @@map("categories")
 }
 
+// CORRECTIONS Products §1 — SELLABLE products go in the order form/catalog;
+// COMPONENT products (packing materials: cartons, safety boxes, gift wrap) have
+// no selling price, are never sold standalone, but ARE stocked, purchased,
+// damaged, and consumed by BOMs like any other product.
+enum ProductType {
+  SELLABLE
+  COMPONENT
+}
+
+// CORRECTIONS Products §3 — the recipient's delivery zone. Shared by the
+// per-product/package customer-facing delivery charges and (later, C5) the
+// courier cost rate table.
+enum DeliveryZone {
+  INSIDE_DHAKA
+  SUB_DHAKA
+  OUTSIDE_DHAKA
+}
+
 model Product {
-  id                Int      @id @default(autoincrement())
-  sku               String   @unique
+  id                Int         @id @default(autoincrement())
+  sku               String      @unique
   name              String
-  categoryId        Int      @map("category_id")
-  photoUrl          String?  @map("photo_url")
-  unit              String   @default("pcs") // pcs | box | set
-  avgCost           Decimal  @default(0) @map("avg_cost") @db.Decimal(12, 2) // weighted avg, recomputed on purchase (Phase 2)
-  sellingPrice      Decimal  @map("selling_price") @db.Decimal(12, 2)
-  priceFloor        Decimal  @default(0) @map("price_floor") @db.Decimal(12, 2)
-  lowStockThreshold Int      @default(0) @map("low_stock_threshold")
-  isStockTracked    Boolean  @default(true) @map("is_stock_tracked") // false = perishable/per-order (cake, flowers)
-  isActive          Boolean  @default(true) @map("is_active")
+  productType       ProductType @default(SELLABLE) @map("product_type")
+  categoryId        Int         @map("category_id")
+  photoUrl          String?     @map("photo_url")
+  unit              String      @default("pcs") // pcs | box | set
+  avgCost           Decimal     @default(0) @map("avg_cost") @db.Decimal(12, 2) // weighted avg, recomputed on purchase (Phase 2)
+  sellingPrice      Decimal     @map("selling_price") @db.Decimal(12, 2) // forced 0 for COMPONENT products
+  priceFloor        Decimal     @default(0) @map("price_floor") @db.Decimal(12, 2)
+  lowStockThreshold Int         @default(0) @map("low_stock_threshold")
+  isStockTracked    Boolean     @default(true) @map("is_stock_tracked") // false = perishable/per-order (cake, flowers)
+  isActive          Boolean     @default(true) @map("is_active")
+  // CORRECTIONS Products §3 — optional weight (kg) + optional customer-facing
+  // delivery charge per zone (all 0 = free delivery, the usual case).
+  weightKg                   Decimal? @map("weight_kg") @db.Decimal(8, 3)
+  deliveryChargeInsideDhaka  Decimal  @default(0) @map("delivery_charge_inside_dhaka") @db.Decimal(12, 2)
+  deliveryChargeSubDhaka     Decimal  @default(0) @map("delivery_charge_sub_dhaka") @db.Decimal(12, 2)
+  deliveryChargeOutsideDhaka Decimal  @default(0) @map("delivery_charge_outside_dhaka") @db.Decimal(12, 2)
   // Caches — pure sums over stock_movements, written in the SAME transaction
   // as the movement rows (SPEC §14 integrity rule 2). stock_qty = physical
   // on-hand; reserved_qty = held by CONFIRMED orders; available = qty − reserved.
@@ -240,13 +265,36 @@ model Product {
   createdBy         Int?     @map("created_by")
   updatedBy         Int?     @map("updated_by")
 
-  category       Category        @relation(fields: [categoryId], references: [id])
+  category       Category            @relation(fields: [categoryId], references: [id])
   packageItems   PackageItem[]
+  choiceOptions  PackageItemOption[]
   orderItems     OrderItem[]
   stockMovements StockMovement[]
   purchaseItems  PurchaseItem[]
+  // CORRECTIONS Products §2 — this product's own packing materials…
+  components     ProductComponent[]  @relation("ProductComponents")
+  // …and the reverse: which products consume THIS one as a component.
+  componentOf    ProductComponent[]  @relation("ComponentUsage")
 
   @@map("products")
+}
+
+// CORRECTIONS Products §2 — product-level packing materials: a SELLABLE product
+// consumes qty × component per unit sold (standalone or inside any package).
+// Only SELLABLE products may own components and only COMPONENT products may BE
+// components (enforced in the API) — that keeps this one level deep by
+// construction, so the BOM explosion can never cycle through products.
+model ProductComponent {
+  id          Int @id @default(autoincrement())
+  productId   Int @map("product_id")
+  componentId Int @map("component_id")
+  qty         Int
+
+  product   Product @relation("ProductComponents", fields: [productId], references: [id], onDelete: Cascade)
+  component Product @relation("ComponentUsage", fields: [componentId], references: [id])
+
+  @@unique([productId, componentId])
+  @@map("product_components")
 }
 
 // ============ STOCK MOVEMENTS (SPEC §6.3 / §14) ============
@@ -382,30 +430,70 @@ model Package {
   sellingPrice Decimal  @map("selling_price") @db.Decimal(12, 2)
   priceFloor   Decimal  @default(0) @map("price_floor") @db.Decimal(12, 2)
   isActive     Boolean  @default(true) @map("is_active")
+  // CORRECTIONS Products §3 — weight auto-sums from the BOM explosion; a
+  // non-null value here is a manual override. Zone delivery charges as products.
+  weightKg                   Decimal? @map("weight_kg") @db.Decimal(8, 3)
+  deliveryChargeInsideDhaka  Decimal  @default(0) @map("delivery_charge_inside_dhaka") @db.Decimal(12, 2)
+  deliveryChargeSubDhaka     Decimal  @default(0) @map("delivery_charge_sub_dhaka") @db.Decimal(12, 2)
+  deliveryChargeOutsideDhaka Decimal  @default(0) @map("delivery_charge_outside_dhaka") @db.Decimal(12, 2)
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
   createdBy    Int?     @map("created_by")
   updatedBy    Int?     @map("updated_by")
 
-  items      PackageItem[]
+  items      PackageItem[] @relation("PackageBom")
+  usedIn     PackageItem[] @relation("SubPackageUsage")
   orderItems OrderItem[]
 
   @@map("packages")
 }
 
+// CORRECTIONS Products §5 — a BOM line is a product, a nested sub-package, or a
+// choice group ("pick 1 of: Red Teddy / Pink Teddy" × qty, options below).
+enum PackageItemKind {
+  PRODUCT
+  PACKAGE
+  CHOICE
+}
+
 // The BOM. Editing it affects future orders only — order_items freeze
 // unit_cost_snapshot at PACKED (SPEC §6.2 / integrity rule 4).
+// Exactly one of product_id / child_package_id / options is populated,
+// according to kind (validated in the API; lib/bom.ts explodes recursively
+// with cycle prevention and a nesting cap).
 model PackageItem {
-  id        Int @id @default(autoincrement())
-  packageId Int @map("package_id")
-  productId Int @map("product_id")
-  qty       Int
+  id             Int             @id @default(autoincrement())
+  packageId      Int             @map("package_id")
+  kind           PackageItemKind @default(PRODUCT)
+  productId      Int?            @map("product_id") // kind = PRODUCT
+  childPackageId Int?            @map("child_package_id") // kind = PACKAGE
+  choiceLabel    String?         @map("choice_label") // kind = CHOICE (e.g. "Teddy colour")
+  qty            Int
 
-  package Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id])
+  package      Package             @relation("PackageBom", fields: [packageId], references: [id], onDelete: Cascade)
+  product      Product?            @relation(fields: [productId], references: [id])
+  childPackage Package?            @relation("SubPackageUsage", fields: [childPackageId], references: [id])
+  options      PackageItemOption[]
 
   @@unique([packageId, productId])
+  @@unique([packageId, childPackageId])
   @@map("package_items")
+}
+
+// CORRECTIONS Products §5 — the variants of one CHOICE line. Exactly one option
+// per group is flagged default (used for catalog cost/availability estimates);
+// the SE's actual pick is stored on the order item (order_items.choice_selections).
+model PackageItemOption {
+  id            Int     @id @default(autoincrement())
+  packageItemId Int     @map("package_item_id")
+  productId     Int     @map("product_id")
+  isDefault     Boolean @default(false) @map("is_default")
+
+  item    PackageItem @relation(fields: [packageItemId], references: [id], onDelete: Cascade)
+  product Product     @relation(fields: [productId], references: [id])
+
+  @@unique([packageItemId, productId])
+  @@map("package_item_options")
 }
 
 // ============ CUSTOMERS & ORDERS (SPEC §4 / §14) ============
@@ -485,6 +573,10 @@ model Order {
   deliveryAddress       String      @map("delivery_address")
   district              String
   thana                 String
+  // CORRECTIONS Products §3 — recipient zone; drives the delivery-charge
+  // auto-fill from item zone charges on the order form. Nullable: legacy
+  // orders and free-delivery entries have no zone.
+  deliveryZone          DeliveryZone? @map("delivery_zone")
   occasion              String?
   requestedDeliveryDate DateTime?   @map("requested_delivery_date") @db.Date
   subtotal              Decimal     @db.Decimal(12, 2)
@@ -511,9 +603,10 @@ model Order {
   items          OrderItem[]
   payments       Payment[]
   statusHistory  OrderStatusHistory[]
-  editRequests   OrderEditRequest[]
-  invoices       Invoice[]
-  shipment       Shipment?
+  editRequests     OrderEditRequest[]
+  invoices         Invoice[]
+  shipment         Shipment?
+  whatsappMessages WhatsAppMessage[]
 
   // List queries filter by scope/status/window and sort by created_at desc —
   // composite indexes keep them fast as data accumulates (SPEC-scale: years).
@@ -536,6 +629,11 @@ model OrderItem {
   unitPrice        Decimal       @map("unit_price") @db.Decimal(12, 2)
   unitCostSnapshot Decimal?      @map("unit_cost_snapshot") @db.Decimal(12, 2) // frozen at PACKED (integrity rule 4, Phase 2)
   lineTotal        Decimal       @map("line_total") @db.Decimal(12, 2)
+  // CORRECTIONS Products §5 — the SE's picks for the package's choice groups:
+  // [{ groupId, label, productId, name }] snapshotted at order time (groupId =
+  // package_items.id of the CHOICE line, unique across the whole nested tree).
+  // Stock reserve/deduct and cost snapshots follow the chosen variant.
+  choiceSelections Json?         @map("choice_selections")
 
   order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product Product? @relation(fields: [productId], references: [id])
@@ -661,10 +759,88 @@ model Invoice {
   generatedAt DateTime @default(now()) @map("generated_at")
   generatedBy Int?     @map("generated_by")
 
-  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order            Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  whatsappMessages WhatsAppMessage[]
 
   @@unique([orderId, version])
   @@map("invoices")
+}
+
+// ============ WHATSAPP INVOICE SEND (SPEC §5 / §16 Phase 4) ============
+
+// Singleton row (id=1 by convention) holding the Meta WhatsApp Cloud API
+// connection. The access token is encrypted at rest (lib/crypto, same scheme
+// as courier_integrations); phone_number_id is not a secret. auto_send_invoice
+// controls whether a freshly generated invoice is pushed to the customer's
+// WhatsApp automatically (order confirm / approved edit).
+model WhatsAppIntegration {
+  id                   Int       @id @default(autoincrement())
+  phoneNumberId        String?   @map("phone_number_id")
+  accessTokenEncrypted String?   @map("access_token_encrypted")
+  isEnabled            Boolean   @default(false) @map("is_enabled")
+  autoSendInvoice      Boolean   @default(true) @map("auto_send_invoice")
+  connectedAt          DateTime? @map("connected_at")
+  lastSentAt           DateTime? @map("last_sent_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  @@map("whatsapp_integrations")
+}
+
+enum WhatsAppTrigger {
+  AUTO_CONFIRM // invoice generated when the order was confirmed
+  AUTO_EDIT // invoice regenerated after an approved edit
+  MANUAL // user pressed "Send via WhatsApp" on the order page
+}
+
+enum WhatsAppSendStatus {
+  SENT
+  FAILED
+}
+
+// One row per send attempt (successful or not) — the order page shows the
+// latest, the settings page shows a recent log. invoice_id goes null if that
+// invoice version's row is ever removed; the order link is the durable one.
+model WhatsAppMessage {
+  id          Int                @id @default(autoincrement())
+  orderId     Int                @map("order_id")
+  invoiceId   Int?               @map("invoice_id")
+  toPhone     String             @map("to_phone")
+  trigger     WhatsAppTrigger
+  status      WhatsAppSendStatus
+  waMessageId String?            @map("wa_message_id") // Graph API message id on success
+  error       String?
+  sentBy      Int?               @map("sent_by") // null = automatic send
+  createdAt   DateTime           @default(now()) @map("created_at")
+
+  order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  invoice Invoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+
+  @@index([orderId, createdAt])
+  @@index([createdAt])
+  @@map("whatsapp_messages")
+}
+
+// ============ CURRENCY RATES (SPEC §5 — customer-currency display) ============
+
+// Admin-maintained conversion table for the OPTIONAL customer-currency display
+// on invoices (SPEC §5). bdt_per_unit = ৳ per 1 unit of the currency; countries
+// lists customer countries (matched case-insensitively against
+// customers.country) that price in this currency. Display-only — every stored
+// amount stays BDT; the invoice prints an "approx." line at the current rate.
+model CurrencyRate {
+  id         Int      @id @default(autoincrement())
+  code       String   @unique // ISO 4217 (SAR, AED, USD…)
+  name       String
+  symbol     String? // optional display symbol (﷼, د.إ, $…) — code is used when absent
+  bdtPerUnit Decimal  @map("bdt_per_unit") @db.Decimal(12, 4)
+  countries  String[] @default([])
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+  updatedBy  Int?     @map("updated_by")
+
+  @@map("currency_rates")
 }
 
 // ============ COURIER & DELIVERY (SPEC §7 / §14) ============

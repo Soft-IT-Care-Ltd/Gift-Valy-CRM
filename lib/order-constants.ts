@@ -124,6 +124,22 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethodValue, string> = {
 // Transaction ID is mandatory for mobile-financial-service methods (§4.1 D / §8).
 export const MFS_METHODS: PaymentMethodValue[] = ["BKASH", "NAGAD", "ROCKET"];
 
+// CORRECTIONS Products §3 — the recipient's delivery zone. Order-form selector;
+// item zone charges auto-fill the order's delivery charge from the match.
+export const DELIVERY_ZONES = [
+  "INSIDE_DHAKA",
+  "SUB_DHAKA",
+  "OUTSIDE_DHAKA",
+] as const;
+
+export type DeliveryZoneValue = (typeof DELIVERY_ZONES)[number];
+
+export const DELIVERY_ZONE_LABELS: Record<DeliveryZoneValue, string> = {
+  INSIDE_DHAKA: "Inside Dhaka",
+  SUB_DHAKA: "Sub Dhaka",
+  OUTSIDE_DHAKA: "Outside Dhaka",
+};
+
 export const RECIPIENT_RELATIONS = [
   "Wife",
   "Husband",
