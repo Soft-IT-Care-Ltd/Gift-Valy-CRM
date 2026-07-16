@@ -127,6 +127,13 @@ interface BomLineState {
   options: OptionState[]; // kind=CHOICE
 }
 
+// Package-level packing materials (big carton, wrap…) — edited in their own
+// section like the product form, but stored as ordinary PRODUCT BOM lines.
+interface MaterialLineState {
+  productId: string; // "" = not picked yet
+  qty: string;
+}
+
 export function PackagesClient({
   packages,
   products,
@@ -153,8 +160,15 @@ export function PackagesClient({
   const [chargeSub, setChargeSub] = useState("0");
   const [chargeOutside, setChargeOutside] = useState("0");
   const [lines, setLines] = useState<BomLineState[]>([]);
+  const [materialLines, setMaterialLines] = useState<MaterialLineState[]>([]);
 
   const productById = new Map(products.map((p) => [p.id, p]));
+  // Main BOM picker shows sellable products only; packing materials get their
+  // own section below (mirrors the product form) so the list stays clean.
+  const sellableProducts = products.filter((p) => p.productType === "SELLABLE");
+  const componentProducts = products.filter(
+    (p) => p.productType === "COMPONENT"
+  );
 
   const emptyLine = (kind: LineKind = "PRODUCT"): BomLineState => ({
     kind,
@@ -177,6 +191,7 @@ export function PackagesClient({
     setChargeSub("0");
     setChargeOutside("0");
     setLines([emptyLine()]);
+    setMaterialLines([]);
     setDialogOpen(true);
   }
 
@@ -191,18 +206,31 @@ export function PackagesClient({
     setChargeInside(String(pkg.deliveryChargeInsideDhaka));
     setChargeSub(String(pkg.deliveryChargeSubDhaka));
     setChargeOutside(String(pkg.deliveryChargeOutsideDhaka));
+    // Component-only PRODUCT lines are edited in the packing-materials
+    // section; everything else stays in the main BOM list.
+    const isMaterial = (it: PackageItemRow) =>
+      it.kind === "PRODUCT" &&
+      it.productId != null &&
+      productById.get(it.productId)?.productType === "COMPONENT";
     setLines(
-      pkg.items.map((it) => ({
-        kind: it.kind,
-        productId: it.productId ? String(it.productId) : "",
-        childPackageId: it.childPackageId ? String(it.childPackageId) : "",
-        choiceLabel: it.choiceLabel ?? "",
-        qty: String(it.qty),
-        options: it.options.map((o) => ({
-          productId: String(o.productId),
-          isDefault: o.isDefault,
-        })),
-      }))
+      pkg.items
+        .filter((it) => !isMaterial(it))
+        .map((it) => ({
+          kind: it.kind,
+          productId: it.productId ? String(it.productId) : "",
+          childPackageId: it.childPackageId ? String(it.childPackageId) : "",
+          choiceLabel: it.choiceLabel ?? "",
+          qty: String(it.qty),
+          options: it.options.map((o) => ({
+            productId: String(o.productId),
+            isDefault: o.isDefault,
+          })),
+        }))
+    );
+    setMaterialLines(
+      pkg.items
+        .filter(isMaterial)
+        .map((it) => ({ productId: String(it.productId), qty: String(it.qty) }))
     );
     setDialogOpen(true);
   }
@@ -225,31 +253,44 @@ export function PackagesClient({
     );
   }
 
-  const allComplete = lines.length > 0 && lines.every(lineComplete);
+  const materialsComplete = materialLines.every(
+    (l) => l.productId !== "" && Number(l.qty) >= 1
+  );
+  const allComplete =
+    lines.length > 0 && lines.every(lineComplete) && materialsComplete;
 
   // Live cost preview (cost-visible roles): product lines from avg cost,
   // sub-package lines from the server-computed package cost, choice groups
-  // from their default option. Product-level packing materials are added
-  // server-side — the saved cost can be slightly higher.
+  // from their default option, plus the package-level packing materials.
+  // Each product's OWN packing materials are added server-side — the saved
+  // cost can be slightly higher.
   const packageCostById = new Map(
     packages.filter((p) => p.cost != null).map((p) => [p.id, p.cost!])
   );
-  const previewCost = lines.reduce((sum, l) => {
-    const qty = Number(l.qty) || 0;
-    if (l.kind === "PRODUCT" && l.productId) {
-      return sum + qty * (productById.get(Number(l.productId))?.avgCost ?? 0);
-    }
-    if (l.kind === "PACKAGE" && l.childPackageId) {
-      return sum + qty * (packageCostById.get(Number(l.childPackageId)) ?? 0);
-    }
-    if (l.kind === "CHOICE") {
-      const def = l.options.find((o) => o.isDefault) ?? l.options[0];
-      if (def?.productId) {
-        return sum + qty * (productById.get(Number(def.productId))?.avgCost ?? 0);
+  const previewCost =
+    lines.reduce((sum, l) => {
+      const qty = Number(l.qty) || 0;
+      if (l.kind === "PRODUCT" && l.productId) {
+        return sum + qty * (productById.get(Number(l.productId))?.avgCost ?? 0);
       }
-    }
-    return sum;
-  }, 0);
+      if (l.kind === "PACKAGE" && l.childPackageId) {
+        return sum + qty * (packageCostById.get(Number(l.childPackageId)) ?? 0);
+      }
+      if (l.kind === "CHOICE") {
+        const def = l.options.find((o) => o.isDefault) ?? l.options[0];
+        if (def?.productId) {
+          return sum + qty * (productById.get(Number(def.productId))?.avgCost ?? 0);
+        }
+      }
+      return sum;
+    }, 0) +
+    materialLines.reduce(
+      (sum, l) =>
+        sum +
+        (Number(l.qty) || 0) *
+          (productById.get(Number(l.productId))?.avgCost ?? 0),
+      0
+    );
 
   async function save() {
     setSaving(true);
@@ -263,20 +304,31 @@ export function PackagesClient({
       deliveryChargeInsideDhaka: Number(chargeInside) || 0,
       deliveryChargeSubDhaka: Number(chargeSub) || 0,
       deliveryChargeOutsideDhaka: Number(chargeOutside) || 0,
-      items: lines.map((l) => ({
-        kind: l.kind,
-        productId: l.kind === "PRODUCT" ? Number(l.productId) : null,
-        childPackageId: l.kind === "PACKAGE" ? Number(l.childPackageId) : null,
-        choiceLabel: l.kind === "CHOICE" ? l.choiceLabel.trim() : null,
-        qty: Number(l.qty),
-        options:
-          l.kind === "CHOICE"
-            ? l.options.map((o) => ({
-                productId: Number(o.productId),
-                isDefault: o.isDefault,
-              }))
-            : [],
-      })),
+      items: [
+        ...lines.map((l) => ({
+          kind: l.kind,
+          productId: l.kind === "PRODUCT" ? Number(l.productId) : null,
+          childPackageId: l.kind === "PACKAGE" ? Number(l.childPackageId) : null,
+          choiceLabel: l.kind === "CHOICE" ? l.choiceLabel.trim() : null,
+          qty: Number(l.qty),
+          options:
+            l.kind === "CHOICE"
+              ? l.options.map((o) => ({
+                  productId: Number(o.productId),
+                  isDefault: o.isDefault,
+                }))
+              : [],
+        })),
+        // Packing materials are plain PRODUCT lines under the hood.
+        ...materialLines.map((l) => ({
+          kind: "PRODUCT" as const,
+          productId: Number(l.productId),
+          childPackageId: null,
+          choiceLabel: null,
+          qty: Number(l.qty),
+          options: [],
+        })),
+      ],
     };
     const res = await fetch(
       editing ? `/api/packages/${editing.id}` : "/api/packages",
@@ -531,10 +583,9 @@ export function PackagesClient({
                             <SelectValue placeholder="Pick a product" />
                           </SelectTrigger>
                           <SelectContent>
-                            {products.map((p) => (
+                            {sellableProducts.map((p) => (
                               <SelectItem key={p.id} value={String(p.id)}>
                                 {p.name} ({p.sku})
-                                {p.productType === "COMPONENT" ? " [component]" : ""}
                                 {p.isStockTracked
                                   ? ` — stock ${p.stockQty}`
                                   : " — per-order"}
@@ -689,11 +740,89 @@ export function PackagesClient({
               >
                 + Add line
               </Button>
-              <p className="text-xs text-muted-foreground">
-                List products and package-level materials only — each
-                product’s own packing materials are added automatically (see
-                the explosion below), so don’t re-list them.
-              </p>
+            </div>
+
+            <div className="grid gap-2 rounded-md border p-3">
+              <div>
+                <Label>Packing materials (package-level)</Label>
+                <p className="text-xs text-muted-foreground">
+                  Component-only items packed with THIS package — e.g. the big
+                  shipping carton. Each product’s own packing materials are
+                  added automatically (see the explosion below), so don’t
+                  re-list them here.
+                </p>
+              </div>
+              {materialLines.map((line, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <div className="flex-1">
+                    <Select
+                      value={line.productId}
+                      onValueChange={(v) =>
+                        setMaterialLines((prev) =>
+                          prev.map((l, i) =>
+                            i === idx ? { ...l, productId: v } : l
+                          )
+                        )
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Pick a packing material" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {componentProducts.map((p) => (
+                          <SelectItem key={p.id} value={String(p.id)}>
+                            {p.name} ({p.sku}) — stock {p.stockQty}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Input
+                    className="w-20"
+                    type="number"
+                    min="1"
+                    value={line.qty}
+                    onChange={(e) =>
+                      setMaterialLines((prev) =>
+                        prev.map((l, i) =>
+                          i === idx ? { ...l, qty: e.target.value } : l
+                        )
+                      )
+                    }
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      setMaterialLines((prev) =>
+                        prev.filter((_, i) => i !== idx)
+                      )
+                    }
+                  >
+                    ✕
+                  </Button>
+                </div>
+              ))}
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-fit"
+                onClick={() =>
+                  setMaterialLines((prev) => [
+                    ...prev,
+                    { productId: "", qty: "1" },
+                  ])
+                }
+                disabled={componentProducts.length === 0}
+              >
+                + Add packing material
+              </Button>
+              {componentProducts.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  Create a Component-only product first (e.g. “Big Shipping
+                  Carton”).
+                </p>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
