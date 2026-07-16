@@ -367,7 +367,12 @@ export function PackagesClient({
                   </span>
                 </TableCell>
                 <TableCell className="max-w-xs text-sm text-muted-foreground">
-                  {contentsLabel(pkg)}
+                  {/* TableCell is whitespace-nowrap — clip long BOMs behind an
+                      ellipsis (full contents on hover) so they never paint
+                      over the numeric columns. */}
+                  <div className="truncate" title={contentsLabel(pkg)}>
+                    {contentsLabel(pkg)}
+                  </div>
                 </TableCell>
                 <TableCell className="text-right">
                   {money(pkg.sellingPrice)}
