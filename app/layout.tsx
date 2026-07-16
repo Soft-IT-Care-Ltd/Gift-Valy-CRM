@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import {
   Inter,
   Space_Grotesk,
@@ -10,6 +10,7 @@ import "./globals.css";
 import { cn } from "@/lib/utils";
 import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/theme-provider";
+import { PwaRegister } from "@/components/pwa-register";
 
 // Body / UI
 const inter = Inter({
@@ -53,6 +54,24 @@ const caveat = Caveat({
 export const metadata: Metadata = {
   title: "Gift Valy — Business Management",
   description: "ERP/CRM for Gift Valy",
+  // PWA (SPEC §16 Phase 4): installable on Android (manifest.ts) and iOS
+  // (apple-touch-icon + web-app meta below).
+  applicationName: "Gift Valy",
+  appleWebApp: {
+    capable: true,
+    title: "Gift Valy",
+    statusBarStyle: "default",
+  },
+  icons: {
+    apple: "/icons/apple-touch-icon.png",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#fafafa" },
+    { media: "(prefers-color-scheme: dark)", color: "#0a0a0b" },
+  ],
 };
 
 export default function RootLayout({
@@ -82,6 +101,7 @@ export default function RootLayout({
         >
           {children}
           <Toaster richColors position="top-center" />
+          <PwaRegister />
         </ThemeProvider>
       </body>
     </html>

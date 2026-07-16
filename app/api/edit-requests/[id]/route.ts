@@ -104,7 +104,8 @@ export async function POST(req: Request, { params }: Params) {
       where: { orderId: request.orderId },
       select: { id: true },
     });
-    if (hasInvoice) await generateInvoiceSafe(request.orderId, session.user.id);
+    if (hasInvoice)
+      await generateInvoiceSafe(request.orderId, session.user.id, "AUTO_EDIT");
     return NextResponse.json({ ok: true });
   } catch (e) {
     return apiError(e);

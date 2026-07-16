@@ -7,7 +7,12 @@ import { getEffectivePermissions } from "@/lib/rbac";
 import { ROLE_LABELS, type RoleName } from "@/lib/permissions";
 import { Badge } from "@/components/ui/badge";
 import { SignOutButton } from "@/components/sign-out-button";
-import { SidebarNav, type NavItem } from "@/components/sidebar-nav";
+import {
+  SidebarNav,
+  type NavGroup,
+  type NavIconName,
+  type NavLeaf,
+} from "@/components/sidebar-nav";
 
 export default async function DashboardLayout({
   children,
@@ -28,206 +33,195 @@ export default async function DashboardLayout({
 
   const permissions = await getEffectivePermissions(user.id);
 
-  const navItems: NavItem[] = [{ href: "/", label: "Dashboard" }];
+  // Sidebar is built as main menus with submenus; a group is only shown when
+  // the role has at least one item in it, and single-item groups render as a
+  // plain top-level link inside SidebarNav.
+  const navGroups: NavGroup[] = [];
+  const addGroup = (label: string, icon: NavIconName, items: NavLeaf[]) => {
+    if (items.length) navGroups.push({ label, icon, items });
+  };
+
+  addGroup("Dashboard", "dashboard", [{ href: "/", label: "Dashboard" }]);
+
   // Leads (SPEC §3). Any lead-viewing role gets the Leads workspace.
+  const leadItems: NavLeaf[] = [];
   if (permissions.includes("leads.view_own")) {
-    navItems.push({ href: "/leads", label: "Leads", section: "Leads" });
+    leadItems.push({ href: "/leads", label: "Leads" });
   }
+  addGroup("Leads", "leads", leadItems);
+
+  const salesItems: NavLeaf[] = [];
   if (permissions.includes("orders.view_own")) {
-    navItems.push({ href: "/orders", label: "Orders", section: "Sales" });
+    salesItems.push({ href: "/orders", label: "Orders" });
   }
   if (permissions.includes("orders.create")) {
-    navItems.push({ href: "/orders/new", label: "New Order", section: "Sales" });
+    salesItems.push({ href: "/orders/new", label: "New Order" });
   }
   if (permissions.includes("orders.approve_edit")) {
-    navItems.push({
-      href: "/orders/edit-requests",
-      label: "Edit Requests",
-      section: "Sales",
-    });
+    salesItems.push({ href: "/orders/edit-requests", label: "Edit Requests" });
   }
+  addGroup("Sales", "sales", salesItems);
+
+  const catalogItems: NavLeaf[] = [];
   if (permissions.includes("catalog.view")) {
-    navItems.push(
-      { href: "/catalog/products", label: "Products", section: "Catalog" },
-      { href: "/catalog/packages", label: "Packages", section: "Catalog" }
+    catalogItems.push(
+      { href: "/catalog/products", label: "Products" },
+      { href: "/catalog/packages", label: "Packages" }
     );
   }
   if (permissions.includes("catalog.manage")) {
-    navItems.push({
-      href: "/catalog/categories",
-      label: "Categories",
-      section: "Catalog",
-    });
+    catalogItems.push({ href: "/catalog/categories", label: "Categories" });
   }
+  addGroup("Catalog", "catalog", catalogItems);
+
   // Inventory (SPEC §6.3). Packing sees only its queue; stock/purchases are
   // gated on their own permissions so each role gets exactly its tools.
+  const inventoryItems: NavLeaf[] = [];
   if (permissions.includes("orders.pack")) {
-    navItems.push({ href: "/packing", label: "Packing Queue", section: "Inventory" });
+    inventoryItems.push({ href: "/packing", label: "Packing Queue" });
   }
   if (permissions.includes("stock.view")) {
-    navItems.push({ href: "/stock", label: "Stock", section: "Inventory" });
+    inventoryItems.push({ href: "/stock", label: "Stock" });
   }
   if (permissions.includes("purchases.create")) {
-    navItems.push({ href: "/purchases", label: "Purchases", section: "Inventory" });
+    inventoryItems.push({ href: "/purchases", label: "Purchases" });
   }
+  addGroup("Inventory", "inventory", inventoryItems);
+
   // Courier & delivery (SPEC §7). courier.manage covers companies, handover,
   // shipment status and COD reconciliation; return approval is a step above.
+  const courierItems: NavLeaf[] = [];
   if (permissions.includes("courier.manage")) {
-    navItems.push(
-      { href: "/courier/companies", label: "Courier Companies", section: "Courier" },
-      { href: "/courier/shipments", label: "Shipments", section: "Courier" },
-      { href: "/courier/cod", label: "COD Reconciliation", section: "Courier" }
+    courierItems.push(
+      { href: "/courier/companies", label: "Courier Companies" },
+      { href: "/courier/shipments", label: "Shipments" },
+      { href: "/courier/cod", label: "COD Reconciliation" }
     );
   }
   if (permissions.includes("courier.approve_return")) {
-    navItems.push({ href: "/courier/returns", label: "Returns", section: "Courier" });
+    courierItems.push({ href: "/courier/returns", label: "Returns" });
   }
+  addGroup("Courier", "courier", courierItems);
+
   // Money (SPEC §8 / §9.3). Wallet accounts are maintained by Admin/Accounts;
-  // the verification queue is where Accounts signs payments off.
+  // the verification queue is where Accounts signs payments off. Expenses
+  // (SPEC §9.1): daily entry + category management for Accounts/Admin/Manager.
+  const moneyItems: NavLeaf[] = [];
   if (permissions.includes("wallets.manage")) {
-    navItems.push({ href: "/money/wallets", label: "Wallets", section: "Money" });
+    moneyItems.push({ href: "/money/wallets", label: "Wallets" });
   }
   if (permissions.includes("payments.verify")) {
-    navItems.push({
-      href: "/money/verification",
-      label: "Payment Verification",
-      section: "Money",
-    });
+    moneyItems.push({ href: "/money/verification", label: "Payment Verification" });
   }
-  // Expenses (SPEC §9.1). Daily entry + category management for Accounts/Admin/Manager.
   if (permissions.includes("expenses.create")) {
-    navItems.push(
-      { href: "/money/expenses", label: "Expenses", section: "Money" },
-      {
-        href: "/money/expense-categories",
-        label: "Expense Categories",
-        section: "Money",
-      }
+    moneyItems.push(
+      { href: "/money/expenses", label: "Expenses" },
+      { href: "/money/expense-categories", label: "Expense Categories" }
     );
   }
+  addGroup("Money", "money", moneyItems);
+
+  const reportItems: NavLeaf[] = [];
   // R1/R11/R12 — order-based reports (SPEC §12), for any order-viewing role;
   // each page scopes rows via orderScopeWhere (SE own / TL team / all).
   if (permissions.includes("orders.view_own")) {
-    navItems.push(
-      { href: "/reports/sales", label: "Sales Report", section: "Reports" },
-      {
-        href: "/reports/cancelled",
-        label: "Cancelled / Returned",
-        section: "Reports",
-      },
-      { href: "/reports/customers", label: "Customer Report", section: "Reports" }
+    reportItems.push(
+      { href: "/reports/sales", label: "Sales Report" },
+      { href: "/reports/cancelled", label: "Cancelled / Returned" },
+      { href: "/reports/customers", label: "Customer Report" }
     );
   }
   // R3 — Team performance (SPEC §12), scope via reports.own/team/all.
   if (permissions.includes("reports.own")) {
-    navItems.push({
-      href: "/reports/team",
-      label: "Team Performance",
-      section: "Reports",
-    });
+    reportItems.push({ href: "/reports/team", label: "Team Performance" });
   }
   // R2 — Lead report (SPEC §3.2 / §12), for any lead-viewing role.
   if (permissions.includes("leads.view_own")) {
-    navItems.push({ href: "/leads/report", label: "Lead Report", section: "Reports" });
+    reportItems.push({ href: "/leads/report", label: "Lead Report" });
   }
-  // Reports (SPEC §12). R4/R5 are inventory reports gated on stock.view — the
-  // same read scope as the Stock screen (Admin, Manager, Accounts, Packing).
+  // R4/R5 are inventory reports gated on stock.view — the same read scope as
+  // the Stock screen (Admin, Manager, Accounts, Packing).
   if (permissions.includes("stock.view")) {
-    navItems.push(
-      { href: "/reports/stock", label: "Stock Report", section: "Reports" },
-      {
-        href: "/reports/packages",
-        label: "Package Availability",
-        section: "Reports",
-      }
+    reportItems.push(
+      { href: "/reports/stock", label: "Stock Report" },
+      { href: "/reports/packages", label: "Package Availability" }
     );
   }
   // R6 — Courier report (SPEC §7 / §12), for courier.manage roles.
   if (permissions.includes("courier.manage")) {
-    navItems.push({ href: "/reports/courier", label: "Courier Report", section: "Reports" });
+    reportItems.push({ href: "/reports/courier", label: "Courier Report" });
   }
   // R7 — Collection report (SPEC §8 / §12), for payments.verify roles.
   if (permissions.includes("payments.verify")) {
-    navItems.push({
-      href: "/reports/collection",
-      label: "Collection Report",
-      section: "Reports",
-    });
+    reportItems.push({ href: "/reports/collection", label: "Collection Report" });
   }
   // R8 — Expense report (SPEC §9.1 / §12), for expenses.create roles.
   if (permissions.includes("expenses.create")) {
-    navItems.push({
-      href: "/reports/expenses",
-      label: "Expense Report",
-      section: "Reports",
-    });
+    reportItems.push({ href: "/reports/expenses", label: "Expense Report" });
   }
   // R10 — Attendance report (SPEC §11 / §12), for attendance.view_all roles.
   if (permissions.includes("attendance.view_all")) {
-    navItems.push({
-      href: "/attendance/report",
-      label: "Attendance Report",
-      section: "Reports",
-    });
+    reportItems.push({ href: "/attendance/report", label: "Attendance Report" });
   }
+  addGroup("Reports", "reports", reportItems);
+
   // R9 — P&L / costing (SPEC §9.2 / §9.3). Cost-visible roles only (reports.pnl:
   // Admin + Accounts by seed, Manager if granted) — never Sales/TL/Packing.
+  const pnlItems: NavLeaf[] = [];
   if (permissions.includes("reports.pnl")) {
-    navItems.push(
-      { href: "/reports/pnl/daily", label: "Daily Summary", section: "P&L" },
-      { href: "/reports/pnl/monthly", label: "Monthly P&L", section: "P&L" },
-      { href: "/reports/pnl/orders", label: "Per-order Profit", section: "P&L" }
+    pnlItems.push(
+      { href: "/reports/pnl/daily", label: "Daily Summary" },
+      { href: "/reports/pnl/monthly", label: "Monthly P&L" },
+      { href: "/reports/pnl/orders", label: "Per-order Profit" }
     );
   }
+  addGroup("P&L", "pnl", pnlItems);
+
   // Targets & Rewards (SPEC §10). The leaderboard is for everyone (motivation);
   // gauges and management are scoped inside the page/API by permission.
-  navItems.push({ href: "/targets", label: "Targets & Rewards", section: "Targets" });
+  const targetItems: NavLeaf[] = [{ href: "/targets", label: "Targets & Rewards" }];
   if (permissions.includes("targets.manage")) {
-    navItems.push({ href: "/targets/manage", label: "Manage Targets", section: "Targets" });
+    targetItems.push({ href: "/targets/manage", label: "Manage Targets" });
   }
+  addGroup("Targets", "targets", targetItems);
+
   // Attendance (SPEC §11). Everyone with attendance.own gets the self check-in
   // page; managers (attendance.view_all) also get the leave-approval view.
+  const attendanceItems: NavLeaf[] = [];
   if (permissions.includes("attendance.own")) {
-    navItems.push({ href: "/attendance", label: "My Attendance", section: "Attendance" });
+    attendanceItems.push({ href: "/attendance", label: "My Attendance" });
   }
   if (permissions.includes("attendance.view_all")) {
-    navItems.push({
-      href: "/attendance/manage",
-      label: "Attendance & Leave",
-      section: "Attendance",
-    });
+    attendanceItems.push({ href: "/attendance/manage", label: "Attendance & Leave" });
   }
+  addGroup("Attendance", "attendance", attendanceItems);
+
+  const adminItems: NavLeaf[] = [];
   if (permissions.includes("users.manage")) {
-    navItems.push(
-      { href: "/admin/users", label: "Users", section: "Admin" },
-      { href: "/admin/teams", label: "Teams", section: "Admin" },
-      { href: "/admin/roles", label: "Roles & Permissions", section: "Admin" }
+    adminItems.push(
+      { href: "/admin/users", label: "Users" },
+      { href: "/admin/teams", label: "Teams" },
+      { href: "/admin/roles", label: "Roles & Permissions" }
     );
   }
   if (permissions.includes("audit.view")) {
-    navItems.push({ href: "/admin/audit", label: "Audit Log", section: "Admin" });
+    adminItems.push({ href: "/admin/audit", label: "Audit Log" });
   }
+  addGroup("Admin", "admin", adminItems);
+
   // Settings (SPEC §11 attendance office hours; STEADFAST_INTEGRATION.md §1) —
   // admin-only (settings.manage).
+  const settingsItems: NavLeaf[] = [];
   if (permissions.includes("settings.manage")) {
-    navItems.push(
-      {
-        href: "/settings/pnl",
-        label: "P&L Settings",
-        section: "Admin",
-      },
-      {
-        href: "/settings/attendance",
-        label: "Attendance Settings",
-        section: "Admin",
-      },
-      {
-        href: "/settings/steadfast",
-        label: "Steadfast Integration",
-        section: "Admin",
-      }
+    settingsItems.push(
+      { href: "/settings/pnl", label: "P&L Settings" },
+      { href: "/settings/attendance", label: "Attendance Settings" },
+      { href: "/settings/steadfast", label: "Steadfast Integration" },
+      { href: "/settings/whatsapp", label: "WhatsApp Invoice" },
+      { href: "/settings/currencies", label: "Currency Rates" }
     );
   }
+  addGroup("Settings", "settings", settingsItems);
 
   const roleLabel = ROLE_LABELS[user.role.name as RoleName] ?? user.role.name;
 
@@ -245,7 +239,7 @@ export default async function DashboardLayout({
           />
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <SidebarNav items={navItems} />
+          <SidebarNav groups={navGroups} />
         </div>
         <div className="border-t px-4 py-3 text-center text-xs text-muted-foreground">
           Developed by{" "}

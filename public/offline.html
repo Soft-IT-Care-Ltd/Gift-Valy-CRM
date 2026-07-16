@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="bn">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Offline — Gift Valy</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: -apple-system, "Segoe UI", Roboto, "Hind Siliguri", sans-serif;
+        background: #fafafa;
+        color: #111827;
+      }
+      .card {
+        text-align: center;
+        padding: 2.5rem 1.5rem;
+        max-width: 22rem;
+      }
+      img { height: 40px; margin-bottom: 1.25rem; }
+      h1 { font-size: 1.2rem; margin: 0 0 0.5rem; }
+      p { font-size: 0.9rem; color: #6b7280; margin: 0 0 1.5rem; line-height: 1.5; }
+      button {
+        border: 0;
+        border-radius: 0.5rem;
+        background: #7c3aed;
+        color: #fff;
+        font-size: 0.9rem;
+        font-weight: 600;
+        padding: 0.65rem 1.5rem;
+        cursor: pointer;
+      }
+      button:active { opacity: 0.85; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #0a0a0b; color: #f4f4f5; }
+        p { color: #a1a1aa; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <img src="/gift-valy-logo.png" alt="Gift Valy" />
+      <h1>ইন্টারনেট সংযোগ নেই</h1>
+      <p>
+        You&rsquo;re offline. Check your connection and try again —
+        সংযোগ ফিরে এলে আবার চেষ্টা করুন।
+      </p>
+      <button onclick="location.reload()">Retry · আবার চেষ্টা করুন</button>
+    </div>
+  </body>
+</html>

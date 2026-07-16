@@ -3,8 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { DateFilter } from "@/components/ui/date-filter";
+import { detectPreset } from "@/lib/date-filter";
 import {
   Card,
   CardContent,
@@ -41,16 +41,11 @@ export function DailySummaryClient({
   const [fromDate, setFromDate] = useState(from);
   const [toDate, setToDate] = useState(to);
 
-  function applyRange() {
+  function applyRange(f: string, t: string) {
     const params = new URLSearchParams();
-    if (fromDate) params.set("from", fromDate);
-    if (toDate) params.set("to", toDate);
+    if (f) params.set("from", f);
+    if (t) params.set("to", t);
     router.push(`/reports/pnl/daily${params.toString() ? `?${params}` : ""}`);
-  }
-  function resetRange() {
-    setFromDate("");
-    setToDate("");
-    router.push("/reports/pnl/daily");
   }
 
   function exportCsv() {
@@ -140,28 +135,16 @@ export function DailySummaryClient({
       {/* Date range */}
       <Card>
         <CardContent className="flex flex-wrap items-end gap-3 pt-6">
-          <div className="grid gap-1">
-            <Label className="text-xs">From</Label>
-            <Input
-              type="date"
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-              className="w-40"
-            />
-          </div>
-          <div className="grid gap-1">
-            <Label className="text-xs">To</Label>
-            <Input
-              type="date"
-              value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-              className="w-40"
-            />
-          </div>
-          <Button onClick={applyRange}>Apply</Button>
-          <Button variant="outline" onClick={resetRange}>
-            This month
-          </Button>
+          <DateFilter
+            value={detectPreset(fromDate, toDate, "month")}
+            from={fromDate}
+            to={toDate}
+            onApply={(_preset, f, t) => {
+              setFromDate(f);
+              setToDate(t);
+              applyRange(f, t);
+            }}
+          />
           <span className="ml-auto self-center text-sm text-muted-foreground">
             Showing {rangeLabel}
           </span>

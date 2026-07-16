@@ -4,6 +4,8 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DateFilter } from "@/components/ui/date-filter";
+import { detectPreset } from "@/lib/date-filter";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -55,10 +57,10 @@ export function LeadReportClient({
   const [source, setSource] = useState(filters.source);
   const [campaign, setCampaign] = useState(filters.campaign);
 
-  function apply() {
+  function apply(f = from, t = to) {
     const p = new URLSearchParams();
-    if (from) p.set("from", from);
-    if (to) p.set("to", to);
+    if (f) p.set("from", f);
+    if (t) p.set("to", t);
     if (seId !== "ALL") p.set("seId", seId);
     if (source !== "ALL") p.set("source", source);
     if (campaign.trim()) p.set("campaign", campaign.trim());
@@ -164,14 +166,16 @@ export function LeadReportClient({
       {/* Filters */}
       <Card>
         <CardContent className="flex flex-wrap items-end gap-3 pt-6">
-          <div className="grid gap-1">
-            <Label className="text-xs">From</Label>
-            <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="w-40" />
-          </div>
-          <div className="grid gap-1">
-            <Label className="text-xs">To</Label>
-            <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="w-40" />
-          </div>
+          <DateFilter
+            value={detectPreset(from, to, "month")}
+            from={from}
+            to={to}
+            onApply={(_preset, f, t) => {
+              setFrom(f);
+              setTo(t);
+              apply(f, t);
+            }}
+          />
           {seOptions.length > 0 && (
             <div className="grid gap-1">
               <Label className="text-xs">SE</Label>
@@ -202,7 +206,7 @@ export function LeadReportClient({
             <Label className="text-xs">Campaign</Label>
             <Input value={campaign} onChange={(e) => setCampaign(e.target.value)} className="w-40" placeholder="exact" />
           </div>
-          <Button onClick={apply}>Apply</Button>
+          <Button onClick={() => apply()}>Apply</Button>
           <Button variant="outline" onClick={reset}>This month</Button>
           <span className="ml-auto self-center text-sm text-muted-foreground">
             Showing {rangeLabel}

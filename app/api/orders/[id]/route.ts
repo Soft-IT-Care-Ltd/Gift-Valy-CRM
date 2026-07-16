@@ -103,7 +103,7 @@ export async function PATCH(req: Request, { params }: Params) {
       where: { orderId: id },
       select: { id: true },
     });
-    if (hasInvoice) await generateInvoiceSafe(id, session.user.id);
+    if (hasInvoice) await generateInvoiceSafe(id, session.user.id, "AUTO_EDIT");
     return NextResponse.json({ ok: true });
   } catch (e) {
     return apiError(e);

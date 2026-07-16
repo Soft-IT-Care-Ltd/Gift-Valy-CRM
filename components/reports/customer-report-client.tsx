@@ -4,8 +4,8 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { DateFilter } from "@/components/ui/date-filter";
+import { detectPreset } from "@/lib/date-filter";
 import {
   Card,
   CardContent,
@@ -62,16 +62,11 @@ export function CustomerReportClient({
   const [from, setFrom] = useState(filters.from);
   const [to, setTo] = useState(filters.to);
 
-  function apply() {
+  function apply(f: string, t: string) {
     const p = new URLSearchParams();
-    if (from) p.set("from", from);
-    if (to) p.set("to", to);
+    if (f) p.set("from", f);
+    if (t) p.set("to", t);
     router.push(`/reports/customers${p.toString() ? `?${p}` : ""}`);
-  }
-  function reset() {
-    setFrom("");
-    setTo("");
-    router.push("/reports/customers");
   }
 
   const rangeLabel =
@@ -154,16 +149,17 @@ export function CustomerReportClient({
       {/* Filters */}
       <Card>
         <CardContent className="flex flex-wrap items-end gap-3 pt-6">
-          <div className="grid gap-1">
-            <Label className="text-xs">From</Label>
-            <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="w-40" />
-          </div>
-          <div className="grid gap-1">
-            <Label className="text-xs">To</Label>
-            <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="w-40" />
-          </div>
-          <Button onClick={apply}>Apply</Button>
-          <Button variant="outline" onClick={reset}>All time</Button>
+          <DateFilter
+            showAllTime
+            value={detectPreset(from, to, "all")}
+            from={from}
+            to={to}
+            onApply={(_preset, f, t) => {
+              setFrom(f);
+              setTo(t);
+              apply(f, t);
+            }}
+          />
           <span className="ml-auto self-center text-sm text-muted-foreground">
             Showing {rangeLabel}
           </span>

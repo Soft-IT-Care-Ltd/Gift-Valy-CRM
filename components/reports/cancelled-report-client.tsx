@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { DateFilter } from "@/components/ui/date-filter";
+import { detectPreset } from "@/lib/date-filter";
 import { Label } from "@/components/ui/label";
 import {
   Card,
@@ -56,10 +57,10 @@ export function CancelledReportClient({
   const [to, setTo] = useState(filters.to);
   const [seId, setSeId] = useState(filters.seId);
 
-  function apply() {
+  function apply(f = from, t = to) {
     const p = new URLSearchParams();
-    if (from) p.set("from", from);
-    if (to) p.set("to", to);
+    if (f) p.set("from", f);
+    if (t) p.set("to", t);
     if (seId !== "ALL") p.set("seId", seId);
     router.push(`/reports/cancelled${p.toString() ? `?${p}` : ""}`);
   }
@@ -169,14 +170,16 @@ export function CancelledReportClient({
       {/* Filters */}
       <Card>
         <CardContent className="flex flex-wrap items-end gap-3 pt-6">
-          <div className="grid gap-1">
-            <Label className="text-xs">From</Label>
-            <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="w-40" />
-          </div>
-          <div className="grid gap-1">
-            <Label className="text-xs">To</Label>
-            <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="w-40" />
-          </div>
+          <DateFilter
+            value={detectPreset(from, to, "month")}
+            from={from}
+            to={to}
+            onApply={(_preset, f, t) => {
+              setFrom(f);
+              setTo(t);
+              apply(f, t);
+            }}
+          />
           {seOptions.length > 0 && (
             <div className="grid gap-1">
               <Label className="text-xs">SE</Label>
@@ -191,7 +194,7 @@ export function CancelledReportClient({
               </Select>
             </div>
           )}
-          <Button onClick={apply}>Apply</Button>
+          <Button onClick={() => apply()}>Apply</Button>
           <Button variant="outline" onClick={reset}>This month</Button>
           <span className="ml-auto self-center text-sm text-muted-foreground">
             Showing {rangeLabel}

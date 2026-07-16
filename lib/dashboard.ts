@@ -77,10 +77,20 @@ export function resolveDashWindow(params: {
     from = hasFrom ? new Date(`${params.from}T00:00:00+06:00`) : todayStart;
     to = hasTo ? new Date(`${params.to}T23:59:59.999+06:00`) : endToday;
     if (from.getTime() > to.getTime()) [from, to] = [to, from];
+  } else if (range === "yesterday") {
+    from = new Date(todayStart.getTime() - DAY_MS);
+    to = new Date(todayStart.getTime() - 1);
   } else if (range === "week") {
-    from = new Date(todayStart.getTime() - 6 * DAY_MS); // rolling 7 days incl. today
+    // Calendar week starting Sunday in Dhaka (no DST, so day math in ms is
+    // safe) — matches the app-wide date filter's "This Week".
+    const dow = new Date(todayStart.getTime() + 6 * 3_600_000).getUTCDay();
+    from = new Date(todayStart.getTime() - dow * DAY_MS);
   } else if (range === "month") {
     from = dhakaMonthStart();
+  } else if (range === "lastmonth") {
+    const thisStart = dhakaMonthStart();
+    to = new Date(thisStart.getTime() - 1);
+    from = dhakaMonthStart(to);
   }
 
   const fromYmd = dhakaYmd(from);

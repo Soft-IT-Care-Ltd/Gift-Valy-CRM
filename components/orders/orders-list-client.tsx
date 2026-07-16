@@ -40,6 +40,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { DateFilter } from "@/components/ui/date-filter";
+import { detectPreset } from "@/lib/date-filter";
 import { money, formatDate } from "@/lib/format";
 import {
   ORDER_STATUS_LABELS,
@@ -317,54 +319,36 @@ export function OrdersListClient({
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <div className="grid gap-1">
-            <Label className="text-xs">Range</Label>
-            <div className="flex gap-1">
-              <Button
-                variant={
-                  !rangeAll && !hasExplicitDates && !q ? "default" : "outline"
-                }
-                size="sm"
-                onClick={() => {
-                  const next = new URLSearchParams(params.toString());
-                  ["range", "from", "to", "page"].forEach((k) => next.delete(k));
-                  router.push(`/orders?${next.toString()}`);
-                }}
-              >
-                This month
-              </Button>
-              <Button
-                variant={rangeAll && !q ? "default" : "outline"}
-                size="sm"
-                onClick={() => {
-                  const next = new URLSearchParams(params.toString());
-                  next.set("range", "all");
-                  ["from", "to", "page"].forEach((k) => next.delete(k));
-                  router.push(`/orders?${next.toString()}`);
-                }}
-              >
-                All time
-              </Button>
-            </div>
-          </div>
-          <div className="grid gap-1">
-            <Label className="text-xs">From</Label>
-            <Input
-              type="date"
-              className="w-40"
-              value={params.get("from") ?? ""}
-              onChange={(e) => setParam("from", e.target.value)}
-            />
-          </div>
-          <div className="grid gap-1">
-            <Label className="text-xs">To</Label>
-            <Input
-              type="date"
-              className="w-40"
-              value={params.get("to") ?? ""}
-              onChange={(e) => setParam("to", e.target.value)}
-            />
-          </div>
+          <DateFilter
+            showAllTime
+            value={
+              rangeAll
+                ? "all"
+                : detectPreset(
+                    params.get("from") ?? "",
+                    params.get("to") ?? "",
+                    "month" // list defaults to this month when no dates set
+                  )
+            }
+            from={params.get("from") ?? ""}
+            to={params.get("to") ?? ""}
+            onApply={(preset, from, to) => {
+              const next = new URLSearchParams(params.toString());
+              next.delete("page");
+              if (preset === "all") {
+                next.set("range", "all");
+                next.delete("from");
+                next.delete("to");
+              } else {
+                next.delete("range");
+                if (from) next.set("from", from);
+                else next.delete("from");
+                if (to) next.set("to", to);
+                else next.delete("to");
+              }
+              router.push(`/orders?${next.toString()}`);
+            }}
+          />
           {seOptions.length > 0 && (
             <div className="grid gap-1">
               <Label className="text-xs">Sales Executive</Label>

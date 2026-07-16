@@ -16,6 +16,8 @@ import {
   EDITABLE_STATUSES,
 } from "@/lib/order-constants";
 import { COURIER_STAGE_STATUSES } from "@/lib/courier-constants";
+import { getWhatsAppIntegration } from "@/lib/whatsapp";
+import { getCurrencyForCountry } from "@/lib/currency";
 import { OrderDetailClient } from "@/components/orders/order-detail-client";
 
 export const dynamic = "force-dynamic";
@@ -73,6 +75,13 @@ export default async function OrderDetailPage({
       !COURIER_STAGE_STATUSES.includes(to)
   );
 
+  // SPEC §5 / §16 Phase 4 — WhatsApp API availability for the send button, and
+  // the customer-currency rate for the pre-filled message's approx lines.
+  const [waIntegration, currency] = await Promise.all([
+    getWhatsAppIntegration(),
+    getCurrencyForCountry(order.customer.country),
+  ]);
+
   return (
     <OrderDetailClient
       order={serializeOrderDetail(order, canSeeCosts(permissions))}
@@ -84,6 +93,8 @@ export default async function OrderDetailPage({
       canApprove={permissions.includes("orders.approve_edit")}
       allowedTransitions={allowedTransitions}
       wallets={wallets}
+      waApiEnabled={!!waIntegration?.isEnabled}
+      currency={currency}
     />
   );
 }

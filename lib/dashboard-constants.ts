@@ -1,22 +1,34 @@
 // Owner Dashboard — client-safe constants (SPEC §13).
-// The date-range switch (Today / This week / This month / Custom) lives in a
-// client component, so its keys/labels must import zero server code.
+// The date-range filter (Today / Yesterday / This Week / This Month /
+// Last Month / Custom) lives in a client component, so its keys/labels must
+// import zero server code. Keys match the app-wide DateFilterPreset values.
 
-export const DASH_RANGES = ["today", "week", "month", "custom"] as const;
+export const DASH_RANGES = [
+  "today",
+  "yesterday",
+  "week",
+  "month",
+  "lastmonth",
+  "custom",
+] as const;
 export type DashRangeKey = (typeof DASH_RANGES)[number];
 
 export const DASH_RANGE_LABELS: Record<DashRangeKey, string> = {
   today: "Today",
-  week: "This week",
-  month: "This month",
+  yesterday: "Yesterday",
+  week: "This Week",
+  month: "This Month",
+  lastmonth: "Last Month",
   custom: "Custom",
 };
 
 // Possessive form used on the money tiles ("Today's sales" → "This week's sales").
 export const DASH_RANGE_POSSESSIVE: Record<DashRangeKey, string> = {
   today: "Today's",
+  yesterday: "Yesterday's",
   week: "This week's",
   month: "This month's",
+  lastmonth: "Last month's",
   custom: "Selected range",
 };
 

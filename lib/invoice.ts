@@ -6,6 +6,12 @@ import { Prisma, type Invoice } from "@prisma/client";
 import { prisma } from "./db";
 import { logAudit } from "./audit";
 import { PAYMENT_METHOD_LABELS } from "./order-constants";
+import { getCurrencyForCountry } from "./currency";
+import {
+  formatInCurrency,
+  rateLine,
+  type CurrencyDisplay,
+} from "./currency-constants";
 
 // ============ SPEC §5 — Invoice PDF generation & versioning ============
 // Auto-generated on order confirmation; regenerated (version N+1) when an
@@ -150,9 +156,12 @@ function drawItemThumb(doc: Doc, thumb: Buffer | undefined, x: number, y: number
   doc.roundedRect(x, y, THUMB, THUMB, 3).lineWidth(0.5).stroke(BORDER);
 }
 
+// currency (SPEC §5, optional): when the customer's country matches a row in
+// the Admin rate table, totals also show approximate customer-currency values.
 export async function renderInvoicePdf(
   order: InvoiceOrder,
-  version: number
+  version: number,
+  currency?: CurrencyDisplay | null
 ): Promise<Buffer> {
   const thumbs = await loadThumbnails(order);
   return new Promise((resolve, reject) => {
@@ -341,8 +350,9 @@ export async function renderInvoicePdf(
     // ---------- Totals (§5: discount, courier, grand total, advance, due) ----------
     const totalsW = 250;
     const totalsX = PAGE_W - MARGIN - totalsW;
-    // ~170pt tall block + footer must not straddle a page break.
-    if (y + 190 > BOTTOM) {
+    // ~170pt tall block (+~30pt of currency lines) + footer must not straddle
+    // a page break.
+    if (y + (currency ? 220 : 190) > BOTTOM) {
       doc.addPage();
       y = MARGIN;
     }
@@ -377,6 +387,18 @@ export async function renderInvoicePdf(
       }
     };
 
+    // "~ SAR 107.69" under a BDT amount — the customer-currency display (§5).
+    // "~" not "≈": U+2248 is outside Noto Sans Bengali's glyph set.
+    const approxRow = (bdt: number) => {
+      if (!currency) return;
+      doc.font("bn").fontSize(8).fillColor(MUTED);
+      doc.text(`~ ${formatInCurrency(bdt, currency)}`, totalsX, y - 2, {
+        width: totalsW,
+        align: "right",
+      });
+      y += doc.currentLineHeight() + 2;
+    };
+
     doc.fillColor(MUTED);
     row("Subtotal (সাবটোটাল)", bdt(Number(order.subtotal)), { color: MUTED });
     row("Discount (ডিসকাউন্ট)", `−${bdt(Number(order.discount))}`, { color: MUTED });
@@ -389,6 +411,7 @@ export async function renderInvoicePdf(
       bold: true,
       size: 11.5,
     });
+    approxRow(Number(order.totalAmount));
     row("Advance Paid (অগ্রিম)", `−${bdt(Number(order.advanceAmount))}`, {
       color: GREEN,
       sub: advance
@@ -407,6 +430,17 @@ export async function renderInvoicePdf(
       size: 11.5,
       color: Number(order.dueAmount) > 0 ? AMBER : GREEN,
     });
+    approxRow(Number(order.dueAmount));
+    if (currency) {
+      doc.font("bn").fontSize(7).fillColor(MUTED);
+      doc.text(
+        `${currency.code} amounts are approximate (${rateLine(currency)}) — payable amount is the ৳ figure.`,
+        totalsX,
+        y,
+        { width: totalsW, align: "right" }
+      );
+      y += doc.currentLineHeight() + 2;
+    }
 
     // ---------- Footer terms ----------
     y += 18;
@@ -453,6 +487,7 @@ export async function generateInvoice(
   userId?: number
 ): Promise<Invoice> {
   const order = await loadInvoiceOrder(orderId);
+  const currency = await getCurrencyForCountry(order.customer.country);
   for (let attempt = 0; ; attempt++) {
     const last = await prisma.invoice.findFirst({
       where: { orderId },
@@ -460,7 +495,7 @@ export async function generateInvoice(
       select: { version: true },
     });
     const version = (last?.version ?? 0) + 1;
-    const pdf = await renderInvoicePdf(order, version);
+    const pdf = await renderInvoicePdf(order, version, currency);
     const fileName = invoiceFileName(order.orderNo, version);
     await mkdir(INVOICE_DIR, { recursive: true });
     await writeFile(path.join(INVOICE_DIR, fileName), pdf);
@@ -494,12 +529,21 @@ export async function generateInvoice(
 
 // For hooks inside request handlers: the order/edit must succeed even if PDF
 // generation fails — the download route regenerates on demand as a fallback.
+// A successful generation then auto-sends the PDF to the customer's WhatsApp
+// when that integration is on (SPEC §5 / §16 Phase 4); trigger records whether
+// this was a fresh confirmation or an approved-edit regeneration.
 export async function generateInvoiceSafe(
   orderId: number,
-  userId?: number
+  userId?: number,
+  trigger: "AUTO_CONFIRM" | "AUTO_EDIT" = "AUTO_CONFIRM"
 ): Promise<Invoice | null> {
   try {
-    return await generateInvoice(orderId, userId);
+    const invoice = await generateInvoice(orderId, userId);
+    // Dynamic import: lib/whatsapp imports from this module, so a static
+    // import here would be a cycle.
+    const { autoSendInvoiceWhatsAppSafe } = await import("./whatsapp");
+    await autoSendInvoiceWhatsAppSafe(orderId, trigger);
+    return invoice;
   } catch (err) {
     console.error(`Invoice generation failed for order ${orderId}:`, err);
     return null;

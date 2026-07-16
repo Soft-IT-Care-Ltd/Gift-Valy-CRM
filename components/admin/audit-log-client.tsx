@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { DateFilter } from "@/components/ui/date-filter";
+import { detectPreset } from "@/lib/date-filter";
 import { Label } from "@/components/ui/label";
 import {
   Card,
@@ -70,13 +70,11 @@ export function AuditLogClient({
   filters: Filters;
 }) {
   const router = useRouter();
-  const [from, setFrom] = useState(filters.from);
-  const [to, setTo] = useState(filters.to);
 
   // Build a URL from the current filters, resetting to page 1 unless a page is
   // explicitly carried over.
   function navigate(next: Partial<Filters & { page: number }>) {
-    const merged = { ...filters, from, to, ...next };
+    const merged = { ...filters, ...next };
     const params = new URLSearchParams();
     if (merged.entity) params.set("entity", merged.entity);
     if (merged.action) params.set("action", merged.action);
@@ -88,8 +86,6 @@ export function AuditLogClient({
   }
 
   function reset() {
-    setFrom("");
-    setTo("");
     router.push("/admin/audit");
   }
 
@@ -181,25 +177,15 @@ export function AuditLogClient({
               </SelectContent>
             </Select>
           </div>
-          <div className="grid gap-1">
-            <Label className="text-xs">From</Label>
-            <Input
-              type="date"
-              value={from}
-              onChange={(e) => setFrom(e.target.value)}
-              className="w-40"
-            />
-          </div>
-          <div className="grid gap-1">
-            <Label className="text-xs">To</Label>
-            <Input
-              type="date"
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-              className="w-40"
-            />
-          </div>
-          <Button onClick={() => navigate({})}>Apply</Button>
+          <DateFilter
+            showAllTime
+            value={detectPreset(filters.from, filters.to, "all")}
+            from={filters.from}
+            to={filters.to}
+            onApply={(preset, from, to) =>
+              navigate(preset === "all" ? { from: "", to: "" } : { from, to })
+            }
+          />
           <Button variant="outline" onClick={reset}>
             Reset
           </Button>

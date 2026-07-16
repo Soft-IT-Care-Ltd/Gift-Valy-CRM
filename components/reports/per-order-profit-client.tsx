@@ -4,7 +4,8 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { DateFilter } from "@/components/ui/date-filter";
+import { detectPreset } from "@/lib/date-filter";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -57,10 +58,12 @@ export function PerOrderProfitClient({
   // Client-side status filter over the fetched rows. Default: real sales only.
   const [statusFilter, setStatusFilter] = useState("SALES");
 
-  function pushParams(next: { se?: string }) {
+  function pushParams(next: { se?: string; from?: string; to?: string }) {
     const params = new URLSearchParams();
-    if (fromDate) params.set("from", fromDate);
-    if (toDate) params.set("to", toDate);
+    const f = next.from ?? fromDate;
+    const t = next.to ?? toDate;
+    if (f) params.set("from", f);
+    if (t) params.set("to", t);
     const seVal = next.se ?? se;
     if (seVal) params.set("se", seVal);
     router.push(`/reports/pnl/orders${params.toString() ? `?${params}` : ""}`);
@@ -245,24 +248,16 @@ export function PerOrderProfitClient({
       {/* Filters */}
       <Card>
         <CardContent className="flex flex-wrap items-end gap-3 pt-6">
-          <div className="grid gap-1">
-            <Label className="text-xs">From</Label>
-            <Input
-              type="date"
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-              className="w-40"
-            />
-          </div>
-          <div className="grid gap-1">
-            <Label className="text-xs">To</Label>
-            <Input
-              type="date"
-              value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-              className="w-40"
-            />
-          </div>
+          <DateFilter
+            value={detectPreset(fromDate, toDate, "month")}
+            from={fromDate}
+            to={toDate}
+            onApply={(_preset, f, t) => {
+              setFromDate(f);
+              setToDate(t);
+              pushParams({ from: f, to: t });
+            }}
+          />
           <div className="grid gap-1">
             <Label className="text-xs">Sales executive</Label>
             <Select
@@ -282,9 +277,8 @@ export function PerOrderProfitClient({
               </SelectContent>
             </Select>
           </div>
-          <Button onClick={() => pushParams({})}>Apply</Button>
           <Button variant="outline" onClick={resetRange}>
-            This month
+            Reset
           </Button>
           <span className="ml-auto self-center text-sm text-muted-foreground">
             Showing {rangeLabel}

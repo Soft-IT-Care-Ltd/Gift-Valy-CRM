@@ -6,6 +6,8 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DateFilter } from "@/components/ui/date-filter";
+import type { DateFilterPreset } from "@/lib/date-filter";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -307,6 +309,12 @@ export function LeadsClient({
   const [fSource, setFSource] = useState("ALL");
   const [fSE, setFSE] = useState("ALL");
   const [q, setQ] = useState("");
+  // Lead-date range — leadDate is YYYY-MM-DD, so string compare is safe.
+  const [fRange, setFRange] = useState<{ preset: DateFilterPreset; from: string; to: string }>({
+    preset: "all",
+    from: "",
+    to: "",
+  });
 
   const filtered = useMemo(() => {
     const query = q.trim().toLowerCase();
@@ -315,6 +323,8 @@ export function LeadsClient({
       if (fStatus !== "ALL" && l.status !== fStatus) return false;
       if (fSource !== "ALL" && l.source !== fSource) return false;
       if (fSE !== "ALL" && String(l.assignedToId) !== fSE) return false;
+      if (fRange.from && l.leadDate < fRange.from) return false;
+      if (fRange.to && l.leadDate > fRange.to) return false;
       if (query) {
         const hay = `${l.customerName ?? ""} ${l.campaignName ?? ""}`.toLowerCase();
         const phoneHit = digits.length >= 3 && l.whatsappNumber.replace(/\D/g, "").includes(digits);
@@ -322,7 +332,7 @@ export function LeadsClient({
       }
       return true;
     });
-  }, [leads, fStatus, fSource, fSE, q]);
+  }, [leads, fStatus, fSource, fSE, fRange, q]);
 
   const showSEFilter = assignableUsers.length > 1 || canReassign;
 
@@ -485,6 +495,13 @@ export function LeadsClient({
               </Select>
             </div>
           )}
+          <DateFilter
+            showAllTime
+            value={fRange.preset}
+            from={fRange.from}
+            to={fRange.to}
+            onApply={(preset, from, to) => setFRange({ preset, from, to })}
+          />
         </CardContent>
       </Card>
 
