@@ -4,8 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "prisma generate && next build",
     "start": "next start",
+    "postinstall": "prisma generate",
     "lint": "eslint",
     "test:bom": "tsx --test tests/bom.test.ts",
     "verify:stock": "tsx scripts/verify-stock.ts",
