@@ -148,11 +148,24 @@ async function main() {
     s.orders === d.money.orders,
     `${s.orders} vs ${d.money.orders}`
   );
-  const deliveredStage = d.funnel.find((x) => x.key === "delivered")?.count ?? -1;
+  // Delivered is now keyed by DELIVERY date (shipment.delivered_at in range),
+  // independent of the funnel's created-in-range stage view. Recompute directly.
+  const delivRows = await prisma.order.findMany({
+    where: {
+      status: { in: ["DELIVERED", "COMPLETED"] },
+      shipment: { deliveredAt: { gte: month.from, lte: month.to } },
+      deletedAt: null,
+    },
+    select: { totalAmount: true },
+  });
+  const expDelivCount = delivRows.length;
+  const expDelivAmount =
+    Math.round(delivRows.reduce((sum, o) => sum + Number(o.totalAmount), 0) * 100) / 100;
   check(
-    "§3 delivered count matches the funnel's delivered stage",
-    s.delivered.count === deliveredStage,
-    `${s.delivered.count} vs ${deliveredStage}`
+    "§3 delivered counts orders by shipment.delivered_at in range",
+    s.delivered.count === expDelivCount &&
+      Math.abs(s.delivered.amount - expDelivAmount) < 0.01,
+    `snapshot ${s.delivered.count}/${s.delivered.amount} vs recompute ${expDelivCount}/${expDelivAmount}`
   );
   check(
     "§3 delivered {count, amount} both ≥ 0",

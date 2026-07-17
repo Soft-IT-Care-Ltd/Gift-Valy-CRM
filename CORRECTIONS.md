@@ -143,7 +143,7 @@ Verification pass for correction round 1. With seeded demo data:
 2. [FIXED] Add an **Orders** widget: total order count (quantity) for the selected range.
    → In-range order count excluding lost/draft statuses (`EXCLUDED_SALE_STATUSES`), matching the Money row's order count; links to `/orders`.
 3. [FIXED] Add a **Delivered** widget: delivered order **count + total amount (৳)** for the selected range.
-   → Orders created in range now at `DELIVERED`/`COMPLETED` (equals the funnel's delivered stage) with Σ `total_amount`; links to `/orders?status=DELIVERED`.
+   → Counts by **delivery date**: orders whose `shipment.delivered_at` falls in the range (scoped to `DELIVERED`/`COMPLETED`), with Σ `total_amount`; links to `/orders?status=DELIVERED`. Independent of the funnel, which keeps its created-in-range stage view.
 4. [FIXED] Add an **Advance Collection** widget: number of advance payments + total advance amount (৳) for the selected range (payment type = ADVANCE).
    → `payment.groupBy` on type `ADVANCE` (rejected payments and trashed-order payments excluded, same rule as the collection report).
 5. [FIXED] Add a **Total Collection** widget **with breakdown by payment source**. Breakdown lines: **Advance** (type ADVANCE/PARTIAL), **Courier COD** (type COD_COURIER), **Post-delivery bKash/MFS** (type POST_DELIVERY_MFS — this happens when the customer pays the due via bKash after the parcel is shipped and the courier COD is set to 0). Show each source's amount + the grand total. Sometimes only 2 sources have values, sometimes all 3 — always show whichever are non-zero (or all 3 with 0 values, whichever looks cleaner).

@@ -156,7 +156,7 @@ export interface TrendPoint {
 export interface DashboardSnapshot {
   leads: number; // §1 — detailed + bulk daily counts (matches leads.total)
   orders: number; // §2 — non-lost, non-draft orders created in range
-  delivered: { count: number; amount: number }; // §3 — DELIVERED/COMPLETED in range
+  delivered: { count: number; amount: number }; // §3 — delivered (shipment.delivered_at) in range
   advanceCollection: { count: number; amount: number }; // §4 — payments type ADVANCE
   // §5 — total collection split by source (each line = sum of payment types):
   //   advance = ADVANCE + PARTIAL · cod = COD_COURIER · postMfs = POST_DELIVERY_MFS
@@ -361,12 +361,15 @@ export async function buildOwnerDashboard(
     }),
     buildCountrySales(from, to),
     opts.showCosts ? buildExpenseReport({ from, to }) : Promise.resolve(null),
-    // §3 — Delivered: orders created in range now at DELIVERED/COMPLETED
-    // (matches the funnel's delivered stage). Trashed rows auto-excluded (db.ts).
+    // §3 — Delivered: orders whose DELIVERY date (shipment.delivered_at) falls
+    // in the range, i.e. actually delivered during the window — NOT by order
+    // creation date. Still scoped to delivered/completed orders (a delivery that
+    // was later returned drops out). The funnel keeps its own created-in-range
+    // stage view, unchanged. Trashed rows auto-excluded (db.ts).
     prisma.order.aggregate({
       where: {
-        createdAt: { gte: from, lte: to },
         status: { in: ["DELIVERED", "COMPLETED"] },
+        shipment: { deliveredAt: { gte: from, lte: to } },
       },
       _sum: { totalAmount: true },
       _count: true,
