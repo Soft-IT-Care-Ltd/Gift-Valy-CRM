@@ -21,6 +21,8 @@ import {
 } from "./reports";
 import { buildLeaderboard, buildTeamGauge } from "./targets";
 import { whoIsInToday, type WhoIsInToday } from "./attendance";
+import { getSteadfastIntegration } from "./steadfast-integration";
+import { round2 } from "./pnl-constants";
 import type { Gauge, LeaderboardRow } from "./targets-constants";
 import {
   DASH_RANGE_POSSESSIVE,
@@ -147,8 +149,26 @@ export interface TrendPoint {
   collection: number;
 }
 
+// CORRECTIONS Dashboard §1–§7 — the top "Snapshot" KPI strip. Every figure
+// keys off the same selected window as the rest of the dashboard (leads/orders/
+// delivered/drafts by created_at in range; collections by payment_date in
+// range). courierEnabled just says whether the balance widget may call out.
+export interface DashboardSnapshot {
+  leads: number; // §1 — detailed + bulk daily counts (matches leads.total)
+  orders: number; // §2 — non-lost, non-draft orders created in range
+  delivered: { count: number; amount: number }; // §3 — DELIVERED/COMPLETED in range
+  advanceCollection: { count: number; amount: number }; // §4 — payments type ADVANCE
+  // §5 — total collection split by source (each line = sum of payment types):
+  //   advance = ADVANCE + PARTIAL · cod = COD_COURIER · postMfs = POST_DELIVERY_MFS
+  collection: { advance: number; cod: number; postMfs: number; total: number };
+  drafts: { count: number; amount: number }; // §7 — DRAFT (committed-but-unpaid) in range
+  courierEnabled: boolean; // §6 — Steadfast integration on → balance widget may fetch
+}
+
 export interface OwnerDashboardData {
   window: DashWindow;
+  // CORRECTIONS Dashboard §1–§7 — top KPI snapshot strip
+  snapshot: DashboardSnapshot;
   // Row 1 — money over the selected range
   money: {
     orders: number;
@@ -312,6 +332,10 @@ export async function buildOwnerDashboard(
     leadsBulk,
     countries,
     expenseReport,
+    deliveredAgg,
+    draftAgg,
+    paymentsByType,
+    steadfastIntegration,
   ] = await Promise.all([
     buildDailySummary({ from, to }),
     buildDailySummary({ from: monthStart, to: endToday }),
@@ -337,7 +361,78 @@ export async function buildOwnerDashboard(
     }),
     buildCountrySales(from, to),
     opts.showCosts ? buildExpenseReport({ from, to }) : Promise.resolve(null),
+    // §3 — Delivered: orders created in range now at DELIVERED/COMPLETED
+    // (matches the funnel's delivered stage). Trashed rows auto-excluded (db.ts).
+    prisma.order.aggregate({
+      where: {
+        createdAt: { gte: from, lte: to },
+        status: { in: ["DELIVERED", "COMPLETED"] },
+      },
+      _sum: { totalAmount: true },
+      _count: true,
+    }),
+    // §7 — Draft orders (committed-but-unpaid pipeline) created in range.
+    prisma.order.aggregate({
+      where: { createdAt: { gte: from, lte: to }, status: "DRAFT" },
+      _sum: { totalAmount: true },
+      _count: true,
+    }),
+    // §4/§5 — collections in range split by payment type. Rejected payments and
+    // payments on trashed orders stay out (same rule as the collection report).
+    prisma.payment.groupBy({
+      by: ["type"],
+      where: {
+        paymentDate: { gte: from, lte: to },
+        isRejected: false,
+        order: { deletedAt: null },
+      },
+      _sum: { amount: true },
+      _count: { _all: true },
+    }),
+    // §6 — is the Steadfast integration on? (balance itself is fetched live by
+    // the client tile; here we only decide whether it may call out.)
+    getSteadfastIntegration(),
   ]);
+
+  // ── CORRECTIONS Dashboard §1–§7 — snapshot KPI strip ──
+  const payByType = new Map<string, { amount: number; count: number }>();
+  for (const g of paymentsByType) {
+    payByType.set(g.type, {
+      amount: Number(g._sum.amount ?? 0),
+      count: g._count._all,
+    });
+  }
+  const payOf = (t: string) => payByType.get(t) ?? { amount: 0, count: 0 };
+  const advanceType = payOf("ADVANCE"); // §4 — ADVANCE only
+  const collAdvance = round2(advanceType.amount + payOf("PARTIAL").amount);
+  const collCod = round2(payOf("COD_COURIER").amount);
+  const collPostMfs = round2(payOf("POST_DELIVERY_MFS").amount);
+  // Combined lead total (§1/§6): detailed leads + bulk daily counts.
+  const leadsTotal = leadsDetailed + (leadsBulk._sum.count ?? 0);
+
+  const snapshot: DashboardSnapshot = {
+    leads: leadsTotal,
+    orders: rangeSummary.totals.orders,
+    delivered: {
+      count: deliveredAgg._count,
+      amount: round2(Number(deliveredAgg._sum.totalAmount ?? 0)),
+    },
+    advanceCollection: {
+      count: advanceType.count,
+      amount: round2(advanceType.amount),
+    },
+    collection: {
+      advance: collAdvance,
+      cod: collCod,
+      postMfs: collPostMfs,
+      total: round2(collAdvance + collCod + collPostMfs),
+    },
+    drafts: {
+      count: draftAgg._count,
+      amount: round2(Number(draftAgg._sum.totalAmount ?? 0)),
+    },
+    courierEnabled: !!steadfastIntegration?.isEnabled,
+  };
 
   // Row 2 — align this-month and last-month cumulative sales by day-of-month.
   const thisSales = thisMonthSummary.rows.map((r) => r.salesValue);
@@ -386,6 +481,7 @@ export async function buildOwnerDashboard(
 
   return {
     window,
+    snapshot,
     money: {
       orders: rangeSummary.totals.orders,
       sales: rangeSummary.totals.salesValue,
@@ -421,17 +517,16 @@ export async function buildOwnerDashboard(
     },
     leaderboard: leaderboard.slice(0, 6),
     teamGauges,
-    leads: (() => {
+    leads: {
       // Combined total (§6): detailed leads + bulk daily counts; conversions
       // only exist on detailed leads but the rate reads over all of them.
-      const total = leadsDetailed + (leadsBulk._sum.count ?? 0);
-      return {
-        total,
-        converted: leadsConverted,
-        conversionPct:
-          total > 0 ? Math.round((leadsConverted / total) * 1000) / 10 : null,
-      };
-    })(),
+      total: leadsTotal,
+      converted: leadsConverted,
+      conversionPct:
+        leadsTotal > 0
+          ? Math.round((leadsConverted / leadsTotal) * 1000) / 10
+          : null,
+    },
     whoIsIn,
     trend30: {
       points: trendSummary.rows.map((r) => ({

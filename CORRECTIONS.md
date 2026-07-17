@@ -136,13 +136,22 @@ Verification pass for correction round 1. With seeded demo data:
 
 > Keep ALL existing dashboard widgets as they are — the following are ADDITIONS. All new widgets must respect the existing date-range switch (Today / Week / Month / Custom).
 
-1. [CHANGE] Add a **Leads** widget: total lead count for the selected date range.
-2. [CHANGE] Add an **Orders** widget: total order count (quantity) for the selected range.
-3. [CHANGE] Add a **Delivered** widget: delivered order **count + total amount (৳)** for the selected range.
-4. [CHANGE] Add an **Advance Collection** widget: number of advance payments + total advance amount (৳) for the selected range (payment type = ADVANCE).
-5. [CHANGE] Add a **Total Collection** widget **with breakdown by payment source**. Breakdown lines: **Advance** (type ADVANCE/PARTIAL), **Courier COD** (type COD_COURIER), **Post-delivery bKash/MFS** (type POST_DELIVERY_MFS — this happens when the customer pays the due via bKash after the parcel is shipped and the courier COD is set to 0). Show each source's amount + the grand total. Sometimes only 2 sources have values, sometimes all 3 — always show whichever are non-zero (or all 3 with 0 values, whichever looks cleaner).
-6. [CHANGE] Add a **Courier Balance** widget: current Steadfast balance via the existing /get_balance integration (with a small refresh icon; show "—" if integration disabled).
-7. [CHANGE] Add a **Draft Orders (Pending Payment)** widget: DRAFT order **count + total amount (৳)** for the selected date range — this is the committed-but-unpaid pipeline (see Leads item 10). Clicking it goes to the Orders page "Pending Payment (Drafts)" tab.
+> → Fixed (C9): a new **Snapshot** KPI strip at the top of the **Owner Dashboard** (`components/dashboard/owner-dashboard.tsx`), above the existing Money row — every prior widget is untouched. All seven figures follow the existing date-range switch: the new fields are aggregated in **`lib/dashboard.ts#buildOwnerDashboard`** off the same `DashWindow` (leads/orders/delivered/drafts by `created_at` in range, collections by `payment_date` in range) and exposed as `data.snapshot`. Verified end-to-end against the seeded demo DB (`npm run verify:dashboard`, 38 checks) and in the running app.
+
+1. [FIXED] Add a **Leads** widget: total lead count for the selected date range.
+   → Reuses the combined lead total (detailed leads + `lead_daily_counts` bulk entries, Leads §6); links to `/leads`.
+2. [FIXED] Add an **Orders** widget: total order count (quantity) for the selected range.
+   → In-range order count excluding lost/draft statuses (`EXCLUDED_SALE_STATUSES`), matching the Money row's order count; links to `/orders`.
+3. [FIXED] Add a **Delivered** widget: delivered order **count + total amount (৳)** for the selected range.
+   → Orders created in range now at `DELIVERED`/`COMPLETED` (equals the funnel's delivered stage) with Σ `total_amount`; links to `/orders?status=DELIVERED`.
+4. [FIXED] Add an **Advance Collection** widget: number of advance payments + total advance amount (৳) for the selected range (payment type = ADVANCE).
+   → `payment.groupBy` on type `ADVANCE` (rejected payments and trashed-order payments excluded, same rule as the collection report).
+5. [FIXED] Add a **Total Collection** widget **with breakdown by payment source**. Breakdown lines: **Advance** (type ADVANCE/PARTIAL), **Courier COD** (type COD_COURIER), **Post-delivery bKash/MFS** (type POST_DELIVERY_MFS — this happens when the customer pays the due via bKash after the parcel is shipped and the courier COD is set to 0). Show each source's amount + the grand total. Sometimes only 2 sources have values, sometimes all 3 — always show whichever are non-zero (or all 3 with 0 values, whichever looks cleaner).
+   → All three source lines always shown (each a colored dot + amount) with the grand total = their sum; sums come from the same in-range `payment.groupBy` by type (advance line = ADVANCE + PARTIAL).
+6. [FIXED] Add a **Courier Balance** widget: current Steadfast balance via the existing /get_balance integration (with a small refresh icon; show "—" if integration disabled).
+   → Client tile (`components/dashboard/courier-balance-tile.tsx`) fetches the existing `/api/couriers/steadfast/balance` route on mount + on the refresh icon, so a slow/failing courier API never blocks the dashboard; shows "—" when the integration is off (`snapshot.courierEnabled`) or the viewer lacks `courier.manage`.
+7. [FIXED] Add a **Draft Orders (Pending Payment)** widget: DRAFT order **count + total amount (৳)** for the selected date range — this is the committed-but-unpaid pipeline (see Leads item 10). Clicking it goes to the Orders page "Pending Payment (Drafts)" tab.
+   → In-range `DRAFT` count + Σ `total_amount`, amber when non-zero; links to `/orders?status=DRAFT` (the "Pending Payment (Drafts)" tab).
 
 ## Leads
 

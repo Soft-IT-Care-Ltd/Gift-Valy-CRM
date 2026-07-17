@@ -65,7 +65,12 @@ export default async function HomePage({
     return (
       <div className="grid gap-4">
         {opsAlerts}
-        <OwnerDashboard data={data} showCosts={showCosts} viewerName={user.name} />
+        <OwnerDashboard
+          data={data}
+          showCosts={showCosts}
+          viewerName={user.name}
+          canManageCourier={permissions.includes("courier.manage")}
+        />
       </div>
     );
   }

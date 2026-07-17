@@ -135,6 +135,57 @@ async function main() {
   check("stock value present when showCosts", d.inventory.stockValue !== null);
   check("expense split present when showCosts", d.expenseSplit !== null);
 
+  // ── Snapshot KPI strip (CORRECTIONS Dashboard §1–§7) ──
+  console.log("\nSnapshot KPIs (CORRECTIONS Dashboard §1–§7)");
+  const s = d.snapshot;
+  check(
+    "§1 snapshot leads == combined lead total",
+    s.leads === d.leads.total,
+    `${s.leads} vs ${d.leads.total}`
+  );
+  check(
+    "§2 snapshot orders == money.orders (in-range count)",
+    s.orders === d.money.orders,
+    `${s.orders} vs ${d.money.orders}`
+  );
+  const deliveredStage = d.funnel.find((x) => x.key === "delivered")?.count ?? -1;
+  check(
+    "§3 delivered count matches the funnel's delivered stage",
+    s.delivered.count === deliveredStage,
+    `${s.delivered.count} vs ${deliveredStage}`
+  );
+  check(
+    "§3 delivered {count, amount} both ≥ 0",
+    s.delivered.count >= 0 && s.delivered.amount >= 0,
+    `${s.delivered.count} / ${s.delivered.amount}`
+  );
+  check(
+    "§4 advance collection {count, amount} both ≥ 0",
+    s.advanceCollection.count >= 0 && s.advanceCollection.amount >= 0,
+    `${s.advanceCollection.count} / ${s.advanceCollection.amount}`
+  );
+  check(
+    "§5 total collection == advance + COD + post-MFS",
+    Math.abs(
+      s.collection.total -
+        (s.collection.advance + s.collection.cod + s.collection.postMfs)
+    ) < 0.01,
+    `${s.collection.total} vs ${
+      s.collection.advance + s.collection.cod + s.collection.postMfs
+    }`
+  );
+  check(
+    "§5 advance line ≥ §4 advance-only amount (line = ADVANCE + PARTIAL)",
+    s.collection.advance >= s.advanceCollection.amount - 0.01,
+    `${s.collection.advance} vs ${s.advanceCollection.amount}`
+  );
+  check(
+    "§7 draft orders {count, amount} both ≥ 0",
+    s.drafts.count >= 0 && s.drafts.amount >= 0,
+    `${s.drafts.count} / ${s.drafts.amount}`
+  );
+  check("§6 courierEnabled is a boolean", typeof s.courierEnabled === "boolean");
+
   // ── cost-blind lens (Manager without reports.pnl) ──
   console.log("\nOwner dashboard — showCosts=false (cost fields withheld)");
   const blind = await buildOwnerDashboard(month, { showCosts: false });

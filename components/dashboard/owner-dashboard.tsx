@@ -22,6 +22,7 @@ import type { OwnerDashboardData } from "@/lib/dashboard";
 import { WhoIsInCard } from "@/components/attendance/who-is-in-card";
 import { StatTile } from "./stat-tile";
 import { DateRangeSwitch } from "./date-range-switch";
+import { CourierBalanceTile } from "./courier-balance-tile";
 import { LineChart, Funnel, Donut, ProgressBar, chartColor } from "./charts";
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
@@ -32,16 +33,52 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
+// CORRECTIONS Dashboard §5 — one line of the Total Collection breakdown.
+function CollectionLine({
+  label,
+  value,
+  colorIdx,
+}: {
+  label: string;
+  value: number;
+  colorIdx: number;
+}) {
+  return (
+    <div className="rounded-lg border p-2.5">
+      <div className="flex items-center gap-1.5">
+        <span
+          className="size-2 shrink-0 rounded-full"
+          style={{ background: chartColor(colorIdx) }}
+        />
+        <span className="truncate text-xs text-muted-foreground">{label}</span>
+      </div>
+      <div className="mt-1 text-base font-semibold tabular-nums">
+        {money(value)}
+      </div>
+    </div>
+  );
+}
+
 export function OwnerDashboard({
   data,
   showCosts,
   viewerName,
+  canManageCourier,
 }: {
   data: OwnerDashboardData;
   showCosts: boolean;
   viewerName: string;
+  canManageCourier: boolean;
 }) {
-  const { window: win, money: m, month, funnel, funnelExtra, inventory } = data;
+  const {
+    window: win,
+    money: m,
+    month,
+    funnel,
+    funnelExtra,
+    inventory,
+    snapshot: s,
+  } = data;
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
@@ -55,6 +92,89 @@ export function OwnerDashboard({
         </div>
         <DateRangeSwitch />
       </div>
+
+      {/* ── Snapshot KPI strip (CORRECTIONS Dashboard §1–§7) ── */}
+      <section>
+        <SectionLabel>Snapshot · {win.label}</SectionLabel>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {/* §1 Leads */}
+          <StatTile
+            label={`${win.possessive} leads`}
+            value={s.leads}
+            sub={
+              data.leads.conversionPct != null
+                ? `${data.leads.conversionPct}% converted (${data.leads.converted})`
+                : "New leads in range"
+            }
+            href="/leads"
+          />
+          {/* §2 Orders */}
+          <StatTile
+            label={`${win.possessive} orders`}
+            value={s.orders}
+            sub="Orders placed in range"
+            href="/orders"
+          />
+          {/* §3 Delivered — count + total amount */}
+          <StatTile
+            label="Delivered"
+            value={s.delivered.count}
+            sub={`${money(s.delivered.amount)} order value`}
+            href="/orders?status=DELIVERED"
+          />
+          {/* §7 Draft orders (Pending Payment) → Drafts tab */}
+          <StatTile
+            label="Draft orders (pending payment)"
+            value={s.drafts.count}
+            sub={`${money(s.drafts.amount)} committed · unpaid`}
+            href="/orders?status=DRAFT"
+            tone={s.drafts.count > 0 ? "warning" : "default"}
+          />
+          {/* §4 Advance collection — count + amount */}
+          <StatTile
+            label={`${win.possessive} advance collection`}
+            value={money(s.advanceCollection.amount)}
+            sub={`${s.advanceCollection.count} advance payment${
+              s.advanceCollection.count === 1 ? "" : "s"
+            }`}
+          />
+          {/* §6 Courier balance (live, client-fetched) */}
+          <CourierBalanceTile
+            enabled={s.courierEnabled}
+            canManage={canManageCourier}
+          />
+          {/* §5 Total collection with source breakdown */}
+          <Card className="sm:col-span-2">
+            <CardContent className="p-4">
+              <div className="flex items-baseline justify-between gap-2">
+                <div className="text-xs font-medium text-muted-foreground">
+                  Total collection
+                </div>
+                <div className="text-2xl font-bold tabular-nums">
+                  {money(s.collection.total)}
+                </div>
+              </div>
+              <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                <CollectionLine
+                  label="Advance"
+                  value={s.collection.advance}
+                  colorIdx={0}
+                />
+                <CollectionLine
+                  label="Courier COD"
+                  value={s.collection.cod}
+                  colorIdx={1}
+                />
+                <CollectionLine
+                  label="Post-delivery MFS"
+                  value={s.collection.postMfs}
+                  colorIdx={6}
+                />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </section>
 
       {/* ── Row 1 — Money (selected range) ── */}
       <section>
