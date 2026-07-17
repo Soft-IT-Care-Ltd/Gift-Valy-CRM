@@ -9,7 +9,7 @@
 
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./db";
-import { dhakaDayStart, dhakaMonthStart } from "./orders";
+import { dhakaDateBound, dhakaDayStart, dhakaMonthStart } from "./orders";
 import { EXCLUDED_SALE_STATUSES, type OrderStatusValue } from "./order-constants";
 import { buildDailySummary, dhakaYmd, dhakaYm, monthLabel } from "./pnl";
 import {
@@ -307,8 +307,9 @@ export async function buildOwnerDashboard(
     leaderboard,
     teamGauges,
     whoIsIn,
-    leadsTotal,
+    leadsDetailed,
     leadsConverted,
+    leadsBulk,
     countries,
     expenseReport,
   ] = await Promise.all([
@@ -327,6 +328,12 @@ export async function buildOwnerDashboard(
     prisma.lead.count({ where: { createdAt: { gte: from, lte: to } } }),
     prisma.lead.count({
       where: { createdAt: { gte: from, lte: to }, status: "CONVERTED" },
+    }),
+    // Bulk daily counts in the window — every lead total combines both entry
+    // modes (CORRECTIONS Leads §6). date is @db.Date → Dhaka-day bounds.
+    prisma.leadDailyCount.aggregate({
+      _sum: { count: true },
+      where: { date: { gte: dhakaDateBound(from), lte: dhakaDateBound(to) } },
     }),
     buildCountrySales(from, to),
     opts.showCosts ? buildExpenseReport({ from, to }) : Promise.resolve(null),
@@ -414,12 +421,17 @@ export async function buildOwnerDashboard(
     },
     leaderboard: leaderboard.slice(0, 6),
     teamGauges,
-    leads: {
-      total: leadsTotal,
-      converted: leadsConverted,
-      conversionPct:
-        leadsTotal > 0 ? Math.round((leadsConverted / leadsTotal) * 1000) / 10 : null,
-    },
+    leads: (() => {
+      // Combined total (§6): detailed leads + bulk daily counts; conversions
+      // only exist on detailed leads but the rate reads over all of them.
+      const total = leadsDetailed + (leadsBulk._sum.count ?? 0);
+      return {
+        total,
+        converted: leadsConverted,
+        conversionPct:
+          total > 0 ? Math.round((leadsConverted / total) * 1000) / 10 : null,
+      };
+    })(),
     whoIsIn,
     trend30: {
       points: trendSummary.rows.map((r) => ({

@@ -1004,14 +1004,15 @@ export async function buildExpenseReport(opts: {
 
 // ============ R2 — Lead report (SPEC §3.2 / §12) ============
 // Leads by SE / source / campaign / date, conversion %, lost-reason breakdown.
-// Bulk daily counts (§3.1) are folded in as an extra "leads received" total so
-// conversion math still has a denominator when individual leads weren't logged.
+// Every total combines detailed leads + bulk daily counts (CORRECTIONS Leads
+// §6): 10 manual + 30 bulk on one day = 40 leads that day. Conversions are
+// only ever tracked per detailed lead, so converted counts come from those.
 
 export interface LeadConversionRow {
   key: string;
   label: string;
-  total: number; // detailed leads
-  converted: number;
+  total: number; // detailed leads + bulk daily counts (§6)
+  converted: number; // from detailed leads only
   conversionPct: number; // converted / total, 0 when total is 0
 }
 
@@ -1023,11 +1024,12 @@ export interface LostReasonRow {
 
 export interface LeadReport {
   range: { from: string; to: string };
-  totalLeads: number; // detailed leads in range
+  totalLeads: number; // detailed + bulk combined (§6)
+  detailedCount: number; // individually-logged leads in range
   converted: number;
   lost: number;
-  open: number;
-  conversionPct: number;
+  open: number; // detailed leads still on the live funnel
+  conversionPct: number; // converted / totalLeads (combined denominator)
   bulkCount: number; // Σ lead_daily_counts in range (leads logged in bulk)
   bySE: LeadConversionRow[];
   bySource: LeadConversionRow[];
@@ -1096,28 +1098,47 @@ export async function buildLeadReport(
         ...(opts.seId ? [{ userId: opts.seId }] : []),
       ],
     },
-    select: { source: true, count: true },
+    select: {
+      date: true,
+      source: true,
+      campaignName: true,
+      count: true,
+      userId: true,
+      user: { select: { name: true } },
+    },
   });
 
-  const totalLeads = leads.length;
+  const detailedCount = leads.length;
   const converted = leads.filter((l) => l.status === "CONVERTED").length;
   const lost = leads.filter((l) => l.status === "LOST").length;
-  const open = totalLeads - converted - lost;
+  const open = detailedCount - converted - lost;
+  const bulkCount = dailyCounts.reduce((s, d) => s + d.count, 0);
+  // §6 — the headline total (and the conversion denominator) combines both
+  // entry modes: only detailed leads can convert, but every lead counts.
+  const totalLeads = detailedCount + bulkCount;
   const conversionPct = totalLeads > 0 ? round2((converted / totalLeads) * 100) : 0;
 
-  // Generic grouping into conversion rows.
+  // Generic grouping into conversion rows. Detailed leads carry conversions;
+  // bulk daily counts add to the same group's total (§6).
   function group(
     keyOf: (l: (typeof leads)[number]) => string,
-    labelOf: (l: (typeof leads)[number]) => string
+    labelOf: (l: (typeof leads)[number]) => string,
+    bulkKeyOf: (d: (typeof dailyCounts)[number]) => { key: string; label: string }
   ): LeadConversionRow[] {
     const map = new Map<string, LeadConversionRow>();
-    for (const l of leads) {
-      const key = keyOf(l);
+    const add = (key: string, label: string, total: number, conv: number) => {
       const row =
-        map.get(key) ?? { key, label: labelOf(l), total: 0, converted: 0, conversionPct: 0 };
-      row.total += 1;
-      if (l.status === "CONVERTED") row.converted += 1;
+        map.get(key) ?? { key, label, total: 0, converted: 0, conversionPct: 0 };
+      row.total += total;
+      row.converted += conv;
       map.set(key, row);
+    };
+    for (const l of leads) {
+      add(keyOf(l), labelOf(l), 1, l.status === "CONVERTED" ? 1 : 0);
+    }
+    for (const d of dailyCounts) {
+      const b = bulkKeyOf(d);
+      add(b.key, b.label, d.count, 0);
     }
     return [...map.values()]
       .map((r) => ({
@@ -1129,19 +1150,29 @@ export async function buildLeadReport(
 
   const bySE = group(
     (l) => String(l.assignedTo),
-    (l) => l.assignee.name
+    (l) => l.assignee.name,
+    (d) => ({ key: String(d.userId), label: d.user.name })
   );
   const bySource = group(
     (l) => l.source,
-    (l) => l.source
+    (l) => l.source,
+    (d) => ({ key: d.source, label: d.source })
   );
   const byCampaign = group(
     (l) => l.campaignName?.trim() || "(none)",
-    (l) => l.campaignName?.trim() || "(none)"
+    (l) => l.campaignName?.trim() || "(none)",
+    (d) => ({
+      key: d.campaignName?.trim() || "(none)",
+      label: d.campaignName?.trim() || "(none)",
+    })
   );
   const byDate = group(
     (l) => l.leadDate.toISOString().slice(0, 10),
-    (l) => l.leadDate.toISOString().slice(0, 10)
+    (l) => l.leadDate.toISOString().slice(0, 10),
+    (d) => ({
+      key: d.date.toISOString().slice(0, 10),
+      label: d.date.toISOString().slice(0, 10),
+    })
   ).sort((a, b) => a.key.localeCompare(b.key));
 
   // Lost-reason breakdown.
@@ -1159,12 +1190,10 @@ export async function buildLeadReport(
     }))
     .sort((a, b) => b.count - a.count);
 
-  // Bulk daily counts.
+  // Bulk daily counts per source (already inside every total above).
   const bulkMap = new Map<LeadSourceValue, number>();
-  let bulkCount = 0;
   for (const d of dailyCounts) {
     bulkMap.set(d.source, (bulkMap.get(d.source) ?? 0) + d.count);
-    bulkCount += d.count;
   }
   const bulkBySource = [...bulkMap.entries()]
     .map(([source, count]) => ({ source, count }))
@@ -1209,6 +1238,7 @@ export async function buildLeadReport(
   return {
     range: { from: from.toISOString(), to: to.toISOString() },
     totalLeads,
+    detailedCount,
     converted,
     lost,
     open,

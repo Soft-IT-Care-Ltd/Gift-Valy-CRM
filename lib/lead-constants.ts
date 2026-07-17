@@ -105,6 +105,51 @@ export function timeSince(iso: string, now: number = Date.now()): string {
   return rem > 0 ? `${days}d ${rem}h` : `${days}d`;
 }
 
+// Lead list page-size options (CORRECTIONS Leads §4). Lives here (not
+// lib/leads.ts) so the client bundle never drags Prisma in.
+export const LEAD_PAGE_SIZES = [25, 50, 100] as const;
+
+// CORRECTIONS Leads §2 — dialing code → country (matching CUSTOMER_COUNTRIES
+// labels). +1 is ambiguous (USA/Canada) — mapped to USA, editable afterward.
+const COUNTRY_DIAL_CODES: [code: string, country: string][] = [
+  ["966", "KSA"],
+  ["971", "UAE"],
+  ["974", "Qatar"],
+  ["965", "Kuwait"],
+  ["968", "Oman"],
+  ["973", "Bahrain"],
+  ["960", "Maldives"],
+  ["60", "Malaysia"],
+  ["65", "Singapore"],
+  ["39", "Italy"],
+  ["44", "UK"],
+  ["61", "Australia"],
+  ["49", "Germany"],
+  ["33", "France"],
+  ["82", "South Korea"],
+  ["81", "Japan"],
+  ["1", "USA"],
+];
+
+// Auto-detect the country from a typed WhatsApp number (CORRECTIONS Leads §2).
+// Explicit "+966…"/"00966…" always detects; a bare "9665…" only when long
+// enough to clearly be an international number (a local number never is).
+// Returns null when nothing matches — the caller keeps the current selection.
+export function detectCountryFromPhone(raw: string): string | null {
+  const cleaned = raw.replace(/[\s\-().]/g, "");
+  let digits: string;
+  if (cleaned.startsWith("+")) digits = cleaned.slice(1);
+  else if (cleaned.startsWith("00")) digits = cleaned.slice(2);
+  else if (/^\d{11,}$/.test(cleaned)) digits = cleaned;
+  else return null;
+  if (!/^\d+$/.test(digits)) return null;
+  // Longest code wins ("966" before "96…" fallthrough to "9" — none, but safe).
+  const hit = [...COUNTRY_DIAL_CODES]
+    .sort((a, b) => b[0].length - a[0].length)
+    .find(([code]) => digits.startsWith(code));
+  return hit ? hit[1] : null;
+}
+
 // One "interested in" selection — a product or package snapshot (§3.1). Names are
 // frozen at pick time so the lead reads correctly even if the catalog changes.
 export interface InterestedItem {

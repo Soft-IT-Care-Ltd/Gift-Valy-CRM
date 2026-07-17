@@ -246,7 +246,16 @@ async function main() {
       const after = await buildLeadReport(reportRange, tx);
       console.log("\nR2 lead report (delta vs. baseline):");
       // Added: openLead(CONVERTED) + todayLead(CONTACTED) + lostLead(LOST) = 3.
-      check("counts the 3 new detailed leads", after.totalLeads - before.totalLeads === 3, `Δ${after.totalLeads - before.totalLeads}`);
+      check("counts the 3 new detailed leads", after.detailedCount - before.detailedCount === 3, `Δ${after.detailedCount - before.detailedCount}`);
+      // CORRECTIONS Leads §6 — the headline total combines detailed + bulk:
+      // 3 detailed + 20 bulk added since the baseline.
+      check("combined total = detailed + bulk (Δ23)", after.totalLeads - before.totalLeads === 23, `Δ${after.totalLeads - before.totalLeads}`);
+      // …and per-day too: yesterday gained 1 detailed (openLead) + 20 bulk.
+      const dayKey = dhakaDateStr(-1);
+      const dayDelta =
+        (after.byDate.find((r) => r.key === dayKey)?.total ?? 0) -
+        (before.byDate.find((r) => r.key === dayKey)?.total ?? 0);
+      check("byDate folds bulk into the same day (Δ21)", dayDelta === 21, `Δ${dayDelta}`);
       check("counts the new conversion", after.converted - before.converted === 1, `Δ${after.converted - before.converted}`);
       check("counts the new lost lead", after.lost - before.lost === 1, `Δ${after.lost - before.lost}`);
       check(

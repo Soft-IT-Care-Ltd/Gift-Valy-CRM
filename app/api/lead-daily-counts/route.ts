@@ -8,9 +8,10 @@ import { dbDate } from "@/lib/orders";
 // SPEC §3.1 bulk quick-entry — log a daily lead count per source/campaign when
 // individual entry isn't practical. One row per (date, user, source, campaign);
 // re-submitting the same key replaces the count (a correction, not an add).
+// Gated by its own leads.bulk permission (CORRECTIONS Leads §7).
 export async function POST(req: Request) {
   try {
-    const { session, permissions } = await requirePermissionCtx("leads.create");
+    const { session, permissions } = await requirePermissionCtx("leads.bulk");
     const data = dailyCountSchema.parse(await req.json());
 
     let userId = session.user.id;

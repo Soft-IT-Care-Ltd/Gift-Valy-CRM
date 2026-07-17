@@ -31,6 +31,7 @@ export interface PermissionDef {
 export const PERMISSION_DEFS: PermissionDef[] = [
   // Leads
   { key: "leads.create", label: "Create leads", group: "Leads" },
+  { key: "leads.bulk", label: "Bulk daily lead counts", group: "Leads" },
   { key: "leads.view_own", label: "View own leads", group: "Leads" },
   { key: "leads.view_team", label: "View team leads", group: "Leads" },
   { key: "leads.view_all", label: "View all leads", group: "Leads" },
@@ -90,7 +91,7 @@ export const ALL_PERMISSION_KEYS = PERMISSION_DEFS.map((p) => p.key);
 export const ROLE_MATRIX: Record<RoleName, string[]> = {
   Admin: ALL_PERMISSION_KEYS,
   Manager: [
-    "leads.create", "leads.view_own", "leads.view_team", "leads.view_all",
+    "leads.create", "leads.bulk", "leads.view_own", "leads.view_team", "leads.view_all",
     "leads.edit", "leads.reassign",
     "orders.create", "orders.view_own", "orders.view_team", "orders.view_all",
     "orders.edit", "orders.approve_edit", "orders.cancel", "orders.trash",
@@ -106,7 +107,7 @@ export const ROLE_MATRIX: Record<RoleName, string[]> = {
     "attendance.own", "attendance.view_all",
   ],
   TeamLeader: [
-    "leads.create", "leads.view_own", "leads.view_team", "leads.edit", "leads.reassign",
+    "leads.create", "leads.bulk", "leads.view_own", "leads.view_team", "leads.edit", "leads.reassign",
     "orders.create", "orders.view_own", "orders.view_team", "orders.approve_edit",
     "invoice.generate",
     "payments.create",

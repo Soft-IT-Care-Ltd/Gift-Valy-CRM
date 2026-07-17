@@ -98,7 +98,7 @@ export function LeadReportClient({
     if (report.bulkCount > 0) {
       sections.push({
         heading: "Bulk daily counts",
-        note: `${report.bulkCount} leads logged as daily counts (§3.1) — no per-lead conversion tracked, so they aren't in the conversion % above.`,
+        note: `${report.bulkCount} leads logged as daily counts (§3.1) — included in every total; only detailed leads can convert.`,
         headers: ["Source", "Leads"],
         aligns: ["l", "r"],
         rows: report.bulkBySource.map((b) => [LEAD_SOURCE_LABELS[b.source], b.count]),
@@ -136,7 +136,7 @@ export function LeadReportClient({
       kpis: [
         {
           label: "Total leads",
-          value: `${report.totalLeads}${report.bulkCount > 0 ? ` (+${report.bulkCount} in bulk)` : ""}`,
+          value: `${report.totalLeads}${report.bulkCount > 0 ? ` (${report.detailedCount} + ${report.bulkCount} bulk)` : ""}`,
         },
         { label: "Converted", value: String(report.converted) },
         { label: "Conversion %", value: `${report.conversionPct}%` },
@@ -216,9 +216,17 @@ export function LeadReportClient({
 
       {/* KPIs */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-        <Kpi label="Total leads" value={String(report.totalLeads)} sub={report.bulkCount > 0 ? `+${report.bulkCount} logged in bulk` : "detailed entries"} />
+        <Kpi
+          label="Total leads"
+          value={String(report.totalLeads)}
+          sub={
+            report.bulkCount > 0
+              ? `${report.detailedCount} detailed + ${report.bulkCount} bulk`
+              : "detailed entries"
+          }
+        />
         <Kpi label="Converted" value={String(report.converted)} />
-        <Kpi label="Conversion %" value={`${report.conversionPct}%`} />
+        <Kpi label="Conversion %" value={`${report.conversionPct}%`} sub="of all leads, incl. bulk" />
         <Kpi label="Open" value={String(report.open)} />
         <Kpi label="Lost" value={String(report.lost)} />
       </div>
@@ -249,8 +257,8 @@ export function LeadReportClient({
           <CardHeader className="pb-2">
             <CardTitle className="text-base">Bulk daily counts</CardTitle>
             <CardDescription>
-              {report.bulkCount} leads logged as daily counts (§3.1) — no per-lead
-              conversion tracked, so they aren&apos;t in the conversion % above.
+              {report.bulkCount} leads logged as daily counts (§3.1) — included
+              in every total above; only detailed leads can convert.
             </CardDescription>
           </CardHeader>
           <CardContent>

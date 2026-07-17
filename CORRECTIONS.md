@@ -146,18 +146,18 @@ Verification pass for correction round 1. With seeded demo data:
 
 ## Leads
 
-1. [CHANGE] Lead entry form field order: **WhatsApp number input comes FIRST**, then Country.
-2. [CHANGE] **Country auto-detection**: when a WhatsApp number is typed with a country code (e.g. +966…), auto-select the matching country. Must remain manually changeable afterward. Default (before/without detection) = **KSA**.
-3. [CHANGE] Pre-filled defaults on the lead entry form (all editable):
+1. [FIXED] Lead entry form field order: **WhatsApp number input comes FIRST**, then Country.
+2. [FIXED] **Country auto-detection**: when a WhatsApp number is typed with a country code (e.g. +966…), auto-select the matching country. Must remain manually changeable afterward. Default (before/without detection) = **KSA**.
+3. [FIXED] Pre-filled defaults on the lead entry form (all editable):
    - Status = **New** (already exists — keep)
    - Country = **KSA**
    - Source = **WhatsApp**
    - Follow-up date = **entry date + 1 day** (editable)
-4. [CHANGE] Lead list: default filter is currently ALL TIME which loads too much — change default to **This Month**. Add **pagination**: page-size selector (25 / 50 / 100 rows) + page navigation.
-5. [UI] "Today's follow-ups: 0" and "Overdue: 6 — follow up now" currently look like buttons, but they are notices — redesign them as notice/alert badges (info style for today's follow-ups, warning/red style for overdue), clearly not clickable-button styled. Keep the "follow up now" link behavior if it navigates somewhere.
-6. [CHANGE] Verify that everywhere a total lead count is shown (dashboard widget, lead report, conversion rate), the total = individual lead entries + bulk daily-count entries (lead_daily_counts) combined. E.g. 10 manual + 30 bulk on the same day must show 40 for that day.
-7. [CHANGE] Restructure the Leads page like the Orders page: landing page = the lead LIST. A **"New Lead"** button at the top-right opens a separate lead entry page. Users who have the bulk-entry permission see **two** buttons: "New Lead" and "Bulk Lead" (separate bulk entry page). Users without bulk permission see only "New Lead".
-8. [CHANGE] **Assign-on-entry**: users with the lead-assign permission get an "Assign to" select at the END of the New Lead form — default = their own name, but they can pick another SE while entering. Users WITHOUT the assign permission don't see this field at all (lead auto-assigns to themselves).
+4. [FIXED] Lead list: default filter is currently ALL TIME which loads too much — change default to **This Month**. Add **pagination**: page-size selector (25 / 50 / 100 rows) + page navigation.
+5. [FIXED] "Today's follow-ups: 0" and "Overdue: 6 — follow up now" currently look like buttons, but they are notices — redesign them as notice/alert badges (info style for today's follow-ups, warning/red style for overdue), clearly not clickable-button styled. Keep the "follow up now" link behavior if it navigates somewhere.
+6. [FIXED] Verify that everywhere a total lead count is shown (dashboard widget, lead report, conversion rate), the total = individual lead entries + bulk daily-count entries (lead_daily_counts) combined. E.g. 10 manual + 30 bulk on the same day must show 40 for that day.
+7. [FIXED] Restructure the Leads page like the Orders page: landing page = the lead LIST. A **"New Lead"** button at the top-right opens a separate lead entry page. Users who have the bulk-entry permission see **two** buttons: "New Lead" and "Bulk Lead" (separate bulk entry page). Users without bulk permission see only "New Lead". (New `leads.bulk` permission — seeded to Admin/Manager/TeamLeader.)
+8. [FIXED] **Assign-on-entry**: users with the lead-assign permission get an "Assign to" select at the END of the New Lead form — default = their own name, but they can pick another SE while entering. Users WITHOUT the assign permission don't see this field at all (lead auto-assigns to themselves).
 9. [FIXED] Add a new lead status **`Committed`** (after `Negotiating`, before `Converted`): customer has verbally confirmed the order and promised the advance payment but hasn't paid yet (will pay in an hour / 10 hours / next day). Important status — show a **"Committed" queue** prominently (SE dashboard + lead list filter) with time-since-commitment, because these need chasing until payment lands.
 10. [FIXED] **Draft Order stage** (for Committed leads who already gave full details): add order status **`DRAFT`** before `CONFIRMED`.
     - From a lead (or the order form), SE can save a full order (recipient details, address, items, amounts) as DRAFT — no advance payment required to save.
