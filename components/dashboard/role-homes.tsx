@@ -35,6 +35,7 @@ import { StatusBadge } from "@/components/orders/orders-list-client";
 import { StatTile } from "./stat-tile";
 import { Funnel, ProgressBar, chartColor } from "./charts";
 import { FollowUpsWidget } from "./follow-ups-widget";
+import { OccasionRemindersWidget } from "./occasion-reminders-widget";
 
 // ---------- shared bits ----------
 
@@ -356,6 +357,10 @@ export async function SalesExecutiveHome({
         </>
       )}
 
+      {permissions.includes("orders.view_own") && (
+        <OccasionRemindersWidget session={session} permissions={permissions} />
+      )}
+
       <RecentOrders
         where={{ salesExecutiveId: userId }}
         title="My recent orders"
@@ -565,6 +570,10 @@ export async function TeamLeaderHome({
           <CommittedQueueCard session={session} permissions={permissions} />
           <FollowUpsWidget session={session} permissions={permissions} />
         </>
+      )}
+
+      {permissions.includes("orders.view_own") && (
+        <OccasionRemindersWidget session={session} permissions={permissions} />
       )}
     </div>
   );

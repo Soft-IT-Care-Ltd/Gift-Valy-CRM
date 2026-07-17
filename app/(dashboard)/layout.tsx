@@ -60,6 +60,11 @@ export default async function DashboardLayout({
   if (permissions.includes("orders.approve_edit")) {
     salesItems.push({ href: "/orders/edit-requests", label: "Edit Requests" });
   }
+  // CORRECTIONS Orders §7 (C8) — Occasions repeat-sale engine, for any
+  // order-viewing role (scoped to the customers that role's orders reach).
+  if (permissions.includes("orders.view_own")) {
+    salesItems.push({ href: "/occasions", label: "Occasions" });
+  }
   addGroup("Sales", "sales", salesItems);
 
   const catalogItems: NavLeaf[] = [];
@@ -227,7 +232,9 @@ export default async function DashboardLayout({
       { href: "/settings/pnl", label: "P&L Settings" },
       { href: "/settings/attendance", label: "Attendance Settings" },
       { href: "/settings/whatsapp", label: "WhatsApp Invoice" },
-      { href: "/settings/currencies", label: "Currency Rates" }
+      { href: "/settings/currencies", label: "Currency Rates" },
+      // CORRECTIONS Orders §7 (C8) — occasion reminder lead time.
+      { href: "/settings/occasions", label: "Occasion Reminders" }
     );
   }
   addGroup("Settings", "settings", settingsItems);

@@ -4,6 +4,7 @@ import {
   DEFAULT_STUCK_AMBER_DAYS,
   DEFAULT_STUCK_RED_DAYS,
 } from "./courier-constants";
+import { DEFAULT_OCCASION_LEAD_DAYS } from "./occasion-constants";
 
 // SPEC §14 settings table — JSON values keyed by string. Missing keys fall
 // back to code defaults so no seed row is required.
@@ -14,6 +15,9 @@ export const SETTING_KEYS = {
   // CORRECTIONS Orders §R6 — stuck-parcel escalation thresholds (days).
   courierStuckAmberDays: "courier_stuck_amber_days",
   courierStuckRedDays: "courier_stuck_red_days",
+  // CORRECTIONS Orders §7 (C8) — how many days BEFORE an occasion the reminder
+  // starts surfacing in the SE follow-up area.
+  occasionReminderLeadDays: "occasion_reminder_lead_days",
 } as const;
 
 // SPEC §10 default onboarding grace: new joiners excluded from team aggregates
@@ -67,4 +71,15 @@ export async function getCourierStuckThresholds(): Promise<StuckThresholds> {
     getNumberSetting(SETTING_KEYS.courierStuckRedDays, DEFAULT_STUCK_RED_DAYS),
   ]);
   return { amberDays, redDays: Math.max(redDaysRaw, amberDays) };
+}
+
+// CORRECTIONS Orders §7 (C8) — occasion reminder lead time (days before the
+// date). Admin sets it in Settings → Occasion Reminders; default 7 days.
+// Floored to 0 so a mis-typed negative never hides today's occasions.
+export async function getOccasionReminderLeadDays(): Promise<number> {
+  const days = await getNumberSetting(
+    SETTING_KEYS.occasionReminderLeadDays,
+    DEFAULT_OCCASION_LEAD_DAYS
+  );
+  return Math.max(0, Math.round(days));
 }
