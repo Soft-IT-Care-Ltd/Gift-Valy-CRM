@@ -361,15 +361,29 @@ export async function buildOwnerDashboard(
     }),
     buildCountrySales(from, to),
     opts.showCosts ? buildExpenseReport({ from, to }) : Promise.resolve(null),
-    // §3 — Delivered: orders whose DELIVERY date (shipment.delivered_at) falls
-    // in the range, i.e. actually delivered during the window — NOT by order
-    // creation date. Still scoped to delivered/completed orders (a delivery that
-    // was later returned drops out). The funnel keeps its own created-in-range
-    // stage view, unchanged. Trashed rows auto-excluded (db.ts).
+    // §3 — Delivered: orders whose DELIVERY date falls in the range, i.e.
+    // actually delivered during the window — NOT by order creation date.
+    // Primary clock: shipment.delivered_at. Orders delivered without that stamp
+    // (manual moves, no shipment row) fall back to their order_status_history
+    // → DELIVERED timestamp, so hand-driven deliveries still count. Still
+    // scoped to delivered/completed orders (a delivery that was later returned
+    // drops out). The funnel keeps its own created-in-range stage view,
+    // unchanged. Trashed rows auto-excluded (db.ts).
     prisma.order.aggregate({
       where: {
         status: { in: ["DELIVERED", "COMPLETED"] },
-        shipment: { deliveredAt: { gte: from, lte: to } },
+        OR: [
+          { shipment: { deliveredAt: { gte: from, lte: to } } },
+          {
+            OR: [
+              { shipment: { is: null } },
+              { shipment: { deliveredAt: null } },
+            ],
+            statusHistory: {
+              some: { toStatus: "DELIVERED", at: { gte: from, lte: to } },
+            },
+          },
+        ],
       },
       _sum: { totalAmount: true },
       _count: true,

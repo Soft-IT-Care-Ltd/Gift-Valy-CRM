@@ -25,6 +25,7 @@ import {
 import {
   displayedCourierStatus,
   isOvercharged,
+  formatDuration,
 } from "../lib/courier-constants";
 import {
   encryptSecret,
@@ -142,6 +143,24 @@ function unitTests() {
   check("SF below ours → never flagged", isOvercharged(100, 80, 10) === false);
   check("no baseline (ours null) → never flagged", isOvercharged(null, 500, 10) === false);
   check("weight 2.5 vs 2.9 kg, tol 10% → flagged (16% over)", isOvercharged(2.5, 2.9, 10) === true);
+
+  // §R6 / C10 §6b — Duration column format: <1h "45m", <24h "5h 20m",
+  // ≥1d "5d 3h" (days never show minutes); zero sub-units drop.
+  console.log("\n§R6 duration format (C10 §6b):");
+  const M = 60_000;
+  const H = 60 * M;
+  const D = 24 * H;
+  check("45 min → '45m'", formatDuration(45 * M) === "45m");
+  check("5h 20m → '5h 20m'", formatDuration(5 * H + 20 * M) === "5h 20m");
+  check(
+    "5d 3h 40m → '5d 3h' (no minutes once ≥1d)",
+    formatDuration(5 * D + 3 * H + 40 * M) === "5d 3h"
+  );
+  check("exact days → '2d' (zero hours drop)", formatDuration(2 * D) === "2d");
+  check("exact hours → '3h' (zero minutes drop)", formatDuration(3 * H) === "3h");
+  check("just under 1h → '59m'", formatDuration(59 * M + 59_000) === "59m");
+  check("just under 1d → '23h 59m'", formatDuration(23 * H + 59 * M) === "23h 59m");
+  check("negative clock skew → '0m'", formatDuration(-5_000) === "0m");
 
   console.log("\nwebhook Bearer auth (§3A, acceptance #5):");
   const token = generateToken(32);

@@ -12,7 +12,10 @@ import {
 } from "../lib/order-reports";
 import { buildTeamPerformanceReport } from "../lib/team-performance";
 import { renderReportPdf } from "../lib/report-pdf";
-import { NON_SALE_STATUSES } from "../lib/order-constants";
+import {
+  NON_SALE_STATUSES,
+  EXCLUDED_SALE_STATUSES,
+} from "../lib/order-constants";
 import type { OrderStatus, Prisma } from "@prisma/client";
 
 const prisma = new PrismaClient();
@@ -31,6 +34,9 @@ function check(label: string, cond: boolean, detail = "") {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const LOST = NON_SALE_STATUSES as unknown as OrderStatus[];
+// Sale-side aggregates must ALSO exclude DRAFT (the unpaid pipeline is not a
+// sale — CORRECTIONS Leads §10), matching isSaleStatus in lib/order-reports.
+const NOT_SALE = EXCLUDED_SALE_STATUSES as unknown as OrderStatus[];
 
 async function main() {
   console.log("Reports verification — SPEC §12 (R1 / R3 / R11 / R12 + PDF)\n");
@@ -74,7 +80,7 @@ async function main() {
     const [totalDb, saleAgg, deliveredDb, lostDb] = await Promise.all([
       prisma.order.count({ where: inRange }),
       prisma.order.aggregate({
-        where: { ...inRange, status: { notIn: LOST } },
+        where: { ...inRange, status: { notIn: NOT_SALE } },
         _count: { _all: true },
         _sum: { totalAmount: true },
       }),
@@ -118,7 +124,7 @@ async function main() {
     const pkgLines = await prisma.orderItem.findMany({
       where: {
         itemType: "PACKAGE",
-        order: { ...inRange, status: { notIn: LOST } },
+        order: { ...inRange, status: { notIn: NOT_SALE } },
       },
       select: { qty: true, lineTotal: true },
     });
@@ -224,7 +230,7 @@ async function main() {
     check("customer count = distinct order customers", all.totalCustomers === distinct.length);
 
     const saleAgg = await prisma.order.aggregate({
-      where: { status: { notIn: LOST } },
+      where: { status: { notIn: NOT_SALE } },
       _sum: { totalAmount: true },
     });
     check(
@@ -237,7 +243,7 @@ async function main() {
     const repeatDb = (
       await prisma.order.groupBy({
         by: ["customerId"],
-        where: { status: { notIn: LOST } },
+        where: { status: { notIn: NOT_SALE } },
         _count: { _all: true },
       })
     ).filter((g) => g._count._all >= 2);
@@ -339,7 +345,7 @@ async function main() {
     const agg = await prisma.order.aggregate({
       where: {
         salesExecutiveId: sanjoy.id,
-        status: { notIn: LOST },
+        status: { notIn: NOT_SALE },
         createdAt: { gte: start },
       },
       _count: { _all: true },

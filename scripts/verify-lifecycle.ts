@@ -13,6 +13,8 @@ import {
   syncReservations,
   weightedAvgCost,
   orderStockRequirements,
+  orderStockNets,
+  releaseOrderStock,
 } from "../lib/stock";
 import { packageCost, productEffectiveCost } from "../lib/bom";
 import { loadBomCatalog } from "../lib/bom-db";
@@ -28,14 +30,19 @@ import {
   applyCodReceived,
   applyReturnReceive,
   buildReturnInspection,
+  autoPackForHandover,
 } from "../lib/courier";
+import { explodePackage, packageAvailability } from "../lib/bom";
 import {
   ingestDeliveryStatus,
   shipmentForSyncInclude,
   type ShipmentForSync,
 } from "../lib/steadfast-sync";
 import { DAMAGED_STOCK_EXPENSE_CATEGORY } from "../lib/courier-constants";
-import type { OrderStatusValue } from "../lib/order-constants";
+import {
+  TRASH_RETENTION_DAYS,
+  type OrderStatusValue,
+} from "../lib/order-constants";
 
 const prisma = new PrismaClient();
 const ROLLBACK = "ROLLBACK_SENTINEL";
@@ -865,6 +872,466 @@ async function main() {
             dHistory[1].toStatus === "CONFIRMED"
         );
         await invariant(tx, teddy.id, "after draft confirm");
+        console.log("");
+
+        // =====================================================================
+        // 10. NESTED COMBO + CHOICE (Products §5) + §6j send-from-CONFIRMED —
+        //     C10 items 1+3: a combo containing a sub-package and a choice
+        //     group, ordered with the NON-default variant, auto-packed straight
+        //     from CONFIRMED (the Steadfast-send pre-pack), then the §6m ladder
+        //     pending → rider → Delivery Approval Pending → Delivered + COD.
+        // =====================================================================
+        console.log(
+          "10. NESTED COMBO — choice variant, §6j CONFIRMED send, approval ladder, COD"
+        );
+        const combo = await tx.package.findUniqueOrThrow({
+          where: { code: "PKG-004" },
+          include: {
+            items: { include: { options: { include: { product: true } } } },
+          },
+        });
+        const choiceLine = combo.items.find((i) => i.kind === "CHOICE");
+        check(
+          "PKG-004 nests a sub-package AND carries a choice group",
+          combo.items.some((i) => i.kind === "PACKAGE") && choiceLine != null
+        );
+        if (!choiceLine) throw new Error("PKG-004 lost its choice group — reseed");
+        const defaultOpt =
+          choiceLine.options.find((o) => o.isDefault) ?? choiceLine.options[0];
+        const variantOpt = choiceLine.options.find((o) => o.id !== defaultOpt.id)!;
+        const picks = new Map([[choiceLine.id, variantOpt.productId]]);
+
+        // Top up every stock-tracked leaf of the CHOSEN explosion (sub-package
+        // contents + component-only materials included) and buy the variant at
+        // a deliberately different cost so variant-vs-default costs can't tie.
+        const catalogPre = await loadBomCatalog(tx);
+        const chosenExplosion = explodePackage(catalogPre, combo.id, 1, picks);
+        check(
+          "chosen explosion contains the variant, NOT the default option",
+          (chosenExplosion.get(variantOpt.productId) ?? 0) >= 1 &&
+            !chosenExplosion.has(defaultOpt.productId)
+        );
+        const comboDirectIds = new Set(
+          combo.items.map((i) => i.productId).filter((x): x is number => x != null)
+        );
+        const nestedLeafId = [...chosenExplosion.keys()].find(
+          (pid) =>
+            !comboDirectIds.has(pid) &&
+            pid !== variantOpt.productId &&
+            catalogPre.products.get(pid)?.isStockTracked
+        );
+        check(
+          "explosion reaches leaves that only exist inside the sub-package",
+          nestedLeafId !== undefined
+        );
+        await applyPurchase(tx, {
+          supplierName: "Verify Supplier Ltd",
+          purchaseDate: new Date(),
+          notes: "nested-combo verification top-up",
+          lines: [...chosenExplosion.keys()]
+            .filter((pid) => catalogPre.products.get(pid)?.isStockTracked)
+            .map((pid) => ({
+              productId: pid,
+              qty: 30,
+              unitCost: pid === variantOpt.productId ? 999 : 120,
+            })),
+          userId: admin.id,
+        });
+        const catalogStocked = await loadBomCatalog(tx);
+        const availBefore = packageAvailability(catalogStocked, combo.id, picks);
+        check(
+          `combo availability computes with the chosen variant (${availBefore})`,
+          availBefore !== null && availBefore >= 1
+        );
+
+        // Order the combo CONFIRMED with the stored choice pick (the §5 shape:
+        // groupId = the CHOICE line's package_items.id).
+        const N_TOTAL = 5500;
+        const N_ADVANCE = 1500;
+        const nOrder = await tx.order.create({
+          data: {
+            orderNo: "GV-LIFECYCLE-0003",
+            customerId: customer.id,
+            recipientName: "Combo Recipient",
+            recipientPhoneBd: "01700000004",
+            deliveryAddress: "combo addr, Dhaka",
+            subtotal: N_TOTAL,
+            totalAmount: N_TOTAL,
+            advanceAmount: N_ADVANCE,
+            dueAmount: N_TOTAL,
+            codAmount: 0,
+            status: "CONFIRMED",
+            salesExecutiveId: admin.id,
+            items: {
+              create: [
+                {
+                  itemType: "PACKAGE",
+                  packageId: combo.id,
+                  qty: 1,
+                  unitPrice: N_TOTAL,
+                  lineTotal: N_TOTAL,
+                  choiceSelections: [
+                    {
+                      groupId: choiceLine.id,
+                      label: choiceLine.choiceLabel ?? "Choice",
+                      productId: variantOpt.productId,
+                      name: variantOpt.product.name,
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        });
+        await tx.payment.create({
+          data: {
+            orderId: nOrder.id,
+            type: "ADVANCE",
+            method: "BKASH",
+            amount: N_ADVANCE,
+            walletId: wallet.id,
+            transactionId: "VERIFY-TXN-0004",
+            isVerified: true,
+            verifiedBy: admin.id,
+            createdBy: admin.id,
+            updatedBy: admin.id,
+          },
+        });
+        const nDue = await recomputeDue(tx, nOrder.id);
+        await tx.order.update({
+          where: { id: nOrder.id },
+          data: { codAmount: Math.max(nDue, 0) },
+        });
+        await syncReservations(tx, nOrder.id, admin.id);
+
+        // Reserve must equal the CHOSEN explosion exactly — every leaf, and
+        // nothing for the default option (choice isolation).
+        const nNeed = await orderStockRequirements(tx, nOrder.id);
+        const trackedChosen = new Map(
+          [...chosenExplosion].filter(
+            ([pid]) => catalogPre.products.get(pid)?.isStockTracked
+          )
+        );
+        const needMatches =
+          nNeed.size === trackedChosen.size &&
+          [...trackedChosen].every(([pid, qty]) => nNeed.get(pid) === qty);
+        check(
+          `stored choice pick drives the requirement map (${nNeed.size} leaves match)`,
+          needMatches,
+          `need ${JSON.stringify([...nNeed])} vs explosion ${JSON.stringify([...trackedChosen])}`
+        );
+        check(
+          "variant reserved, default option NOT reserved",
+          !nNeed.has(defaultOpt.productId) &&
+            (nNeed.get(variantOpt.productId) ?? 0) >= 1
+        );
+        const nets = await orderStockNets(tx, nOrder.id);
+        const reservedMatches = [...nNeed].every(
+          ([pid, qty]) => (nets.reserved.get(pid) ?? 0) === qty
+        );
+        check("ledger reserve rows match the exploded need", reservedMatches);
+        check(
+          "sub-package-only leaf reserved too (nested explosion)",
+          nestedLeafId !== undefined &&
+            (nets.reserved.get(nestedLeafId) ?? 0) ===
+              (nNeed.get(nestedLeafId) ?? -1)
+        );
+        await invariant(tx, variantOpt.productId, "after combo confirm");
+
+        // §6j — the Steadfast send from the CONFIRMED tab pre-packs via the
+        // same autoPackForHandover the send route calls BEFORE the network hop.
+        const onHandBeforePack = await onHandMap(tx, [...nNeed.keys()]);
+        await autoPackForHandover(
+          tx,
+          {
+            id: nOrder.id,
+            status: "CONFIRMED",
+            cancelReason: null,
+          },
+          admin.id
+        );
+        check(
+          "§6j auto-pack flips CONFIRMED → PACKED",
+          (await dueOf(tx, nOrder.id)).status === "PACKED"
+        );
+        const autoPackHist = await tx.orderStatusHistory.findFirst({
+          where: { orderId: nOrder.id, toStatus: "PACKED" },
+        });
+        check(
+          "§6j pack history notes the auto-pack",
+          (autoPackHist?.note ?? "").includes("Auto-packed")
+        );
+        let comboDeductOk = true;
+        for (const [pid, qty] of nNeed) {
+          const nowQty = (
+            await tx.product.findUniqueOrThrow({ where: { id: pid } })
+          ).stockQty;
+          if (nowQty !== (onHandBeforePack.get(pid) ?? 0) - qty)
+            comboDeductOk = false;
+        }
+        check("auto-pack deducted EVERY exploded leaf by its qty", comboDeductOk);
+        const netsPacked = await orderStockNets(tx, nOrder.id);
+        check(
+          "reservations fully released on pack",
+          [...nNeed.keys()].every((pid) => (netsPacked.reserved.get(pid) ?? 0) === 0)
+        );
+
+        // Cost snapshot = recursive BOM cost of the CHOSEN variant — and the
+        // ৳999 variant purchase guarantees it differs from the default cost.
+        const catalogAtComboPack = await loadBomCatalog(tx);
+        const nItem = await tx.orderItem.findFirstOrThrow({
+          where: { orderId: nOrder.id },
+        });
+        const chosenCost = packageCost(catalogAtComboPack, combo.id, picks);
+        const defaultCost = packageCost(catalogAtComboPack, combo.id);
+        check(
+          `combo cost snapshot = chosen-variant BOM cost (৳${chosenCost})`,
+          Number(nItem.unitCostSnapshot) === chosenCost
+        );
+        check(
+          `chosen cost ≠ default cost (৳${chosenCost} vs ৳${defaultCost})`,
+          chosenCost !== defaultCost
+        );
+        const availAfterPack = packageAvailability(
+          catalogAtComboPack,
+          combo.id,
+          picks
+        );
+        check(
+          `packing 1 combo drops availability by exactly 1 (${availBefore} → ${availAfterPack})`,
+          availBefore !== null && availAfterPack === availBefore - 1
+        );
+
+        // Handover + the §6m courier ladder with the DELIVERY approval-wait.
+        const nShipment = await applyHandover(
+          tx,
+          {
+            orderId: nOrder.id,
+            courierId: courier.id,
+            trackingNo: "VERIFY-TRACK-0003",
+            handoverDate: new Date(),
+            codAmount: Math.max(nDue, 0),
+            expectedDelivery: null,
+            note: null,
+          },
+          admin.id
+        );
+        const nLoadSync = async () =>
+          (await tx.shipment.findUniqueOrThrow({
+            where: { id: nShipment.id },
+            include: shipmentForSyncInclude,
+          })) as unknown as ShipmentForSync;
+        const nShip = async () =>
+          tx.shipment.findUniqueOrThrow({ where: { id: nShipment.id } });
+
+        await ingestDeliveryStatus(tx, {
+          shipment: await nLoadSync(),
+          rawStatus: "pending",
+          source: "WEBHOOK",
+          rawPayload: { status: "pending" },
+        });
+        check(
+          "combo parcel enters IN_TRANSIT on warehouse receive",
+          (await dueOf(tx, nOrder.id)).status === "IN_TRANSIT"
+        );
+        await ingestDeliveryStatus(tx, {
+          shipment: await nLoadSync(),
+          rawStatus: "pending",
+          source: "POLL",
+          rawPayload: {
+            status: "pending",
+            rider: { name: "Combo Rider", phone: "01922222222" },
+          },
+        });
+        check(
+          "rider assigned (mock) → ASSIGNED",
+          (await nShip()).courierStatus === "ASSIGNED"
+        );
+        await ingestDeliveryStatus(tx, {
+          shipment: await nLoadSync(),
+          rawStatus: "delivered_approval_pending",
+          source: "WEBHOOK",
+          rawPayload: { status: "delivered_approval_pending" },
+        });
+        check(
+          "'delivered_approval_pending' keeps the order IN_TRANSIT (§6m)",
+          (await dueOf(tx, nOrder.id)).status === "IN_TRANSIT"
+        );
+        check(
+          "courier status = DELIVERY_APPROVAL_PENDING",
+          (await nShip()).courierStatus === "DELIVERY_APPROVAL_PENDING"
+        );
+        await ingestDeliveryStatus(tx, {
+          shipment: await nLoadSync(),
+          rawStatus: "delivered",
+          source: "WEBHOOK",
+          rawPayload: { status: "delivered" },
+        });
+        const nDelivered = await nShip();
+        check(
+          "hub approval ('delivered') → order DELIVERED, deliveredAt stamped",
+          (await dueOf(tx, nOrder.id)).status === "DELIVERED" &&
+            nDelivered.deliveredAt !== null
+        );
+
+        // COD reconciliation still works at the end of the new chain.
+        const codRes = await applyCodReceived(
+          tx,
+          [nShipment.id],
+          new Date(),
+          admin.id,
+          wallet.id
+        );
+        check(
+          `combo COD reconciled ৳${codRes.totalCod} (expected ৳${Math.max(nDue, 0)})`,
+          codRes.reconciled === 1 && codRes.totalCod === Math.max(nDue, 0)
+        );
+        check(
+          "combo due settled to ৳0 by COD payment",
+          (await dueOf(tx, nOrder.id)).due === 0
+        );
+        await invariant(tx, variantOpt.productId, "after combo COD");
+        if (nestedLeafId !== undefined) {
+          await invariant(tx, nestedLeafId, "after combo COD (nested leaf)");
+        }
+        console.log("");
+
+        // =====================================================================
+        // 11. TRASH → RESTORE → PURGE (CORRECTIONS §6f, C10 item 4) — trash
+        //     releases the reservation, restore re-reserves, and the 30-day
+        //     cron purge picks ONLY expired rows (dry-run inside the rollback).
+        // =====================================================================
+        console.log("11. TRASH — release on trash, re-reserve on restore, 30-day purge");
+        const teddyReservedBase = (
+          await tx.product.findUniqueOrThrow({ where: { id: teddy.id } })
+        ).reservedQty;
+        const mkTrashOrder = (no: string) =>
+          tx.order.create({
+            data: {
+              orderNo: no,
+              customerId: customer.id,
+              recipientName: "Trash Recipient",
+              recipientPhoneBd: "01700000005",
+              deliveryAddress: "trash addr, Dhaka",
+              subtotal: 1600,
+              totalAmount: 1600,
+              dueAmount: 1600,
+              codAmount: 1600,
+              status: "CONFIRMED",
+              salesExecutiveId: admin.id,
+              items: {
+                create: [
+                  { itemType: "PRODUCT", productId: teddy.id, qty: 2, unitPrice: 800, lineTotal: 1600 },
+                ],
+              },
+            },
+          });
+        const tOrder = await mkTrashOrder("GV-LIFECYCLE-0004");
+        await syncReservations(tx, tOrder.id, admin.id);
+        const reservedAfterConfirmT = (
+          await tx.product.findUniqueOrThrow({ where: { id: teddy.id } })
+        ).reservedQty;
+        check(
+          "trash-test order reserved +2 Teddy on confirm",
+          reservedAfterConfirmT === teddyReservedBase + 2
+        );
+        const teddyOnHandT = (
+          await tx.product.findUniqueOrThrow({ where: { id: teddy.id } })
+        ).stockQty;
+
+        // Trash — the route's transaction body: stamp deletedAt + release.
+        await tx.order.update({
+          where: { id: tOrder.id },
+          data: { deletedAt: new Date(), deletedBy: admin.id },
+        });
+        await releaseOrderStock(tx, tOrder.id, admin.id, {
+          restoreDeducted: false,
+          reason: `Order ${tOrder.orderNo} trashed`,
+        });
+        const afterTrash = await tx.product.findUniqueOrThrow({
+          where: { id: teddy.id },
+        });
+        check(
+          "trash releases the reservation (back to baseline)",
+          afterTrash.reservedQty === teddyReservedBase
+        );
+        check("trash leaves on-hand untouched", afterTrash.stockQty === teddyOnHandT);
+
+        // Restore — the route's transaction body: clear deletedAt + re-sync.
+        await tx.order.update({
+          where: { id: tOrder.id },
+          data: { deletedAt: null, deletedBy: null },
+        });
+        await syncReservations(tx, tOrder.id, admin.id);
+        const afterRestore = await tx.product.findUniqueOrThrow({
+          where: { id: teddy.id },
+        });
+        check(
+          "restore re-reserves the order's stock (+2 again)",
+          afterRestore.reservedQty === teddyReservedBase + 2
+        );
+        await invariant(tx, teddy.id, "after trash/restore round trip");
+
+        // Purge dry-run — the cron's selection: ONLY rows trashed > 30 days.
+        // Re-trash the order backdated 31 days, plus a fresh 5-day-old row that
+        // must survive. Same cutoff arithmetic as the route.
+        await tx.order.update({
+          where: { id: tOrder.id },
+          data: {
+            deletedAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000),
+            deletedBy: admin.id,
+          },
+        });
+        await releaseOrderStock(tx, tOrder.id, admin.id, {
+          restoreDeducted: false,
+          reason: `Order ${tOrder.orderNo} trashed`,
+        });
+        const freshTrash = await mkTrashOrder("GV-LIFECYCLE-0005");
+        await tx.order.update({
+          where: { id: freshTrash.id },
+          data: {
+            deletedAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000),
+            deletedBy: admin.id,
+          },
+        });
+        const cutoff = new Date(
+          Date.now() - TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000
+        );
+        const expired = await tx.order.findMany({
+          where: {
+            deletedAt: { not: null, lt: cutoff },
+            orderNo: { startsWith: "GV-LIFECYCLE-" },
+          },
+          select: { id: true, orderNo: true },
+        });
+        check(
+          "purge selection picks the 31-day row and ONLY it",
+          expired.length === 1 && expired[0].id === tOrder.id
+        );
+
+        // Execute the purge on the expired row (rolled back with everything
+        // else): cascades take items/payments/history, the ledger stays.
+        const ledgerRowsBefore = await tx.stockMovement.count({
+          where: { refTable: "orders", refId: tOrder.id },
+        });
+        check("order has ledger rows before purge", ledgerRowsBefore > 0);
+        await tx.order.delete({ where: { id: tOrder.id } });
+        const [goneItems, goneHistory, keptLedger] = await Promise.all([
+          tx.orderItem.count({ where: { orderId: tOrder.id } }),
+          tx.orderStatusHistory.count({ where: { orderId: tOrder.id } }),
+          tx.stockMovement.count({
+            where: { refTable: "orders", refId: tOrder.id },
+          }),
+        ]);
+        check(
+          "purge cascades items + status history",
+          goneItems === 0 && goneHistory === 0
+        );
+        check(
+          "immutable stock ledger survives the purge",
+          keptLedger === ledgerRowsBefore
+        );
+        await invariant(tx, teddy.id, "after purge dry-run");
 
         throw new Error(ROLLBACK);
       },

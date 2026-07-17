@@ -129,6 +129,36 @@ Verification pass for correction round 1. With seeded demo data:
    including new endpoints (planner, damage log, dashboard widgets)
 6. Fix everything found, confirm every CORRECTIONS.md item is [FIXED], commit.
 ```
+→ **Verified (C10, 2026-07-18)** — every verify script green (`lifecycle` 106 ·
+`steadfast` 95 · `dashboard` 47 · `stock` 29 · `courier-cost` 20 ·
+`purchase-dues` 30 · `leads` 28 · `targets` 50 · `attendance` 46 · `pnl` 38 ·
+`reports` 47 · `test:bom` 24), production build clean, merged to `main`.
+- **Items 1+3**: new `verify-lifecycle` §10 — a nested combo (PKG-004 = sub-package
+  + choice group) ordered with the NON-default variant: reserve/deduct follow the
+  chosen explosion exactly (default variant untouched), cost snapshot = chosen-pick
+  recursive BOM cost, availability drops by exactly 1 per pack; then the §6j
+  CONFIRMED-tab send (auto-pack pre-network via `autoPackForHandover`) →
+  `pending` → rider ASSIGNED → `delivered_approval_pending` (stays IN_TRANSIT) →
+  `delivered` → COD reconciliation settles the due. Item 2 was already §8.
+- **Item 4**: new `verify-lifecycle` §11 — trash releases the reservation
+  (on-hand untouched), restore re-reserves, and the 30-day purge dry-run picks
+  ONLY a >30-day row, cascades items/history and keeps the immutable stock ledger.
+- **Item 5**: live probe as Sanjoy (SE) against the dev server — orders
+  list/detail (incl. the R7 courier block), products, packages, occasions,
+  role-home dashboard and leads carry ZERO cost markers (admin control run
+  proves the scanner catches `avgCost`/`unitCost`/`courierCost`); planner,
+  delivery-schedule and damaged-stock report redirect SEs away, the Steadfast
+  balance API 403s.
+- **6a**: Delivered widget now falls back to the `order_status_history`
+  DELIVERED timestamp when a delivered order has no `shipment.delivered_at`
+  (`lib/dashboard.ts`), proven by a live +1/−1 check in `verify-dashboard`.
+- **6b**: `formatDuration` already produced `45m` / `5h 20m` / `5d 3h` —
+  pinned by 8 regression checks in `verify-steadfast`.
+- **6c**: every Snapshot widget (§1/§2/§4/§5/§7 + §3) is now compared to a
+  DIRECT DB query for the same range in `verify-dashboard`.
+- **Stale-script fixes found by the pass**: `verify-reports` sale-side
+  aggregates now exclude DRAFT like the report code (Leads §10); `verify-pnl`
+  RBAC loop skips the inactive "Steadfast (system)" machine account.
 
 ---
 
@@ -352,6 +382,16 @@ R6. [FIXED] [CHANGE] **Time-in-status tracking for In Transit (stuck-parcel dete
    → Fixed: two new shipment clocks (migration `20260718010000`) — **`in_transit_at`** (set at the single choke point `applyShipmentStatus` on the first move to In Transit → total time) and **`courier_status_at`** (re-stamped by `ingestDeliveryStatus` + the tracking-page rider flip whenever the courier sub-status changes → time in current status); existing rows backfilled from `order_status_history`. `courier-constants.ts` gained `formatDuration()` / `daysSince()` / `stuckLevel()`. The In Transit tab shows a **Duration** column ("5d 3h · this status 2d", amber→red by the current-sub-status age), a **"⚠ N stuck"** header count (≥ amber days), a **"Stuck more than X days"** filter (default = amber threshold) and a **longest-first sort** (`sort=stuck`, forced by the filter). Amber/red thresholds are Admin-configurable on the Courier page (settings `courier_stuck_amber_days` / `courier_stuck_red_days`, defaults 3d/5d). The dashboard carries the same stuck count (deep-links the filter). Durations compute against a server-provided `nowMs` so SSR and hydration agree.
 
 R7. [FIXED] [CHANGE] **Courier info block on the Order Details page**: all the courier data currently visible only as list columns must also appear in a "Courier / Shipment" section on the order details page — **Consignment ID, tracking link (clickable), courier status + rider info, Steadfast's counted weight & delivery charge, our estimated weight & delivery charge (Ours vs SF side by side with the same overcharge highlight), time-in-status durations (R6), and the shipment status timeline** (tracking events already stored). One glance at an order's details = the full courier picture.
+
+R8. [CHANGE] **Steadfast Payments sync — automatic COD reconciliation** (data source: `GET /payments` and `GET /payments/{payment_id}` from the Steadfast V1 API — the payment invoice contains: Amount Delivered, Payable Delivery Charge, COD Charge, Available Balance, and the list of cleared consignments with per-parcel COD + bill):
+   - Poll `GET /payments` (with the hourly poller + a "Sync payments" button on the Courier page); store each payment: Steadfast payment id/invoice no (e.g. SFC-30699149), date, status (**processing / paid**), amount delivered, payable delivery charge, COD charge, net amount
+   - For each new/updated payment, fetch `GET /payments/{payment_id}` → its consignments → **match `consignment_id` to our shipments** and AUTO-reconcile: create the COD_COURIER payment row on each matched order (per-parcel COD from the payload), set cod_received, and post the ACTUAL per-parcel delivery charge (the "bills" value) as courier_cost_actual + the COD fee expense — replacing estimates with real numbers
+   - Unmatched consignments (not in our system) → flagged list for manual review; already-reconciled orders are skipped (idempotent)
+   - **UI — "Steadfast Payments" section on the Courier page**: payment list (date, invoice no, status badge processing/paid, parcels count, net amount) + detail view mirroring their invoice breakdown; a **"Paid today/this range: ৳X (N parcels)"** summary, and a dashboard line under Courier Balance showing the latest payout
+   - Wallet link: when a payment is `paid`, record the net amount as an incoming transfer to the linked bank wallet (so wallet running balances stay true)
+   - **"Request Payment" shortcut button** next to the Courier Balance (Courier page + dashboard widget): visible/enabled only when the Steadfast balance is > 0 — opens the Steadfast merchant panel's payment request page in a new tab (no payment-request API exists in their documented V1, so this is a deep-link shortcut; the request itself is made in their panel, and our /payments sync picks up the resulting processing → paid record automatically)
+   - **Sync button on the dashboard's Total Collection widget**: a small refresh icon that triggers the Steadfast payments sync and refreshes the widget — so after a payout the owner can pull the latest Courier COD figures instantly without leaving the dashboard
+   - **Accounting note**: the Courier COD line in Total Collection shows the GROSS per-order COD amounts (e.g. ৳18,300) — the delivery charge (৳955) and COD fee (৳173) post as expenses, and only the NET (৳17,172) lands in the bank wallet. Collection, expenses, and wallet must each carry their own correct number.
    → Fixed: the order-detail serializer now carries the tracking URL, our + Steadfast weight, our estimate + actual charge (both COSTS — cost-visible roles only) and the R6 duration clocks, alongside the consignment id / rider / timeline it already had. The **Courier / Shipment** card was rebuilt: Consignment ID, a clickable **tracking link**, courier status (via `displayedCourierStatus`) + rider, a **`CourierCompare`** "Ours: … / SF: …" pair for both **Weight** and **Courier charge** (Steadfast's figure goes red ⚠ past the Admin overcharge tolerance — shared `isOvercharged`), a **Time in transit** line ("5d 3h · this status 2d", amber→red by the same stuck thresholds as R6), and the existing tracking-event timeline + Steadfast flags. Cost gating: weights show to everyone, the charge comparison + estimate only to cost-visible roles.
 
 **Verification** — how to test each:

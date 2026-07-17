@@ -280,8 +280,14 @@ async function main() {
 
   // ---------- 6. Cost-blind RBAC (CLAUDE.md rule 1) ----------
   console.log("\n6. RBAC — P&L is cost-visible-only");
+  // Active humans only — the inactive "Steadfast (system)" machine account
+  // carries a role purely as an FK filler and can never log in, so the
+  // role→cost-visibility promise doesn't apply to it.
   const roleUsers = await prisma.user.findMany({
-    where: { role: { name: { in: ["SalesExecutive", "TeamLeader", "Packing", "Accounts", "Admin"] } } },
+    where: {
+      isActive: true,
+      role: { name: { in: ["SalesExecutive", "TeamLeader", "Packing", "Accounts", "Admin"] } },
+    },
     select: { id: true, role: { select: { name: true } } },
   });
   for (const u of roleUsers) {

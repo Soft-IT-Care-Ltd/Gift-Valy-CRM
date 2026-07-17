@@ -1,10 +1,12 @@
-// Owner Dashboard verification (SPEC §13). Read-only: exercises the whole data
-// aggregator against the live demo DB for every window type (today / week /
-// month / custom) and both cost-visibility modes, asserting the widget
-// invariants — funnel monotonicity, MTD-vs-last-month alignment, dues/COD
-// snapshots, leaderboard ordering, country-share totals, and that the cost/
-// profit fields are withheld when showCosts is false. No writes, no rollback
-// needed. Run: npx tsx scripts/verify-dashboard.ts
+// Owner Dashboard verification (SPEC §13 + CORRECTIONS C10 §6a/§6c). Exercises
+// the whole data aggregator against the live demo DB for every window type
+// (today / week / month / custom) and both cost-visibility modes, asserting the
+// widget invariants — funnel monotonicity, MTD-vs-last-month alignment,
+// dues/COD snapshots, leaderboard ordering, country-share totals, that cost/
+// profit fields are withheld when showCosts is false, and that every Snapshot
+// KPI matches a DIRECT DB query for the same range (§6c). Mostly read-only; the
+// §6a fallback check creates one sentinel order (VERIFY-DASH-6A) and deletes it
+// again in a finally. Run: npx tsx scripts/verify-dashboard.ts
 import { PrismaClient } from "@prisma/client";
 import {
   resolveDashWindow,
@@ -12,6 +14,10 @@ import {
   buildFunnel,
 } from "../lib/dashboard";
 import { dhakaYmd } from "../lib/pnl";
+import {
+  EXCLUDED_SALE_STATUSES,
+  dhakaDateBound,
+} from "../lib/order-constants";
 
 const prisma = new PrismaClient();
 
@@ -148,13 +154,26 @@ async function main() {
     s.orders === d.money.orders,
     `${s.orders} vs ${d.money.orders}`
   );
-  // Delivered is now keyed by DELIVERY date (shipment.delivered_at in range),
-  // independent of the funnel's created-in-range stage view. Recompute directly.
+  // Delivered is keyed by DELIVERY date: shipment.delivered_at in range, and
+  // for delivered orders missing that stamp (manual moves / no shipment row)
+  // the order_status_history → DELIVERED timestamp (C10 §6a fallback).
+  // Independent of the funnel's created-in-range stage view. Recompute directly.
   const delivRows = await prisma.order.findMany({
     where: {
       status: { in: ["DELIVERED", "COMPLETED"] },
-      shipment: { deliveredAt: { gte: month.from, lte: month.to } },
       deletedAt: null,
+      OR: [
+        { shipment: { deliveredAt: { gte: month.from, lte: month.to } } },
+        {
+          OR: [{ shipment: { is: null } }, { shipment: { deliveredAt: null } }],
+          statusHistory: {
+            some: {
+              toStatus: "DELIVERED",
+              at: { gte: month.from, lte: month.to },
+            },
+          },
+        },
+      ],
     },
     select: { totalAmount: true },
   });
@@ -162,7 +181,7 @@ async function main() {
   const expDelivAmount =
     Math.round(delivRows.reduce((sum, o) => sum + Number(o.totalAmount), 0) * 100) / 100;
   check(
-    "§3 delivered counts orders by shipment.delivered_at in range",
+    "§3 delivered counts orders by delivery date (stamp, else history) in range",
     s.delivered.count === expDelivCount &&
       Math.abs(s.delivered.amount - expDelivAmount) < 0.01,
     `snapshot ${s.delivered.count}/${s.delivered.amount} vs recompute ${expDelivCount}/${expDelivAmount}`
@@ -198,6 +217,170 @@ async function main() {
     `${s.drafts.count} / ${s.drafts.amount}`
   );
   check("§6 courierEnabled is a boolean", typeof s.courierEnabled === "boolean");
+
+  // ── C10 §6c — every snapshot widget vs a DIRECT DB query, same range ──
+  // These bypass the aggregator entirely (raw PrismaClient, no lib helpers
+  // beyond shared constants), so a regression inside buildOwnerDashboard's
+  // pipeline can't hide behind internal consistency. The raw client has no
+  // trash auto-filter, hence the explicit deletedAt: null.
+  console.log("\nSnapshot widgets vs direct DB queries (C10 §6c)");
+  const [dbLeadsDetailed, dbLeadsBulk, dbOrders, dbDrafts, dbPayments] =
+    await Promise.all([
+      prisma.lead.count({
+        where: { createdAt: { gte: month.from, lte: month.to } },
+      }),
+      prisma.leadDailyCount.aggregate({
+        _sum: { count: true },
+        where: {
+          date: {
+            gte: dhakaDateBound(month.from),
+            lte: dhakaDateBound(month.to),
+          },
+        },
+      }),
+      prisma.order.count({
+        where: {
+          createdAt: { gte: month.from, lte: month.to },
+          status: { notIn: EXCLUDED_SALE_STATUSES },
+          deletedAt: null,
+        },
+      }),
+      prisma.order.aggregate({
+        where: {
+          createdAt: { gte: month.from, lte: month.to },
+          status: "DRAFT",
+          deletedAt: null,
+        },
+        _sum: { totalAmount: true },
+        _count: true,
+      }),
+      prisma.payment.groupBy({
+        by: ["type"],
+        where: {
+          paymentDate: { gte: month.from, lte: month.to },
+          isRejected: false,
+          order: { deletedAt: null },
+        },
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
+    ]);
+  const dbLeads = dbLeadsDetailed + (dbLeadsBulk._sum.count ?? 0);
+  check(
+    "§1 leads widget == direct detailed + bulk count",
+    s.leads === dbLeads,
+    `widget ${s.leads} vs DB ${dbLeads}`
+  );
+  check(
+    "§2 orders widget == direct non-lost non-draft count",
+    s.orders === dbOrders,
+    `widget ${s.orders} vs DB ${dbOrders}`
+  );
+  const payDb = (t: string) => {
+    const g = dbPayments.find((p) => p.type === t);
+    return {
+      amount: Number(g?._sum.amount ?? 0),
+      count: g?._count._all ?? 0,
+    };
+  };
+  const dbAdv = payDb("ADVANCE");
+  check(
+    "§4 advance widget == direct ADVANCE payment aggregate",
+    s.advanceCollection.count === dbAdv.count &&
+      Math.abs(s.advanceCollection.amount - dbAdv.amount) < 0.01,
+    `widget ${s.advanceCollection.count}/${s.advanceCollection.amount} vs DB ${dbAdv.count}/${dbAdv.amount}`
+  );
+  const dbCollAdvance = dbAdv.amount + payDb("PARTIAL").amount;
+  const dbCollCod = payDb("COD_COURIER").amount;
+  const dbCollMfs = payDb("POST_DELIVERY_MFS").amount;
+  check(
+    "§5 collection lines == direct per-type sums (advance/COD/post-MFS)",
+    Math.abs(s.collection.advance - dbCollAdvance) < 0.01 &&
+      Math.abs(s.collection.cod - dbCollCod) < 0.01 &&
+      Math.abs(s.collection.postMfs - dbCollMfs) < 0.01,
+    `widget ${s.collection.advance}/${s.collection.cod}/${s.collection.postMfs} vs DB ${dbCollAdvance}/${dbCollCod}/${dbCollMfs}`
+  );
+  check(
+    "§5 collection total == direct grand total",
+    Math.abs(s.collection.total - (dbCollAdvance + dbCollCod + dbCollMfs)) <
+      0.01,
+    `widget ${s.collection.total} vs DB ${dbCollAdvance + dbCollCod + dbCollMfs}`
+  );
+  check(
+    "§7 drafts widget == direct DRAFT count + amount",
+    s.drafts.count === dbDrafts._count &&
+      Math.abs(s.drafts.amount - Number(dbDrafts._sum.totalAmount ?? 0)) < 0.01,
+    `widget ${s.drafts.count}/${s.drafts.amount} vs DB ${dbDrafts._count}/${Number(
+      dbDrafts._sum.totalAmount ?? 0
+    )}`
+  );
+
+  // ── C10 §6a — delivered-without-stamp falls back to history timestamp ──
+  // A DELIVERED order with NO shipment.delivered_at (manual override, no
+  // shipment row) must still count in the Delivered widget via its
+  // order_status_history DELIVERED entry. Proven live: create such an order
+  // stamped now, rebuild the today window, expect count +1 / amount +total,
+  // then remove the temp row (cascade takes the history entry with it).
+  console.log("\nDelivered fallback to status history (C10 §6a)");
+  const SENTINEL_NO = "VERIFY-DASH-6A";
+  const seedIds = await prisma.$transaction(async (tx) => {
+    const cust = await tx.customer.findFirstOrThrow({ select: { id: true } });
+    const admin = await tx.user.findFirstOrThrow({
+      where: { role: { name: "Admin" } },
+      select: { id: true },
+    });
+    return { customerId: cust.id, userId: admin.id };
+  });
+  await prisma.order.deleteMany({ where: { orderNo: SENTINEL_NO } }); // crashed prior run
+  const todayWin = resolveDashWindow({ range: "today" });
+  const before = (await buildOwnerDashboard(todayWin, { showCosts: false }))
+    .snapshot.delivered;
+  try {
+    await prisma.order.create({
+      data: {
+        orderNo: SENTINEL_NO,
+        customerId: seedIds.customerId,
+        salesExecutiveId: seedIds.userId,
+        recipientName: "Verify 6a",
+        recipientPhoneBd: "01700000000",
+        deliveryAddress: "verify-only row",
+        subtotal: 123.45,
+        totalAmount: 123.45,
+        dueAmount: 0,
+        status: "DELIVERED",
+        statusHistory: {
+          create: {
+            fromStatus: "IN_TRANSIT",
+            toStatus: "DELIVERED",
+            byUser: seedIds.userId,
+            note: "verify-dashboard §6a temp row",
+          },
+        },
+      },
+    });
+    const after = (await buildOwnerDashboard(todayWin, { showCosts: false }))
+      .snapshot.delivered;
+    check(
+      "§6a stampless DELIVERED order counted via history fallback (+1)",
+      after.count === before.count + 1,
+      `before ${before.count} → after ${after.count}`
+    );
+    check(
+      "§6a its amount joins the widget total (+123.45)",
+      Math.abs(after.amount - before.amount - 123.45) < 0.01,
+      `before ${before.amount} → after ${after.amount}`
+    );
+  } finally {
+    await prisma.order.deleteMany({ where: { orderNo: SENTINEL_NO } });
+  }
+  const restored = (await buildOwnerDashboard(todayWin, { showCosts: false }))
+    .snapshot.delivered;
+  check(
+    "§6a temp row removed — widget back to baseline",
+    restored.count === before.count &&
+      Math.abs(restored.amount - before.amount) < 0.01,
+    `baseline ${before.count}/${before.amount} vs restored ${restored.count}/${restored.amount}`
+  );
 
   // ── cost-blind lens (Manager without reports.pnl) ──
   console.log("\nOwner dashboard — showCosts=false (cost fields withheld)");
