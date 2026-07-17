@@ -97,9 +97,14 @@ export async function getAssignableUsers(
   });
   let where: Prisma.UserWhereInput;
   if (scope === "all") {
+    // Always include the caller: an Admin isn't a seller role but must be able
+    // to assign to themself, appear in the SE filter and in reassign targets.
     where = {
       isActive: true,
-      role: { name: { in: ["SalesExecutive", "TeamLeader", "Manager"] } },
+      OR: [
+        { id: me.id },
+        { role: { name: { in: ["SalesExecutive", "TeamLeader", "Manager"] } } },
+      ],
     };
   } else if (scope === "team") {
     const teamIds = [
