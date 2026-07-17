@@ -983,35 +983,30 @@ export function OrdersListClient({
                     </div>
                   )}
                 </TableCell>
-                {/* Items (§6c): 1–2 compact badges + "+N more" chip; the row
-                    never grows — badges truncate, the chip opens the full list */}
+                {/* Items (§6c): first 3 items STACKED like the Customer column
+                    (one per line — side-by-side badges ate too much width);
+                    anything past the 3rd lives in the "+N more" modal / order
+                    detail only. Each line truncates so the row never grows. */}
                 <TableCell onClick={(e) => e.stopPropagation()}>
-                  <div
-                    className="flex max-w-[190px] items-center gap-1 whitespace-nowrap"
-                    title={itemsTitle}
-                  >
+                  <div className="max-w-[170px]" title={itemsTitle}>
                     {o.items.length === 0 && (
                       <span className="text-muted-foreground">—</span>
                     )}
-                    {o.items.slice(0, 2).map((it) => (
-                      <Badge
-                        key={it.id}
-                        variant="outline"
-                        className="max-w-[92px] overflow-hidden font-normal"
-                      >
-                        <span className="truncate">
-                          {it.qty > 1 ? `${it.qty}× ` : ""}
-                          {it.name}
-                        </span>
-                      </Badge>
+                    {o.items.slice(0, 3).map((it) => (
+                      <div key={it.id} className="truncate text-xs">
+                        {it.qty > 1 && (
+                          <span className="text-muted-foreground">{it.qty}× </span>
+                        )}
+                        {it.name}
+                      </div>
                     ))}
-                    {o.items.length > 2 && (
+                    {o.items.length > 3 && (
                       <button
                         type="button"
                         onClick={() => setItemsOrder(o)}
-                        className="rounded-full border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                        className="text-xs font-medium text-primary underline-offset-2 hover:underline"
                       >
-                        +{o.items.length - 2} more
+                        +{o.items.length - 3} more
                       </button>
                     )}
                   </div>
