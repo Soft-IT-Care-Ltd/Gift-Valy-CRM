@@ -633,6 +633,11 @@ async function main() {
     recipientName: string; recipientPhoneBd: string; relation: string;
     address: string; district: string; thana: string; occasion: string | null;
     items: DemoLine[]; discount?: number; courier?: number;
+    // CORRECTIONS Orders §1/§2/§3 — requested delivery timing. FIXED carries
+    // deliveryInDays (0 = today, 1 = tomorrow, negative not used); ASAP/ANY_DAY
+    // carry no date. Feeds the Delivery Schedule, late-risk flags + the planner.
+    deliveryDateMode?: "ASAP" | "ANY_DAY" | "FIXED";
+    deliveryInDays?: number;
     // chain[0] = status at creation (order createdAt = its day)
     chain: DemoStatusStep[];
     payments: DemoPayment[];
@@ -771,6 +776,9 @@ async function main() {
       recipientName: "Nazma Khatun", recipientPhoneBd: "01818000008", relation: "Mother",
       address: "Vill: Baniachong", district: "Habiganj", thana: "Baniachong", occasion: "Eid",
       items: [{ pkg: "PKG-001", qty: 1 }], courier: 150,
+      // §2 — PACKED with a fixed date 3 days out: a dated schedule group (safe,
+      // already packed → not late-risk).
+      deliveryDateMode: "FIXED", deliveryInDays: 3,
       chain: [
         { to: "CONFIRMED", day: 3, byEmail: SE2 },
         { to: "PACKED", day: 2, byEmail: PCK },
@@ -784,6 +792,8 @@ async function main() {
       recipientName: "Liton Das", recipientPhoneBd: "01919000009", relation: "Friend",
       address: "New Market Area", district: "Khulna", thana: "Sonadanga", occasion: "Birthday",
       items: [{ sku: "GV-0001", qty: 2 }, { sku: "GV-0007", qty: 1 }], courier: 100,
+      // §2 — PACKED ASAP order: sits in Today's section.
+      deliveryDateMode: "ASAP",
       chain: [
         { to: "CONFIRMED", day: 2, byEmail: SE1 },
         { to: "PACKED", day: 1, byEmail: PCK },
@@ -797,6 +807,8 @@ async function main() {
       recipientName: "Amina Khatun", recipientPhoneBd: "01711000001", relation: "Mother",
       address: "House 12, Road 3, Dhanmondi", district: "Dhaka", thana: "Dhanmondi", occasion: "Just Because",
       items: [{ pkg: "PKG-003", qty: 1 }], courier: 120,
+      // §3 — CONFIRMED, fixed date TODAY, still un-packed → late-risk red flag.
+      deliveryDateMode: "FIXED", deliveryInDays: 0,
       chain: [{ to: "CONFIRMED", day: 2, byEmail: SE1 }],
       payments: [
         { type: "ADVANCE", method: "BKASH", amount: 1000, day: 2, txn: "DEMO-BK-1011" },
@@ -807,6 +819,8 @@ async function main() {
       recipientName: "Hasina Begum", recipientPhoneBd: "01711000011", relation: "Relative",
       address: "Vill: Ramganj", district: "Lakshmipur", thana: "Ramganj", occasion: "Other",
       items: [{ sku: "GV-0004", qty: 3 }], discount: 150, courier: 100,
+      // §3 — CONFIRMED, fixed date TOMORROW, un-packed → late-risk red flag.
+      deliveryDateMode: "FIXED", deliveryInDays: 1,
       chain: [{ to: "CONFIRMED", day: 1, byEmail: SE2 }],
       payments: [
         { type: "ADVANCE", method: "NAGAD", amount: 700, day: 1, txn: "DEMO-NG-1012" },
@@ -817,6 +831,8 @@ async function main() {
       recipientName: "Jashim Molla (self pickup)", recipientPhoneBd: "01712000012", relation: "Other",
       address: "Office pickup — Gift Valy, Dhaka", district: "Dhaka", thana: "Gulshan", occasion: "Wedding",
       items: [{ sku: "GV-0002", qty: 1 }, { sku: "GV-0003", qty: 1 }],
+      // §2 — CONFIRMED ASAP order (self-pickup): Today's section.
+      deliveryDateMode: "ASAP",
       chain: [{ to: "CONFIRMED", day: 0, byEmail: TL }],
       payments: [
         { type: "ADVANCE", method: "CASH", amount: 2600, day: 0 },
@@ -1075,6 +1091,13 @@ async function main() {
           district: d.district,
           thana: d.thana,
           occasion: d.occasion,
+          // CORRECTIONS Orders §1/§2 — requested delivery timing. FIXED stores a
+          // @db.Date (Dhaka calendar day) `deliveryInDays` ahead of today.
+          deliveryDateMode: d.deliveryDateMode ?? "ANY_DAY",
+          requestedDeliveryDate:
+            d.deliveryDateMode === "FIXED" && d.deliveryInDays != null
+              ? dhakaDateBound(daysAgo(-d.deliveryInDays))
+              : null,
           subtotal,
           discount,
           courierChargeCustomer: courier,
@@ -1164,6 +1187,13 @@ async function main() {
           d.chain[d.chain.length - 1].day;
         const deliveredStep = d.chain.find((s) => s.to === "DELIVERED");
         const returnedStep = d.chain.find((s) => s.to === "RETURNED");
+        // CORRECTIONS Orders §R6 — when the parcel reached In Transit (warehouse
+        // receive) feeds the Duration column + stuck detection. Migrations
+        // backfill existing rows from history, but the seed creates shipments
+        // directly, so set the clocks here for the demo. courier_status_at starts
+        // at the same instant (parcel enters at the "Pending" sub-status).
+        const inTransitStep = d.chain.find((s) => s.to === "IN_TRANSIT");
+        const inTransitAt = inTransitStep ? daysAgo(inTransitStep.day, 12) : null;
         const codPaymentDay = d.payments.find((p) => p.type === "COD_COURIER")?.day;
         const codReceived = codPaymentDay !== undefined;
 
@@ -1179,6 +1209,10 @@ async function main() {
             status: shipmentStatus,
             deliveredAt: deliveredStep ? daysAgo(deliveredStep.day, 14) : null,
             returnedAt: returnedStep ? daysAgo(returnedStep.day, 14) : null,
+            // §R6 — time-in-status clocks (only meaningful once a parcel has
+            // reached In Transit; harmless on later stages, which don't show them).
+            inTransitAt,
+            courierStatusAt: inTransitAt,
             courierCostActual: shipmentStatus === "DELIVERED" ? (d.courier ?? 0) : null,
             codReceived,
             codReceivedAt: codReceived ? daysAgo(codPaymentDay!, 12) : null,

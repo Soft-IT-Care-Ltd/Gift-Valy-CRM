@@ -49,6 +49,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import {
   ArchiveRestore,
+  ArrowDownWideNarrow,
   ChevronDown,
   Eye,
   NotebookPen,
@@ -83,6 +84,8 @@ import {
   displayedCourierStatus,
   estimateCourierCost,
   isOvercharged,
+  formatDuration,
+  stuckLevel,
   type CourierStatusValue,
   type ShipmentStatusValue,
   type ZoneRate,
@@ -109,6 +112,10 @@ export interface ShipmentInfo {
   riderPhone: string | null;
   // §6n — set once the Packaging team received + inspected the return.
   returnReceivedAt: string | null;
+  // §R6 — time-in-status clocks (ISO): inTransitAt = warehouse receive (total
+  // in transit); courierStatusAt = last sub-status change (time in current).
+  inTransitAt: string | null;
+  courierStatusAt: string | null;
   steadfastDeliveryCharge?: number | null; // actual charge (webhook/API)
   courierCostEstimated?: number | null; // zone+weight estimate
 }
@@ -262,6 +269,52 @@ function OursVsSf({
   );
 }
 
+// §R6 — the In Transit Duration column: total time since warehouse receive plus
+// the time in the CURRENT courier sub-status ("5d 3h · this status 2d"). The
+// badge escalates amber → red by the time in the current sub-status (that is the
+// "stuck" signal). Durations run off a server-provided `nowMs` so the SSR and
+// hydrated renders agree (no per-render clock drift).
+const STUCK_BADGE: Record<"none" | "amber" | "red", string> = {
+  none: "text-muted-foreground",
+  amber:
+    "rounded bg-amber-100 px-1.5 py-0.5 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300",
+  red: "rounded bg-red-100 px-1.5 py-0.5 font-medium text-red-700 dark:bg-red-950/50 dark:text-red-300",
+};
+
+function DurationCell({
+  inTransitAt,
+  courierStatusAt,
+  nowMs,
+  amberDays,
+  redDays,
+}: {
+  inTransitAt: string | null;
+  courierStatusAt: string | null;
+  nowMs: number;
+  amberDays: number;
+  redDays: number;
+}) {
+  if (!inTransitAt && !courierStatusAt) {
+    return <span className="text-muted-foreground">—</span>;
+  }
+  const level = stuckLevel(courierStatusAt, nowMs, amberDays, redDays);
+  const total = inTransitAt ? formatDuration(nowMs - new Date(inTransitAt).getTime()) : "—";
+  const current = courierStatusAt
+    ? formatDuration(nowMs - new Date(courierStatusAt).getTime())
+    : null;
+  return (
+    <div className="whitespace-nowrap text-xs leading-tight">
+      <span className={STUCK_BADGE[level]}>
+        {total}
+        {level === "red" && " ⚠"}
+      </span>
+      {current && (
+        <div className="text-muted-foreground">this status {current}</div>
+      )}
+    </div>
+  );
+}
+
 // Tab order mirrors the §1.3 lifecycle, side states last. LEAD/FOLLOW_UP are
 // pre-order stages (Leads module) and never appear here. DRAFT leads the row —
 // the "Pending Payment (Drafts)" pipeline (CORRECTIONS Leads §10).
@@ -302,6 +355,10 @@ export function OrdersListClient({
   steadfastLastSyncAt,
   canCourierOverride,
   overchargeTolerancePct,
+  stuckAmberDays,
+  stuckRedDays,
+  transitStuckCount,
+  nowMs,
   canTrash,
   canEditOrders,
   canCancelOrders,
@@ -328,6 +385,10 @@ export function OrdersListClient({
   steadfastLastSyncAt: string | null; // §R1 — last poll-sync time for the hint
   canCourierOverride: boolean; // §R5 — manual courier overrides + trash-any (Admin)
   overchargeTolerancePct: number; // §R4 — Ours-vs-SF overcharge highlight tolerance
+  stuckAmberDays: number; // §R6 — Duration badge goes amber past this many days…
+  stuckRedDays: number; // …and red past this many (time in current sub-status)
+  transitStuckCount: number; // §R6 — In Transit parcels stuck ≥ amber threshold
+  nowMs: number; // §R6 — server render time; durations compute against it (stable SSR↔client)
   canTrash: boolean; // orders.trash — trash/restore + sees the Trash tab (§6e/§6f)
   canEditOrders: boolean; // orders.edit
   canCancelOrders: boolean; // orders.cancel
@@ -393,6 +454,25 @@ export function OrdersListClient({
   const isTransitTab = activeStatus === "IN_TRANSIT";
   const showCourierCols = isHandedTab || isTransitTab;
   const showChargeCol = isTransitTab && canSeeCosts;
+
+  // §R6 — stuck filter (`stuck` = min days in current sub-status) + longest-first
+  // sort (`sort=stuck`, implied by the filter). The input seeds from the current
+  // filter or the amber threshold.
+  const stuckActive = params.get("stuck") != null;
+  const sortLongest = params.get("sort") === "stuck" || stuckActive;
+  const [stuckInput, setStuckInput] = useState(
+    params.get("stuck") ?? String(stuckAmberDays)
+  );
+  function applyStuckFilter() {
+    const days = String(Math.max(0, Math.round(Number(stuckInput) || 0)));
+    setParams({ stuck: days, sort: "stuck", status: "IN_TRANSIT" });
+  }
+  function clearStuckFilter() {
+    setParams({ stuck: "", sort: "" });
+  }
+  function toggleLongestSort() {
+    setParams({ sort: sortLongest ? "" : "stuck" });
+  }
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -808,6 +888,18 @@ export function OrdersListClient({
     router.push(`/orders?${next.toString()}`);
   }
 
+  // §R6 — set/clear several params at once (the stuck filter toggles `stuck` +
+  // `sort` together). Empty string clears a key; the page always resets to 1.
+  function setParams(entries: Record<string, string>) {
+    const next = new URLSearchParams(params.toString());
+    for (const [key, value] of Object.entries(entries)) {
+      if (value) next.set(key, value);
+      else next.delete(key);
+    }
+    next.delete("page");
+    router.push(`/orders?${next.toString()}`);
+  }
+
   // Debounced search — order no, customer name, either phone number.
   const [search, setSearch] = useState(q);
   useEffect(() => {
@@ -829,6 +921,7 @@ export function OrdersListClient({
     (isTransitTab ? -1 : 0) + // order-status column removed on In Transit (§6m)
     (showCourierCols ? 2 : 0) + // Consignment ID + Tracking (§6k)
     (isTransitTab ? 2 : 0) + // Courier Status + Rider Info (§6m)
+    (isTransitTab ? 1 : 0) + // Duration (§R6)
     (isTransitTab ? 1 : 0) + // Steadfast Weight (§6l)
     (showChargeCol ? 1 : 0) + // Steadfast Delivery Charge — cost-visible only
     (isReturnedTab ? 1 : 0); // Return column (§6n)
@@ -957,6 +1050,52 @@ export function OrdersListClient({
                 ),
               ];
             })()}
+          </div>
+        )}
+
+        {/* §R6 — stuck-parcel filter + count. The filter narrows the tab to
+            parcels sitting in one courier status longer than X days (and sorts
+            longest-first); the count reminds you how many are stuck regardless. */}
+        {isTransitTab && (
+          <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
+            <span
+              className={cn(
+                "font-medium",
+                transitStuckCount > 0
+                  ? "text-red-600 dark:text-red-400"
+                  : "text-muted-foreground"
+              )}
+            >
+              ⚠ {transitStuckCount} stuck
+              <span className="font-normal text-muted-foreground">
+                {" "}
+                (≥ {stuckAmberDays}d in one status)
+              </span>
+            </span>
+            <div className="ml-auto flex flex-wrap items-center gap-1.5">
+              <span className="text-muted-foreground">Stuck more than</span>
+              <Input
+                type="number"
+                min={0}
+                step={1}
+                aria-label="Stuck more than days"
+                className="h-8 w-16"
+                value={stuckInput}
+                onChange={(e) => setStuckInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") applyStuckFilter();
+                }}
+              />
+              <span className="text-muted-foreground">days</span>
+              <Button size="sm" variant="outline" onClick={applyStuckFilter}>
+                Filter
+              </Button>
+              {stuckActive && (
+                <Button size="sm" variant="ghost" onClick={clearStuckFilter}>
+                  Clear
+                </Button>
+              )}
+            </div>
           </div>
         )}
 
@@ -1214,6 +1353,28 @@ export function OrdersListClient({
               {!isTransitTab && <TableHead>Status</TableHead>}
               {isTransitTab && <TableHead>Courier Status</TableHead>}
               {isTransitTab && <TableHead>Rider Info</TableHead>}
+              {/* §R6 — time in transit + time in current sub-status */}
+              {isTransitTab && (
+                <TableHead>
+                  <button
+                    type="button"
+                    onClick={toggleLongestSort}
+                    className={cn(
+                      "flex items-center gap-1 hover:text-foreground",
+                      sortLongest && "text-foreground"
+                    )}
+                    title="Sort longest-stuck first"
+                  >
+                    Duration
+                    <ArrowDownWideNarrow
+                      className={cn(
+                        "size-3.5",
+                        sortLongest ? "opacity-100" : "opacity-40"
+                      )}
+                    />
+                  </button>
+                </TableHead>
+              )}
               {/* Courier-stage columns (§6k/§6l) */}
               {showCourierCols && <TableHead>Consignment ID</TableHead>}
               {showCourierCols && <TableHead>Tracking</TableHead>}
@@ -1428,6 +1589,19 @@ export function OrdersListClient({
                         Unassigned
                       </span>
                     )}
+                  </TableCell>
+                )}
+                {/* Duration (§R6) — total in transit + time in current sub-status,
+                    escalating amber → red the longer it sits */}
+                {isTransitTab && (
+                  <TableCell>
+                    <DurationCell
+                      inTransitAt={o.shipment?.inTransitAt ?? null}
+                      courierStatusAt={o.shipment?.courierStatusAt ?? null}
+                      nowMs={nowMs}
+                      amberDays={stuckAmberDays}
+                      redDays={stuckRedDays}
+                    />
                   </TableCell>
                 )}
                 {/* Consignment ID + Tracking Link (§6k) — auto-filled after the

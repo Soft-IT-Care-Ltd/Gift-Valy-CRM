@@ -9,6 +9,7 @@ import {
   type StoredChoiceSelection,
 } from "@/lib/bom";
 import { loadBomCatalog } from "@/lib/bom-db";
+import { dhakaTomorrow } from "@/lib/delivery-schedule";
 import {
   PackingQueueClient,
   type PackingOrder,
@@ -44,6 +45,10 @@ export default async function PackingQueuePage() {
       .findMany({ select: { id: true, sku: true, unit: true } })
       .then((rows) => new Map(rows.map((r) => [r.id, r]))),
   ]);
+
+  // §3 — a fixed-date order due today/tomorrow, still in the packing queue
+  // (CONFIRMED), is at risk of missing its promised date.
+  const tomorrow = dhakaTomorrow();
 
   const queue: PackingOrder[] = orders.map((o) => {
     // Aggregate the pick list per leaf product across all lines.
@@ -100,6 +105,10 @@ export default async function PackingQueuePage() {
       requestedDeliveryDate: o.requestedDeliveryDate
         ? o.requestedDeliveryDate.toISOString().slice(0, 10)
         : null,
+      lateRisk:
+        o.deliveryDateMode === "FIXED" &&
+        o.requestedDeliveryDate != null &&
+        o.requestedDeliveryDate.toISOString().slice(0, 10) <= tomorrow,
       notes: o.notes,
       courierNote: o.courierNote,
       items: o.items.map((it) => {

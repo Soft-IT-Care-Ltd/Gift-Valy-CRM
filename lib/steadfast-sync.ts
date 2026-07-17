@@ -157,7 +157,15 @@ export async function ingestDeliveryStatus(
     needsAttention: mapped.needsAttention || flagUnexpected,
     updatedBy: systemUserId,
   };
-  if (courierStatus != null) data.courierStatus = courierStatus;
+  if (courierStatus != null) {
+    data.courierStatus = courierStatus;
+    // §R6 — reset the current-sub-status clock only when the sub-state actually
+    // changes (a repeated "pending" poll keeps the clock running so a genuinely
+    // stuck parcel keeps ageing).
+    if (courierStatus !== shipment.courierStatus) {
+      data.courierStatusAt = new Date();
+    }
+  }
   if (rider != null) {
     data.riderName = rider.name;
     data.riderPhone = rider.phone;
@@ -395,7 +403,12 @@ export async function runSteadfastPoll(opts?: {
                   riderPhone: info!.riderPhone,
                   ...(fresh.courierStatus == null ||
                   fresh.courierStatus === "PENDING"
-                    ? { courierStatus: "ASSIGNED" as const }
+                    ? // §R6 — the sub-state flips to Assigned now, so reset the
+                      // current-sub-status clock alongside it.
+                      {
+                        courierStatus: "ASSIGNED" as const,
+                        courierStatusAt: new Date(),
+                      }
                     : {}),
                 }
               : {}),

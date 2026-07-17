@@ -3,7 +3,11 @@ import { prisma } from "@/lib/db";
 import { requirePagePermission } from "@/lib/page-auth";
 import { getEffectivePermissions } from "@/lib/rbac";
 import { canSeeCosts } from "@/lib/catalog";
-import { getOrderEditWindowMinutes } from "@/lib/settings";
+import {
+  getOrderEditWindowMinutes,
+  getCourierOverchargeTolerancePct,
+  getCourierStuckThresholds,
+} from "@/lib/settings";
 import {
   orderDetailInclude,
   orderScopeWhere,
@@ -77,14 +81,21 @@ export default async function OrderDetailPage({
 
   // SPEC §5 / §16 Phase 4 — WhatsApp API availability for the send button, and
   // the customer-currency rate for the pre-filled message's approx lines.
-  const [waIntegration, currency] = await Promise.all([
-    getWhatsAppIntegration(),
-    getCurrencyForCountry(order.customer.country),
-  ]);
+  // CORRECTIONS Orders §R7 — the courier block shows Ours-vs-Steadfast with the
+  // same overcharge highlight (tolerance) and stuck-duration escalation as the
+  // In Transit tab.
+  const showCosts = canSeeCosts(permissions);
+  const [waIntegration, currency, overchargeTolerancePct, stuckThresholds] =
+    await Promise.all([
+      getWhatsAppIntegration(),
+      getCurrencyForCountry(order.customer.country),
+      getCourierOverchargeTolerancePct(),
+      getCourierStuckThresholds(),
+    ]);
 
   return (
     <OrderDetailClient
-      order={serializeOrderDetail(order, canSeeCosts(permissions))}
+      order={serializeOrderDetail(order, showCosts)}
       canEdit={canEdit}
       editBlockedReason={editBlockedReason}
       canRequestEdit={canRequestEdit}
@@ -95,6 +106,11 @@ export default async function OrderDetailPage({
       wallets={wallets}
       waApiEnabled={!!waIntegration?.isEnabled}
       currency={currency}
+      showCosts={showCosts}
+      overchargeTolerancePct={overchargeTolerancePct}
+      stuckAmberDays={stuckThresholds.amberDays}
+      stuckRedDays={stuckThresholds.redDays}
+      nowMs={Date.now()}
     />
   );
 }

@@ -265,12 +265,22 @@ export async function applyShipmentStatus(
   if (!shipment) throw new AuthzError(404, "Shipment not found");
 
   const now = new Date();
+  // CORRECTIONS Orders §R6 — stamp the time-in-status clocks at this single
+  // choke point (webhook/poll ingest, manual updates and Admin overrides all
+  // route through here). The first move into IN_TRANSIT starts both the total
+  // clock and the current-sub-status clock (the parcel enters at "Pending");
+  // ingestDeliveryStatus re-stamps courier_status_at on later sub-status flips.
+  const enteringTransit =
+    input.to === "IN_TRANSIT" && shipment.status !== "IN_TRANSIT";
   await tx.shipment.update({
     where: { id: shipmentId },
     data: {
       status: input.to,
       deliveredAt: input.to === "DELIVERED" ? now : shipment.deliveredAt,
       returnedAt: input.to === "RETURNED" ? now : shipment.returnedAt,
+      ...(enteringTransit && shipment.inTransitAt == null
+        ? { inTransitAt: now, courierStatusAt: now }
+        : {}),
       courierCostActual:
         input.courierCostActual === undefined
           ? undefined

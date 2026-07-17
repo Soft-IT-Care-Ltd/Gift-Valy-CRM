@@ -78,13 +78,21 @@ export default async function DashboardLayout({
   // gated on their own permissions so each role gets exactly its tools.
   const inventoryItems: NavLeaf[] = [];
   if (permissions.includes("orders.pack")) {
-    inventoryItems.push({ href: "/packing", label: "Packing Queue" });
+    inventoryItems.push(
+      { href: "/packing", label: "Packing Queue" },
+      // CORRECTIONS Orders §2 — date-wise delivery view for Packing/Operations.
+      { href: "/delivery-schedule", label: "Delivery Schedule" }
+    );
   }
   if (permissions.includes("stock.view")) {
     inventoryItems.push({ href: "/stock", label: "Stock" });
   }
   if (permissions.includes("purchases.create")) {
-    inventoryItems.push({ href: "/purchases", label: "Purchases" });
+    inventoryItems.push(
+      { href: "/purchases", label: "Purchases" },
+      // CORRECTIONS Stock/Purchase §1 — purchase planning for the delivery window.
+      { href: "/stock/requirement-planner", label: "Requirement Planner" }
+    );
   }
   addGroup("Inventory", "inventory", inventoryItems);
 

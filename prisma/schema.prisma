@@ -1037,6 +1037,14 @@ model Shipment {
   courierStatus         CourierStatus? @map("courier_status")
   riderName             String?        @map("rider_name")
   riderPhone            String?        @map("rider_phone")
+  // CORRECTIONS Orders §R6 — time-in-status tracking (stuck-parcel detection).
+  // in_transit_at stamps when the parcel first reached IN_TRANSIT (warehouse
+  // receive) → total time in transit; courier_status_at stamps the last change
+  // of courier_status → time in the CURRENT sub-status. Both set at the single
+  // choke points (applyShipmentStatus / ingestDeliveryStatus) and backfilled
+  // for existing rows from order_status_history.
+  inTransitAt           DateTime?      @map("in_transit_at")
+  courierStatusAt       DateTime?      @map("courier_status_at")
   createdAt             DateTime       @default(now()) @map("created_at")
   updatedAt             DateTime       @updatedAt @map("updated_at")
   createdBy             Int?           @map("created_by")

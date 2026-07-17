@@ -78,12 +78,16 @@ export function SteadfastCourierClient({
   logs,
   zoneRates,
   overchargeTolerancePct,
+  stuckAmberDays,
+  stuckRedDays,
   canManageKeys,
 }: {
   initial: SteadfastSettings;
   logs: StatusLogRow[];
   zoneRates: ZoneRateRow[];
   overchargeTolerancePct: number;
+  stuckAmberDays: number; // §R6 — stuck-parcel escalation thresholds (days)
+  stuckRedDays: number;
   canManageKeys: boolean;
 }) {
   const router = useRouter();
@@ -115,6 +119,9 @@ export function SteadfastCourierClient({
   const [savingRates, setSavingRates] = useState(false);
   // §R4 — overcharge alert tolerance (percent), edited alongside the zone rates.
   const [tolerance, setTolerance] = useState(String(overchargeTolerancePct));
+  // §R6 — stuck-parcel escalation thresholds (days), saved with the rates.
+  const [amberDays, setAmberDays] = useState(String(stuckAmberDays));
+  const [redDays, setRedDays] = useState(String(stuckRedDays));
 
   async function save() {
     setSaving(true);
@@ -223,6 +230,8 @@ export function SteadfastCourierClient({
           Math.max(Number(tolerance) || 0, 0),
           100
         ),
+        stuckAmberDays: Math.max(Number(amberDays) || 0, 0),
+        stuckRedDays: Math.max(Number(redDays) || 0, 0),
       }),
     });
     setSavingRates(false);
@@ -436,6 +445,42 @@ export function SteadfastCourierClient({
               <p className="text-xs text-muted-foreground">
                 Flag a parcel when Steadfast&apos;s weight or charge is more than
                 this % above our own figure.
+              </p>
+            </div>
+            {/* §R6 — stuck-parcel escalation: how many days in the current
+                courier sub-status turns the In Transit Duration badge amber,
+                then red. The amber threshold also defines the "stuck" count. */}
+            <div className="grid gap-1.5">
+              <Label className="text-sm">Stuck-parcel escalation (days)</Label>
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1.5">
+                  <span className="size-2.5 rounded-full bg-amber-500" />
+                  <Input
+                    aria-label="Amber after days"
+                    type="number"
+                    min={0}
+                    step={1}
+                    className="w-20"
+                    value={amberDays}
+                    onChange={(e) => setAmberDays(e.target.value)}
+                  />
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="size-2.5 rounded-full bg-red-500" />
+                  <Input
+                    aria-label="Red after days"
+                    type="number"
+                    min={0}
+                    step={1}
+                    className="w-20"
+                    value={redDays}
+                    onChange={(e) => setRedDays(e.target.value)}
+                  />
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                A parcel sitting in one courier status this long goes amber, then
+                red — and counts toward the In Transit &ldquo;stuck&rdquo; tally.
               </p>
             </div>
             <Button onClick={saveRates} disabled={savingRates}>

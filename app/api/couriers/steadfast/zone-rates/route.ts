@@ -8,6 +8,7 @@ import { STEADFAST_COURIER_NAME } from "@/lib/steadfast-constants";
 import {
   SETTING_KEYS,
   getCourierOverchargeTolerancePct,
+  getCourierStuckThresholds,
 } from "@/lib/settings";
 
 // CORRECTIONS Courier §1/§2 — the 3-zone courier cost rate table (base + per-kg
@@ -26,6 +27,10 @@ const bodySchema = z.object({
   // §R4 — overcharge alert tolerance (percent). Optional so older clients that
   // only send rates keep working.
   overchargeTolerancePct: z.number().min(0).max(100).optional(),
+  // §R6 — stuck-parcel escalation thresholds (days). Both optional; the higher
+  // is floored to the lower when read so the escalation never inverts.
+  stuckAmberDays: z.number().min(0).max(365).optional(),
+  stuckRedDays: z.number().min(0).max(365).optional(),
 });
 
 async function steadfastCourierId(userId?: number): Promise<number> {
@@ -49,6 +54,7 @@ export async function GET() {
     const rates = await prisma.courierZoneRate.findMany({
       where: { courierId },
     });
+    const stuck = await getCourierStuckThresholds();
     return NextResponse.json({
       rates: DELIVERY_ZONES.map((zone) => {
         const r = rates.find((row) => row.zone === zone);
@@ -59,6 +65,8 @@ export async function GET() {
         };
       }),
       overchargeTolerancePct: await getCourierOverchargeTolerancePct(),
+      stuckAmberDays: stuck.amberDays,
+      stuckRedDays: stuck.redDays,
     });
   } catch (e) {
     return apiError(e);
@@ -68,7 +76,8 @@ export async function GET() {
 export async function PUT(req: Request) {
   try {
     const session = await requirePermission("courier.manage");
-    const { rates, overchargeTolerancePct } = bodySchema.parse(await req.json());
+    const { rates, overchargeTolerancePct, stuckAmberDays, stuckRedDays } =
+      bodySchema.parse(await req.json());
     const courierId = await steadfastCourierId(session.user.id);
 
     const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -94,6 +103,23 @@ export async function PUT(req: Request) {
             key: SETTING_KEYS.courierOverchargeTolerancePct,
             value: round2(overchargeTolerancePct),
           },
+        });
+      }
+      // §R6 — persist the stuck-parcel escalation thresholds (whole days).
+      if (stuckAmberDays != null) {
+        const v = Math.round(stuckAmberDays);
+        await tx.setting.upsert({
+          where: { key: SETTING_KEYS.courierStuckAmberDays },
+          update: { value: v },
+          create: { key: SETTING_KEYS.courierStuckAmberDays, value: v },
+        });
+      }
+      if (stuckRedDays != null) {
+        const v = Math.round(stuckRedDays);
+        await tx.setting.upsert({
+          where: { key: SETTING_KEYS.courierStuckRedDays },
+          update: { value: v },
+          create: { key: SETTING_KEYS.courierStuckRedDays, value: v },
         });
       }
     });

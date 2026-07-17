@@ -18,7 +18,10 @@ import {
   type ReturnSubTabValue,
 } from "@/lib/courier-constants";
 import { getSteadfastIntegration } from "@/lib/steadfast-integration";
-import { getCourierOverchargeTolerancePct } from "@/lib/settings";
+import {
+  getCourierOverchargeTolerancePct,
+  getCourierStuckThresholds,
+} from "@/lib/settings";
 import { OrdersListClient } from "@/components/orders/orders-list-client";
 
 export const dynamic = "force-dynamic";
@@ -99,6 +102,34 @@ export default async function OrdersPage({
     );
   }
 
+  // §R6 — stuck-parcel filter/sort + thresholds. `stuck` = min whole days in the
+  // current courier sub-status; when set (In Transit only) it narrows the tab to
+  // parcels sitting that long and forces a longest-first sort. `sort=stuck` also
+  // triggers longest-first without filtering.
+  const now = Date.now();
+  const stuckThresholds = await getCourierStuckThresholds();
+  const stuckDaysRaw =
+    status === "IN_TRANSIT" && params.stuck != null
+      ? Math.round(Number(params.stuck))
+      : NaN;
+  const stuckFilterActive =
+    Number.isFinite(stuckDaysRaw) && stuckDaysRaw >= 0;
+  const stuckDays = stuckFilterActive ? stuckDaysRaw : 0;
+  if (stuckFilterActive) {
+    filters.push({
+      shipment: {
+        is: { courierStatusAt: { lte: new Date(now - stuckDays * 86_400_000) } },
+      },
+    });
+  }
+  const sortLongestFirst =
+    status === "IN_TRANSIT" && (params.sort === "stuck" || stuckFilterActive);
+  const orderBy: Prisma.OrderOrderByWithRelationInput = trash
+    ? { deletedAt: "desc" }
+    : sortLongestFirst
+      ? { shipment: { courierStatusAt: "asc" } }
+      : { createdAt: "desc" };
+
   const [
     orders,
     grouped,
@@ -107,11 +138,13 @@ export default async function OrdersPage({
     transitAssignedNoRider,
     returnedPendingCount,
     returnedReceivedCount,
+    transitStuckCount,
+    stuckFilteredTotal,
   ] =
     await Promise.all([
       prisma.order.findMany({
         where: { AND: filters },
-        orderBy: trash ? { deletedAt: "desc" } : { createdAt: "desc" },
+        orderBy,
         skip: (page - 1) * ORDER_PAGE_SIZE,
         take: ORDER_PAGE_SIZE,
         include: orderListInclude,
@@ -164,6 +197,28 @@ export default async function OrdersPage({
             where: { AND: [...baseFilters, { status: "RETURNED" }, returnedReceivedWhere] },
           })
         : Promise.resolve(0),
+      // §R6 — how many In Transit parcels are stuck (≥ amber days in the current
+      // sub-status). Shipment-level count, so the lib/db.ts order trash filter
+      // does not apply — deletedAt is excluded explicitly.
+      status === "IN_TRANSIT"
+        ? prisma.shipment.count({
+            where: {
+              courierStatusAt: {
+                lte: new Date(now - stuckThresholds.amberDays * 86_400_000),
+              },
+              order: {
+                is: {
+                  AND: [...baseFilters, { status: "IN_TRANSIT" }, { deletedAt: null }],
+                },
+              },
+            },
+          })
+        : Promise.resolve(0),
+      // §R6 — when the stuck filter is active the visible set is narrowed, so the
+      // pagination total must be the filtered count, not the whole-tab tally.
+      stuckFilterActive
+        ? prisma.order.count({ where: { AND: filters } })
+        : Promise.resolve(0),
     ]);
   const statusCounts = Object.fromEntries(
     grouped.map((g) => [g.status, g._count._all])
@@ -197,15 +252,17 @@ export default async function OrdersPage({
       ? { pending: returnedPendingCount, received: returnedReceivedCount }
       : null;
 
-  const total = trash
-    ? trashCount
-    : transitSub && transitSubCounts
-      ? transitSubCounts[transitSub]
-      : returnedSub && returnedSubCounts
-        ? returnedSubCounts[returnedSub]
-        : status
-          ? (statusCounts[status] ?? 0)
-          : Object.values(statusCounts).reduce((s, n) => s + (n ?? 0), 0);
+  const total = stuckFilterActive
+    ? stuckFilteredTotal
+    : trash
+      ? trashCount
+      : transitSub && transitSubCounts
+        ? transitSubCounts[transitSub]
+        : returnedSub && returnedSubCounts
+          ? returnedSubCounts[returnedSub]
+          : status
+            ? (statusCounts[status] ?? 0)
+            : Object.values(statusCounts).reduce((s, n) => s + (n ?? 0), 0);
 
   // "Send to Steadfast" on the CONFIRMED + PACKED tabs needs courier.manage +
   // an enabled integration (STEADFAST_INTEGRATION.md §2 + CORRECTIONS §6j). The
@@ -270,6 +327,10 @@ export default async function OrdersPage({
       steadfastLastSyncAt={steadfastLastSyncAt}
       canCourierOverride={canCourierOverride}
       overchargeTolerancePct={overchargeTolerancePct}
+      stuckAmberDays={stuckThresholds.amberDays}
+      stuckRedDays={stuckThresholds.redDays}
+      transitStuckCount={transitStuckCount}
+      nowMs={now}
       canTrash={canTrash}
       canEditOrders={permissions.includes("orders.edit")}
       canCancelOrders={permissions.includes("orders.cancel")}

@@ -8,7 +8,10 @@ import {
 } from "@/lib/steadfast-integration";
 import { STEADFAST_COURIER_NAME } from "@/lib/steadfast-constants";
 import { DELIVERY_ZONES } from "@/lib/order-constants";
-import { getCourierOverchargeTolerancePct } from "@/lib/settings";
+import {
+  getCourierOverchargeTolerancePct,
+  getCourierStuckThresholds,
+} from "@/lib/settings";
 import {
   SteadfastCourierClient,
   type StatusLogRow,
@@ -25,7 +28,7 @@ export default async function CourierPage() {
   const session = await requirePagePermission("courier.manage");
   const permissions = await getEffectivePermissions(session.user.id);
 
-  const [integration, logs, steadfastCourier, overchargeTolerancePct] =
+  const [integration, logs, steadfastCourier, overchargeTolerancePct, stuck] =
     await Promise.all([
       getSteadfastIntegration(),
       prisma.shipmentStatusLog.findMany({
@@ -38,6 +41,7 @@ export default async function CourierPage() {
         select: { zoneRates: true },
       }),
       getCourierOverchargeTolerancePct(),
+      getCourierStuckThresholds(),
     ]);
 
   // Callback URL host: NEXTAUTH_URL if set, else the request's own origin.
@@ -72,6 +76,8 @@ export default async function CourierPage() {
       logs={logRows}
       zoneRates={zoneRates}
       overchargeTolerancePct={overchargeTolerancePct}
+      stuckAmberDays={stuck.amberDays}
+      stuckRedDays={stuck.redDays}
       canManageKeys={permissions.includes("settings.manage")}
     />
   );

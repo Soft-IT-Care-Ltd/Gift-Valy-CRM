@@ -1,5 +1,9 @@
 import { prisma } from "./db";
-import { DEFAULT_OVERCHARGE_TOLERANCE_PCT } from "./courier-constants";
+import {
+  DEFAULT_OVERCHARGE_TOLERANCE_PCT,
+  DEFAULT_STUCK_AMBER_DAYS,
+  DEFAULT_STUCK_RED_DAYS,
+} from "./courier-constants";
 
 // SPEC §14 settings table — JSON values keyed by string. Missing keys fall
 // back to code defaults so no seed row is required.
@@ -7,6 +11,9 @@ export const SETTING_KEYS = {
   orderEditWindowMinutes: "order_edit_window_minutes",
   onboardingExcludeDays: "onboarding_exclude_days",
   courierOverchargeTolerancePct: "courier_overcharge_tolerance_pct",
+  // CORRECTIONS Orders §R6 — stuck-parcel escalation thresholds (days).
+  courierStuckAmberDays: "courier_stuck_amber_days",
+  courierStuckRedDays: "courier_stuck_red_days",
 } as const;
 
 // SPEC §10 default onboarding grace: new joiners excluded from team aggregates
@@ -43,4 +50,21 @@ export async function getCourierOverchargeTolerancePct(): Promise<number> {
     SETTING_KEYS.courierOverchargeTolerancePct,
     DEFAULT_OVERCHARGE_TOLERANCE_PCT
   );
+}
+
+// CORRECTIONS Orders §R6 — the amber/red day thresholds for the stuck-parcel
+// Duration badge (and the stuck-parcels count). Admin sets them on the Courier
+// page; defaults 3d / 5d. red is floored to at least amber so the escalation
+// never inverts if mis-configured.
+export interface StuckThresholds {
+  amberDays: number;
+  redDays: number;
+}
+
+export async function getCourierStuckThresholds(): Promise<StuckThresholds> {
+  const [amberDays, redDaysRaw] = await Promise.all([
+    getNumberSetting(SETTING_KEYS.courierStuckAmberDays, DEFAULT_STUCK_AMBER_DAYS),
+    getNumberSetting(SETTING_KEYS.courierStuckRedDays, DEFAULT_STUCK_RED_DAYS),
+  ]);
+  return { amberDays, redDays: Math.max(redDaysRaw, amberDays) };
 }

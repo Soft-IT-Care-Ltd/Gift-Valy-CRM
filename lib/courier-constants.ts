@@ -92,6 +92,51 @@ export const COURIER_EXPENSE_CATEGORY = "Courier Charge";
 // monthly P&L counts it as a variable operating cost automatically.
 export const DAMAGED_STOCK_EXPENSE_CATEGORY = "Damaged Stock";
 
+// CORRECTIONS Orders §R6 — stuck-parcel escalation. A parcel's time in its
+// current courier sub-status turns the Duration badge amber past the first
+// threshold and red past the second (days). Admin-configurable on the Courier
+// page (settings table); these are the code fallbacks. The "stuck" count + the
+// default of the "stuck > X days" filter both use the amber threshold.
+export const DEFAULT_STUCK_AMBER_DAYS = 3;
+export const DEFAULT_STUCK_RED_DAYS = 5;
+
+// Compact human duration for a millisecond span, e.g. "5d 3h", "2h 40m", "12m".
+// Two significant units at most so the Duration column stays one line. Never
+// negative (clock skew → "0m").
+export function formatDuration(ms: number): string {
+  const totalMinutes = Math.max(0, Math.floor(ms / 60000));
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  return `${minutes}m`;
+}
+
+// Whole days elapsed since an ISO timestamp (floor). Used by the stuck filter
+// and the escalation colour so both agree on "how many days".
+export function daysSince(iso: string | null, now: number): number {
+  if (!iso) return 0;
+  return Math.max(0, Math.floor((now - new Date(iso).getTime()) / 86_400_000));
+}
+
+export type StuckLevel = "none" | "amber" | "red";
+
+// Escalation level from the time spent in the CURRENT sub-status. red wins past
+// the higher threshold, amber past the lower — matching the Duration badge and
+// the stuck-parcels count.
+export function stuckLevel(
+  currentStatusIso: string | null,
+  now: number,
+  amberDays: number,
+  redDays: number
+): StuckLevel {
+  const days = daysSince(currentStatusIso, now);
+  if (days >= Math.max(redDays, amberDays)) return "red";
+  if (days >= amberDays) return "amber";
+  return "none";
+}
+
 // CORRECTIONS Courier §1 — one zone's rate row (base + per-kg) of the 3-zone
 // table. Shared by the config UI, the estimate API and applyHandover.
 export interface ZoneRate {

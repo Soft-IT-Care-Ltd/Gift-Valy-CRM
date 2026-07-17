@@ -61,6 +61,10 @@ import {
 import {
   COURIER_STATUS_LABELS,
   SHIPMENT_STATUS_LABELS,
+  displayedCourierStatus,
+  formatDuration,
+  isOvercharged,
+  stuckLevel,
   type ShipmentStatusValue,
 } from "@/lib/courier-constants";
 import { WALLET_TYPE_LABELS, type WalletOption } from "@/lib/wallet";
@@ -171,6 +175,9 @@ export interface OrderDetail {
     returnApproved: boolean;
     returnReceivedAt: string | null; // §6n — receive-time inspection stamp
     consignmentId: number | null;
+    trackingUrl: string | null; // §R7 — public tracking link
+    weightKg: number | null; // §R7 — our recorded weight (BOM sum)
+    steadfastWeightKg: number | null; // §R7 — what Steadfast counted
     steadfastStatus: string | null;
     // §6m — In Transit sub-state + rider info
     courierStatus:
@@ -181,6 +188,9 @@ export interface OrderDetail {
       | null;
     riderName: string | null;
     riderPhone: string | null;
+    // §R6 — time-in-status clocks (ISO)
+    inTransitAt: string | null;
+    courierStatusAt: string | null;
     onHold: boolean;
     needsAttention: boolean;
     trackingEvents: {
@@ -189,8 +199,86 @@ export interface OrderDetail {
       eventAt: string;
       source: string;
     }[];
-    courierCostActual?: number;
+    // §R7 — courier cost estimate + actual (COSTS: cost-visible roles only).
+    courierCostActual?: number | null;
+    courierCostEstimated?: number | null;
   } | null;
+}
+
+// §R7 — a labelled "Ours: … / SF: …" pair for the courier block. Mirrors the In
+// Transit tab's OursVsSf: Steadfast's figure goes red with ⚠ when it exceeds our
+// own by more than the tolerance. "SF: —" until Steadfast reports its number.
+function CourierCompare({
+  label,
+  ours,
+  sf,
+  tolerancePct,
+  format,
+}: {
+  label: string;
+  ours: number | null | undefined;
+  sf: number | null | undefined;
+  tolerancePct: number;
+  format: (n: number) => string;
+}) {
+  const over = isOvercharged(ours ?? null, sf ?? null, tolerancePct);
+  return (
+    <div>
+      <div className="text-muted-foreground">{label}</div>
+      <div className="leading-tight">
+        <span className="text-muted-foreground">
+          Ours: {ours != null ? format(ours) : "—"}
+        </span>
+        {" · "}
+        <span
+          className={
+            over ? "font-semibold text-red-600 dark:text-red-400" : undefined
+          }
+        >
+          SF: {sf != null ? format(sf) : "—"}
+          {over && " ⚠"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// §R6/§R7 — total time in transit + time in the current sub-status, escalating
+// amber → red the longer the parcel sits (same thresholds as the In Transit tab).
+function TransitDuration({
+  inTransitAt,
+  courierStatusAt,
+  nowMs,
+  amberDays,
+  redDays,
+}: {
+  inTransitAt: string;
+  courierStatusAt: string | null;
+  nowMs: number;
+  amberDays: number;
+  redDays: number;
+}) {
+  const level = stuckLevel(courierStatusAt, nowMs, amberDays, redDays);
+  return (
+    <div
+      className={
+        level === "red"
+          ? "font-medium text-red-600 dark:text-red-400"
+          : level === "amber"
+            ? "text-amber-700 dark:text-amber-400"
+            : undefined
+      }
+    >
+      {formatDuration(nowMs - new Date(inTransitAt).getTime())}
+      {level === "red" && " ⚠"}
+      {courierStatusAt && (
+        <span className="text-xs text-muted-foreground">
+          {" "}
+          · this status {formatDuration(nowMs - new Date(courierStatusAt).getTime())}
+        </span>
+      )}
+    </div>
+  );
 }
 
 export function OrderDetailClient({
@@ -205,6 +293,11 @@ export function OrderDetailClient({
   wallets,
   waApiEnabled,
   currency,
+  showCosts,
+  overchargeTolerancePct,
+  stuckAmberDays,
+  stuckRedDays,
+  nowMs,
 }: {
   order: OrderDetail;
   canEdit: boolean; // direct edit (privileged or within window)
@@ -217,6 +310,11 @@ export function OrderDetailClient({
   wallets: WalletOption[]; // active receiving wallets for the payment dialog
   waApiEnabled: boolean; // WhatsApp Cloud API configured + enabled (SPEC §5 Phase 4)
   currency: CurrencyDisplay | null; // customer-currency rate for this customer's country (§5)
+  showCosts: boolean; // §R7 — cost-visible role: shows courier cost estimate + actual
+  overchargeTolerancePct: number; // §R7/§R4 — Ours-vs-SF overcharge highlight tolerance
+  stuckAmberDays: number; // §R7/§R6 — duration escalation thresholds (days)
+  stuckRedDays: number;
+  nowMs: number; // §R6 — server render time; durations compute against it
 }) {
   const router = useRouter();
 
@@ -571,7 +669,7 @@ export function OrderDetailClient({
             <CardTitle>Courier / Shipment</CardTitle>
             <CardDescription>
               {order.shipment
-                ? "Managed under the Courier module — status here mirrors the shipment."
+                ? "The full courier picture — status, rider, tracking and cost — mirrors the shipment (managed under the Courier module)."
                 : "Packed and ready — hand over to a courier from the Courier module."}
             </CardDescription>
           </CardHeader>
@@ -583,11 +681,30 @@ export function OrderDetailClient({
                   <div className="text-muted-foreground">Courier</div>
                   <div className="font-medium">{order.shipment.courier}</div>
                 </div>
+                {/* §R7 — Consignment ID + clickable tracking link */}
                 <div>
-                  <div className="text-muted-foreground">Tracking no</div>
+                  <div className="text-muted-foreground">Consignment ID</div>
                   <div className="font-mono text-xs">
-                    {order.shipment.trackingNo ?? "—"}
+                    {order.shipment.consignmentId ?? "—"}
                   </div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground">Tracking</div>
+                  {order.shipment.trackingUrl ? (
+                    <a
+                      href={order.shipment.trackingUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-mono text-xs text-primary underline-offset-4 hover:underline"
+                      title="Open the Steadfast tracking page"
+                    >
+                      {order.shipment.trackingNo ?? "Track"} ↗
+                    </a>
+                  ) : (
+                    <div className="font-mono text-xs">
+                      {order.shipment.trackingNo ?? "—"}
+                    </div>
+                  )}
                 </div>
                 <div>
                   <div className="text-muted-foreground">Status</div>
@@ -637,12 +754,20 @@ export function OrderDetailClient({
                     <div>{formatDateTime(order.shipment.deliveredAt)}</div>
                   </div>
                 )}
-                {/* §6m — In Transit sub-state + rider (courier-side journey) */}
+                {/* §6m/§R2 — In Transit sub-state + rider (courier-side journey).
+                    ASSIGNED only shows with a real rider on record. */}
                 {order.shipment.status === "IN_TRANSIT" && (
                   <div>
                     <div className="text-muted-foreground">Courier status</div>
                     <Badge variant="outline">
-                      {COURIER_STATUS_LABELS[order.shipment.courierStatus ?? "PENDING"]}
+                      {
+                        COURIER_STATUS_LABELS[
+                          displayedCourierStatus(
+                            order.shipment.courierStatus,
+                            !!order.shipment.riderName
+                          )
+                        ]
+                      }
                     </Badge>
                   </div>
                 )}
@@ -663,6 +788,46 @@ export function OrderDetailClient({
                     )}
                   </div>
                 )}
+                {/* §R6 — time in transit + time in the current sub-status, with
+                    the same amber/red escalation as the In Transit tab. */}
+                {order.shipment.status === "IN_TRANSIT" &&
+                  order.shipment.inTransitAt && (
+                    <div>
+                      <div className="text-muted-foreground">Time in transit</div>
+                      <TransitDuration
+                        inTransitAt={order.shipment.inTransitAt}
+                        courierStatusAt={order.shipment.courierStatusAt}
+                        nowMs={nowMs}
+                        amberDays={stuckAmberDays}
+                        redDays={stuckRedDays}
+                      />
+                    </div>
+                  )}
+                {/* §R7 — our recorded weight vs Steadfast's counted weight (not
+                    cost data → shown to every role). */}
+                {(order.shipment.weightKg != null ||
+                  order.shipment.steadfastWeightKg != null) && (
+                  <CourierCompare
+                    label="Weight (ours / SF)"
+                    ours={order.shipment.weightKg}
+                    sf={order.shipment.steadfastWeightKg}
+                    tolerancePct={overchargeTolerancePct}
+                    format={(n) => `${n} kg`}
+                  />
+                )}
+                {/* §R7 — our zone+weight estimate vs Steadfast's counted charge.
+                    A COST comparison → cost-visible roles only. */}
+                {showCosts &&
+                  (order.shipment.courierCostEstimated != null ||
+                    order.shipment.courierCostActual != null) && (
+                    <CourierCompare
+                      label="Courier charge (ours / SF)"
+                      ours={order.shipment.courierCostEstimated}
+                      sf={order.shipment.courierCostActual}
+                      tolerancePct={overchargeTolerancePct}
+                      format={money}
+                    />
+                  )}
                 {order.shipment.returnedAt && (
                   <div>
                     <div className="text-muted-foreground">Returned</div>
@@ -679,12 +844,6 @@ export function OrderDetailClient({
                         </Badge>
                       )}
                     </div>
-                  </div>
-                )}
-                {order.shipment.courierCostActual != null && (
-                  <div>
-                    <div className="text-muted-foreground">Courier cost</div>
-                    <div>{money(order.shipment.courierCostActual)}</div>
                   </div>
                 )}
                 </div>

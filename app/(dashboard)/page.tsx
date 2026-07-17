@@ -16,6 +16,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { PERMISSION_DEFS } from "@/lib/permissions";
 import { OwnerDashboard } from "@/components/dashboard/owner-dashboard";
+import { OperationsAlerts } from "@/components/dashboard/operations-alerts";
 import {
   SalesExecutiveHome,
   TeamLeaderHome,
@@ -52,13 +53,20 @@ export default async function HomePage({
   const role = user.role.name as RoleName;
   const showCosts = canSeeCosts(permissions);
 
+  // CORRECTIONS Orders §3 + §R6 — the operations alert strip (late-risk
+  // deliveries + stuck parcels) sits atop whichever home the viewer lands on.
+  const opsAlerts = <OperationsAlerts permissions={permissions} />;
+
   // ── Owner / Manager: the full business-health dashboard ──
   if (permissions.includes("dashboard.owner") || permissions.includes("orders.view_all")) {
     const params = await searchParams;
     const win = resolveDashWindow(params);
     const data = await buildOwnerDashboard(win, { showCosts });
     return (
-      <OwnerDashboard data={data} showCosts={showCosts} viewerName={user.name} />
+      <div className="grid gap-4">
+        {opsAlerts}
+        <OwnerDashboard data={data} showCosts={showCosts} viewerName={user.name} />
+      </div>
     );
   }
 
@@ -84,10 +92,20 @@ export default async function HomePage({
     );
   }
   if (role === "Packing") {
-    return <PackingHome userName={user.name} />;
+    return (
+      <div className="grid gap-4">
+        {opsAlerts}
+        <PackingHome userName={user.name} />
+      </div>
+    );
   }
   if (role === "Accounts") {
-    return <AccountsHome userName={user.name} />;
+    return (
+      <div className="grid gap-4">
+        {opsAlerts}
+        <AccountsHome userName={user.name} />
+      </div>
+    );
   }
 
   // ── Fallback: a plain access summary for any custom/other role ──

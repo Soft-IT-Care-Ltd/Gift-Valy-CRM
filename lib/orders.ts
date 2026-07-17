@@ -936,11 +936,26 @@ export function serializeOrderDetail(o: OrderWithRelations, showCosts: boolean) 
           courierStatus: o.shipment.courierStatus,
           riderName: o.shipment.riderName,
           riderPhone: o.shipment.riderPhone,
-          // Steadfast integration (STEADFAST_INTEGRATION.md §3): raw courier
-          // status, operator flags, and the tracking-event timeline (§3A payload 2).
+          // §R6 — time-in-status clocks (ISO) for the durations block.
+          inTransitAt: o.shipment.inTransitAt
+            ? o.shipment.inTransitAt.toISOString()
+            : null,
+          courierStatusAt: o.shipment.courierStatusAt
+            ? o.shipment.courierStatusAt.toISOString()
+            : null,
+          // §R7 — the full courier picture on the detail page. Consignment id +
+          // tracking link, and our-vs-Steadfast weight (weights are not cost data,
+          // so both sides show for every role). tracking_url is the public link.
           consignmentId:
             o.shipment.consignmentId != null
               ? Number(o.shipment.consignmentId)
+              : null,
+          trackingUrl: o.shipment.trackingUrl,
+          weightKg:
+            o.shipment.weightKg != null ? Number(o.shipment.weightKg) : null,
+          steadfastWeightKg:
+            o.shipment.steadfastWeightKg != null
+              ? Number(o.shipment.steadfastWeightKg)
               : null,
           steadfastStatus: o.shipment.steadfastStatus,
           onHold: o.shipment.onHold,
@@ -954,8 +969,19 @@ export function serializeOrderDetail(o: OrderWithRelations, showCosts: boolean) 
               eventAt: t.eventAt.toISOString(),
               source: t.source,
             })),
-          ...(showCosts && o.shipment.courierCostActual != null
-            ? { courierCostActual: Number(o.shipment.courierCostActual) }
+          // §R7 — our zone+weight estimate vs Steadfast's counted charge, both
+          // COSTS: only cost-visible roles receive them (CLAUDE.md rule 1).
+          ...(showCosts
+            ? {
+                courierCostActual:
+                  o.shipment.courierCostActual != null
+                    ? Number(o.shipment.courierCostActual)
+                    : null,
+                courierCostEstimated:
+                  o.shipment.courierCostEstimated != null
+                    ? Number(o.shipment.courierCostEstimated)
+                    : null,
+              }
             : {}),
         }
       : null,
@@ -994,6 +1020,9 @@ export const orderListInclude = {
       riderName: true,
       riderPhone: true,
       returnReceivedAt: true,
+      // §R6 — time-in-status clocks feed the Duration column + stuck badges.
+      inTransitAt: true,
+      courierStatusAt: true,
     },
   },
 } satisfies Prisma.OrderInclude;
@@ -1085,6 +1114,14 @@ export function serializeOrderListRow(
           riderPhone: o.shipment.riderPhone,
           returnReceivedAt: o.shipment.returnReceivedAt
             ? o.shipment.returnReceivedAt.toISOString()
+            : null,
+          // §R6 — total-in-transit + current-sub-status clocks (ISO); the client
+          // renders the compact Duration column and the amber/red escalation.
+          inTransitAt: o.shipment.inTransitAt
+            ? o.shipment.inTransitAt.toISOString()
+            : null,
+          courierStatusAt: o.shipment.courierStatusAt
+            ? o.shipment.courierStatusAt.toISOString()
             : null,
           ...(opts.showCosts
             ? {
