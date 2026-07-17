@@ -20,6 +20,8 @@ import {
 } from "@/components/ui/table";
 import { money, formatDate } from "@/lib/format";
 import { toCsv, downloadCsv, csvDateStamp } from "@/lib/csv";
+import { ExportPdfButton } from "@/components/reports/export-pdf-button";
+import type { ReportPdfPayload } from "@/lib/report-pdf";
 import type { CourierReport } from "@/lib/reports";
 
 export function CourierReportClient({ report }: { report: CourierReport }) {
@@ -73,14 +75,114 @@ export function CourierReportClient({ report }: { report: CourierReport }) {
     downloadCsv(`courier-summary-${csvDateStamp()}.csv`, toCsv(headers, body));
   }
 
+  function pdfPayload(): ReportPdfPayload {
+    return {
+      title: "Courier Report (R6)",
+      landscape: true,
+      kpis: [
+        { label: "Pending handover", value: String(pendingHandoverCount) },
+        { label: "Handed to courier", value: String(counts.handedToCourier) },
+        { label: "In transit", value: String(counts.inTransit) },
+        { label: "Delivered", value: `${counts.delivered} · ${deliveredPct}%` },
+        { label: "Returned", value: `${counts.returned} · ${returnedPct}%` },
+        {
+          label: "COD pending",
+          value: `${money(codPending.amount)} · ${codPending.count} orders`,
+        },
+      ],
+      sections: [
+        {
+          heading: `Pending handover (${pendingHandoverRows.length})`,
+          note: "Packed orders not yet given to a courier.",
+          headers: ["Order", "Recipient", "District", "Packed", "Waiting", "COD", "SE"],
+          aligns: ["l", "l", "l", "l", "r", "r", "l"],
+          rows: pendingHandoverRows.map((r) => [
+            r.orderNo,
+            r.recipientName,
+            r.district,
+            r.packedAt ? formatDate(r.packedAt) : "—",
+            `${r.ageDays}d`,
+            money(r.codAmount),
+            r.salesExecutive,
+          ]),
+        },
+        {
+          heading: `COD pending with courier (${codPending.count})`,
+          note: "Delivered orders whose COD the courier still owes — oldest first.",
+          headers: ["Order", "Courier", "Recipient", "District", "Delivered", "Age", "COD"],
+          aligns: ["l", "l", "l", "l", "l", "r", "r"],
+          rows: codPendingRows.map((r) => [
+            r.orderNo,
+            r.courier,
+            r.recipientName,
+            r.district,
+            r.deliveredAt ? formatDate(r.deliveredAt) : "—",
+            `${r.ageDays}d`,
+            money(r.codAmount),
+          ]),
+        },
+        ...(attentionRows.length > 0
+          ? [
+              {
+                heading: `Needs attention (${attentionRows.length})`,
+                note: "Shipments the courier flagged as on-hold or with an unclear status — review manually.",
+                headers: ["Order", "Courier", "Recipient", "District", "Status", "Flag"],
+                rows: attentionRows.map((r) => [
+                  r.orderNo,
+                  r.courier,
+                  r.recipientName,
+                  r.district,
+                  r.steadfastStatus ?? r.status,
+                  [r.onHold ? "On hold" : null, r.needsAttention ? "Needs review" : null]
+                    .filter(Boolean)
+                    .join(" · ") || "—",
+                ]),
+              },
+            ]
+          : []),
+        {
+          heading: "By courier",
+          note: "Shipment mix and COD pending per company.",
+          headers: [
+            "Courier",
+            "Handed over",
+            "In transit",
+            "Delivered",
+            "Returned",
+            "Total",
+            "COD pending",
+          ],
+          aligns: ["l", "r", "r", "r", "r", "r", "r"],
+          rows: byCourier.map((r) => [
+            r.name,
+            r.handedToCourier,
+            r.inTransit,
+            r.delivered,
+            r.returned,
+            r.total,
+            r.codPendingAmount > 0
+              ? `${money(r.codPendingAmount)} (${r.codPendingCount})`
+              : "—",
+          ]),
+        },
+      ],
+    };
+  }
+
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">Courier report</h1>
-        <p className="text-sm text-muted-foreground">
-          R6 — handover, transit, delivery and return rates, plus COD pending with
-          couriers (order-wise, aging).
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h1 className="text-2xl font-semibold">Courier report</h1>
+          <p className="text-sm text-muted-foreground">
+            R6 — handover, transit, delivery and return rates, plus COD pending with
+            couriers (order-wise, aging).
+          </p>
+        </div>
+        <ExportPdfButton
+          filename={`courier-report-${csvDateStamp()}.pdf`}
+          build={pdfPayload}
+        />
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">

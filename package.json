@@ -4,16 +4,22 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "prisma generate && next build",
     "start": "next start",
+    "postinstall": "prisma generate",
     "lint": "eslint",
+    "test:bom": "tsx --test tests/bom.test.ts",
     "verify:stock": "tsx scripts/verify-stock.ts",
     "verify:steadfast": "tsx scripts/verify-steadfast.ts",
+    "verify:courier-cost": "tsx scripts/verify-courier-cost.ts",
     "verify:lifecycle": "tsx scripts/verify-lifecycle.ts",
     "verify:purchase-dues": "tsx scripts/verify-purchase-dues.ts",
     "verify:leads": "tsx scripts/verify-leads.ts",
     "verify:targets": "tsx scripts/verify-targets.ts",
-    "verify:attendance": "tsx scripts/verify-attendance.ts"
+    "verify:attendance": "tsx scripts/verify-attendance.ts",
+    "verify:pnl": "tsx scripts/verify-pnl.ts",
+    "verify:dashboard": "tsx scripts/verify-dashboard.ts",
+    "verify:reports": "tsx scripts/verify-reports.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",

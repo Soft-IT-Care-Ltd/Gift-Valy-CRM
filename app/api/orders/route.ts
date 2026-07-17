@@ -2,20 +2,25 @@ import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requirePermissionCtx, apiError, AuthzError } from "@/lib/authz";
+import { canSeeCosts } from "@/lib/catalog";
 import { logAudit } from "@/lib/audit";
 import { generateInvoiceSafe } from "@/lib/invoice";
 import {
   ORDER_PAGE_SIZE,
   buildOrderListFilters,
   createOrderSchema,
+  deliveryDateForMode,
   mfsTxnRequired,
+  nextDraftNo,
   nextOrderNo,
+  orderListInclude,
   orderNoPrefix,
   orderScopeWhere,
   recomputeDue,
   resolveItemsAndTotals,
   serializeOrderListRow,
 } from "@/lib/orders";
+import { upsertRecipientOccasions } from "@/lib/occasions";
 import { syncReservations } from "@/lib/stock";
 import { leadScopeWhere } from "@/lib/leads";
 import { normalizePhone, type OrderStatusValue } from "@/lib/order-constants";
@@ -36,15 +41,15 @@ export async function GET(req: Request) {
         orderBy: { createdAt: "desc" },
         skip: (page - 1) * ORDER_PAGE_SIZE,
         take: ORDER_PAGE_SIZE,
-        include: {
-          customer: { select: { name: true, phoneForeign: true, country: true } },
-          salesExecutive: { select: { id: true, name: true } },
-        },
+        include: orderListInclude,
       }),
       prisma.order.count({ where: { AND: filters } }),
     ]);
+    // Shipment courier-cost fields are stripped for cost-blind roles
+    // (CLAUDE.md rule 1) — same gate as the order detail.
+    const showCosts = canSeeCosts(permissions);
     return NextResponse.json({
-      rows: orders.map(serializeOrderListRow),
+      rows: orders.map((o) => serializeOrderListRow(o, { showCosts })),
       total,
       page,
       pageSize: ORDER_PAGE_SIZE,
@@ -62,6 +67,15 @@ export async function POST(req: Request) {
     const { session, permissions } = await requirePermissionCtx("orders.create");
     const data = createOrderSchema.parse(await req.json());
     const canOverride = permissions.includes("orders.approve_edit");
+
+    // CORRECTIONS Leads §10 — a draft is by definition unpaid: the advance is
+    // recorded later on the draft, which is what confirms it.
+    if (data.saveAsDraft && data.advance.amount > 0) {
+      throw new AuthzError(
+        400,
+        "A draft cannot carry an advance — create the order normally, or save the draft and record the payment when it arrives"
+      );
+    }
 
     // Section D validation
     const adv = data.advance;
@@ -140,10 +154,15 @@ export async function POST(req: Request) {
     }
 
     // SPEC §1.3: no CONFIRMED without an advance > 0; TL/Admin may override
-    // with a reason, otherwise the order waits at ON_HOLD.
+    // with a reason, otherwise the order waits at ON_HOLD. A DRAFT
+    // (CORRECTIONS Leads §10) is an explicit choice: committed-but-unpaid,
+    // no reserve/invoice, real number assigned at confirm.
     let initialStatus: OrderStatusValue = "CONFIRMED";
     let statusNote: string | null = null;
-    if (adv.amount === 0) {
+    if (data.saveAsDraft) {
+      initialStatus = "DRAFT";
+      statusNote = "Saved as draft — awaiting advance payment";
+    } else if (adv.amount === 0) {
       if (canOverride && data.zeroAdvanceReason?.trim()) {
         statusNote = `Confirmed without advance (override): ${data.zeroAdvanceReason.trim()}`;
       } else {
@@ -185,7 +204,12 @@ export async function POST(req: Request) {
             },
           });
 
-          const orderNo = await nextOrderNo(tx, orderNoPrefix());
+          // Drafts carry a temporary DRAFT-XXXX number — the real GV number is
+          // assigned when the advance confirms them (CORRECTIONS Leads §10).
+          const orderNo =
+            initialStatus === "DRAFT"
+              ? await nextDraftNo(tx)
+              : await nextOrderNo(tx, orderNoPrefix());
           const order = await tx.order.create({
             data: {
               orderNo,
@@ -195,12 +219,11 @@ export async function POST(req: Request) {
               recipientPhoneBd: data.order.recipientPhoneBd,
               recipientRelation: data.order.recipientRelation,
               deliveryAddress: data.order.deliveryAddress,
-              district: data.order.district,
-              thana: data.order.thana,
+              deliveryZone: data.order
+                .deliveryZone as Prisma.OrderCreateInput["deliveryZone"],
               occasion: data.order.occasion,
-              requestedDeliveryDate: data.order.requestedDeliveryDate
-                ? new Date(data.order.requestedDeliveryDate)
-                : null,
+              deliveryDateMode: data.order.deliveryDateMode,
+              requestedDeliveryDate: deliveryDateForMode(data.order),
               subtotal: totals.subtotal,
               discount: totals.discountAmount,
               courierChargeCustomer: data.order.courierCharge,
@@ -210,11 +233,23 @@ export async function POST(req: Request) {
               codAmount: cod,
               status: initialStatus,
               notes: data.order.notes,
+              invoiceNote: data.order.invoiceNote,
+              courierNote: data.order.courierNote,
               salesExecutiveId: session.user.id,
               teamId: creator.teamId,
               createdBy: session.user.id,
               updatedBy: session.user.id,
             },
+          });
+          // Recipient occasion dates → customer↔recipient profile (§7).
+          await upsertRecipientOccasions(tx, {
+            customerId: customer.id,
+            recipientName: data.order.recipientName,
+            recipientPhoneBd: data.order.recipientPhoneBd,
+            relation: data.order.recipientRelation,
+            birthday: data.order.recipientBirthday,
+            anniversary: data.order.recipientAnniversary,
+            userId: session.user.id,
           });
           await tx.orderItem.createMany({
             data: totals.lines.map((l) => ({
@@ -225,6 +260,9 @@ export async function POST(req: Request) {
               qty: l.qty,
               unitPrice: l.unitPrice,
               lineTotal: l.lineTotal,
+              choiceSelections: l.choiceSelections
+                ? (l.choiceSelections as unknown as Prisma.InputJsonValue)
+                : undefined,
             })),
           });
           if (adv.amount > 0) {
@@ -258,11 +296,20 @@ export async function POST(req: Request) {
               note: statusNote,
             },
           });
-          // §3.2 — flip the source lead to Converted (link is order.lead_id above).
+          // §3.2 — flip the source lead: a real order converts it; a draft
+          // marks it COMMITTED (CORRECTIONS Leads §9/§10) with the commitment
+          // clock started, until the advance confirms the draft.
           if (data.leadId != null) {
             await tx.lead.update({
               where: { id: data.leadId },
-              data: { status: "CONVERTED", updatedBy: session.user.id },
+              data:
+                initialStatus === "DRAFT"
+                  ? {
+                      status: "COMMITTED",
+                      committedAt: new Date(),
+                      updatedBy: session.user.id,
+                    }
+                  : { status: "CONVERTED", updatedBy: session.user.id },
             });
           }
           return { id: order.id, orderNo: order.orderNo };

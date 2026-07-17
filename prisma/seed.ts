@@ -12,6 +12,7 @@ import {
   ROLE_NAMES,
 } from "../lib/permissions";
 import { SEED_EXPENSE_CATEGORIES, AD_COST_CATEGORY } from "../lib/expense-constants";
+import { dhakaDateBound } from "../lib/order-constants";
 import {
   ATTENDANCE_SETTINGS_KEY,
   DEFAULT_ATTENDANCE_SETTINGS,
@@ -137,7 +138,7 @@ async function main() {
         isActive: true,
         isOnboarding: false,
         mustChangePassword: false,
-        joinedAt: new Date(),
+        joinedAt: dhakaDateBound(new Date()), // @db.Date — today's Dhaka day
       },
     });
     userIdByEmail.set(u.email, saved.id);
@@ -246,12 +247,14 @@ async function main() {
     }
   }
 
-  // 4c. Couriers (SPEC §7) — COD fee % + a few per-district zone charges.
+  // 4c. Couriers (SPEC §7) — COD fee % + the 3-zone cost rate table (base +
+  // per-kg per zone, CORRECTIONS Courier §1). Schema stays multi-courier; the
+  // UI only exposes Steadfast (CORRECTIONS Courier §2).
   const demoCouriers = [
-    { name: "Steadfast", contact: "16460", codFeePercent: 1.0, zones: [["Dhaka", 60], ["Chattogram", 100], ["Sylhet", 120], ["Rangpur", 130]] },
-    { name: "Pathao", contact: "09678100800", codFeePercent: 1.0, zones: [["Dhaka", 70], ["Gazipur", 80], ["Cumilla", 110]] },
-    { name: "RedX", contact: "09610990880", codFeePercent: 0.8, zones: [["Dhaka", 65], ["Khulna", 120], ["Barishal", 130]] },
-    { name: "Sundarban", contact: "09610002000", codFeePercent: 0.5, zones: [["Dhaka", 60], ["Rajshahi", 120]] },
+    { name: "Steadfast", contact: "16460", codFeePercent: 1.0, rates: [["INSIDE_DHAKA", 60, 15], ["SUB_DHAKA", 90, 15], ["OUTSIDE_DHAKA", 120, 20]] },
+    { name: "Pathao", contact: "09678100800", codFeePercent: 1.0, rates: [["INSIDE_DHAKA", 70, 15], ["SUB_DHAKA", 100, 20], ["OUTSIDE_DHAKA", 130, 25]] },
+    { name: "RedX", contact: "09610990880", codFeePercent: 0.8, rates: [["INSIDE_DHAKA", 65, 15], ["SUB_DHAKA", 95, 20], ["OUTSIDE_DHAKA", 125, 20]] },
+    { name: "Sundarban", contact: "09610002000", codFeePercent: 0.5, rates: [["INSIDE_DHAKA", 60, 10], ["SUB_DHAKA", 90, 15], ["OUTSIDE_DHAKA", 120, 20]] },
   ] as const;
   const courierIdByName = new Map<string, number>();
   const courierFeeByName = new Map<string, number>();
@@ -263,14 +266,13 @@ async function main() {
     });
     courierIdByName.set(c.name, saved.id);
     courierFeeByName.set(c.name, c.codFeePercent);
-    await prisma.courierZoneCharge.deleteMany({ where: { courierId: saved.id } });
-    await prisma.courierZoneCharge.createMany({
-      data: c.zones.map(([district, charge]) => ({
-        courierId: saved.id,
-        district: district as string,
-        charge: charge as number,
-      })),
-    });
+    for (const [zone, baseRate, perKgRate] of c.rates) {
+      await prisma.courierZoneRate.upsert({
+        where: { courierId_zone: { courierId: saved.id, zone } },
+        update: { baseRate, perKgRate },
+        create: { courierId: saved.id, zone, baseRate, perKgRate },
+      });
+    }
   }
 
   // 4d. Wallets (SPEC §8) — company receiving accounts. Payments are attributed
@@ -304,10 +306,11 @@ async function main() {
     ["OTHER", null],
   ]);
 
-  // 5. Categories (SPEC §6.1 — editable list)
+  // 5. Categories (SPEC §6.1 — editable list). "Packaging" holds the
+  // component-only packing materials (CORRECTIONS Products §1).
   const categoryNames = [
     "Teddy", "Chocolate", "Saree", "Cosmetics",
-    "Cake", "Flowers", "Card", "Gift Wrap",
+    "Cake", "Flowers", "Card", "Gift Wrap", "Packaging",
   ];
   const catIdByName = new Map<string, number>();
   for (const name of categoryNames) {
@@ -322,17 +325,19 @@ async function main() {
   // 6. Products — SKUs fixed here so the seed stays idempotent; API-created
   // products continue the same GV-#### sequence (derived from row id).
   // Cake & Flowers are perishable → not stock-tracked (bought per order).
+  // Weights (CORRECTIONS Products §3) are optional kg values; the cake carries
+  // zone delivery charges so the order form's zone auto-fill is testable.
   const demoProducts = [
-    { sku: "GV-0001", name: "Teddy Bear (M)", category: "Teddy", unit: "pcs", avgCost: 450, sellingPrice: 750, priceFloor: 650, stockQty: 25, lowStockThreshold: 5, isStockTracked: true },
-    { sku: "GV-0002", name: "Teddy Bear (L)", category: "Teddy", unit: "pcs", avgCost: 700, sellingPrice: 1200, priceFloor: 1000, stockQty: 12, lowStockThreshold: 3, isStockTracked: true },
-    { sku: "GV-0003", name: "Chocolate Box (Ferrero 16pc)", category: "Chocolate", unit: "box", avgCost: 950, sellingPrice: 1400, priceFloor: 1250, stockQty: 30, lowStockThreshold: 8, isStockTracked: true },
-    { sku: "GV-0004", name: "Dairy Milk Silk Combo", category: "Chocolate", unit: "box", avgCost: 480, sellingPrice: 750, priceFloor: 650, stockQty: 40, lowStockThreshold: 10, isStockTracked: true },
-    { sku: "GV-0005", name: "Jamdani Saree", category: "Saree", unit: "pcs", avgCost: 2200, sellingPrice: 3500, priceFloor: 3000, stockQty: 8, lowStockThreshold: 2, isStockTracked: true },
-    { sku: "GV-0006", name: "Cosmetics Gift Set", category: "Cosmetics", unit: "set", avgCost: 1100, sellingPrice: 1800, priceFloor: 1500, stockQty: 15, lowStockThreshold: 4, isStockTracked: true },
-    { sku: "GV-0007", name: "Birthday Cake 1kg (Vanilla)", category: "Cake", unit: "pcs", avgCost: 550, sellingPrice: 900, priceFloor: 800, stockQty: 0, lowStockThreshold: 0, isStockTracked: false },
-    { sku: "GV-0008", name: "Red Rose Bouquet (12)", category: "Flowers", unit: "pcs", avgCost: 350, sellingPrice: 700, priceFloor: 550, stockQty: 0, lowStockThreshold: 0, isStockTracked: false },
-    { sku: "GV-0009", name: "Greeting Card (Premium)", category: "Card", unit: "pcs", avgCost: 40, sellingPrice: 100, priceFloor: 80, stockQty: 100, lowStockThreshold: 20, isStockTracked: true },
-    { sku: "GV-0010", name: "Gift Wrap & Ribbon", category: "Gift Wrap", unit: "pcs", avgCost: 25, sellingPrice: 60, priceFloor: 50, stockQty: 200, lowStockThreshold: 30, isStockTracked: true },
+    { sku: "GV-0001", name: "Teddy Bear (M)", category: "Teddy", unit: "pcs", avgCost: 450, sellingPrice: 750, priceFloor: 650, stockQty: 25, lowStockThreshold: 5, isStockTracked: true, weightKg: 0.35 },
+    { sku: "GV-0002", name: "Teddy Bear (L)", category: "Teddy", unit: "pcs", avgCost: 700, sellingPrice: 1200, priceFloor: 1000, stockQty: 12, lowStockThreshold: 3, isStockTracked: true, weightKg: 0.6 },
+    { sku: "GV-0003", name: "Chocolate Box (Ferrero 16pc)", category: "Chocolate", unit: "box", avgCost: 950, sellingPrice: 1400, priceFloor: 1250, stockQty: 30, lowStockThreshold: 8, isStockTracked: true, weightKg: 0.4 },
+    { sku: "GV-0004", name: "Dairy Milk Silk Combo", category: "Chocolate", unit: "box", avgCost: 480, sellingPrice: 750, priceFloor: 650, stockQty: 40, lowStockThreshold: 10, isStockTracked: true, weightKg: 0.3 },
+    { sku: "GV-0005", name: "Jamdani Saree", category: "Saree", unit: "pcs", avgCost: 2200, sellingPrice: 3500, priceFloor: 3000, stockQty: 8, lowStockThreshold: 2, isStockTracked: true, weightKg: 0.5 },
+    { sku: "GV-0006", name: "Cosmetics Gift Set", category: "Cosmetics", unit: "set", avgCost: 1100, sellingPrice: 1800, priceFloor: 1500, stockQty: 15, lowStockThreshold: 4, isStockTracked: true, weightKg: 0.7 },
+    { sku: "GV-0007", name: "Birthday Cake 1kg (Vanilla)", category: "Cake", unit: "pcs", avgCost: 550, sellingPrice: 900, priceFloor: 800, stockQty: 0, lowStockThreshold: 0, isStockTracked: false, weightKg: 1.0, deliveryChargeInsideDhaka: 100, deliveryChargeSubDhaka: 150, deliveryChargeOutsideDhaka: 250 },
+    { sku: "GV-0008", name: "Red Rose Bouquet (12)", category: "Flowers", unit: "pcs", avgCost: 350, sellingPrice: 700, priceFloor: 550, stockQty: 0, lowStockThreshold: 0, isStockTracked: false, weightKg: 0.6 },
+    { sku: "GV-0009", name: "Greeting Card (Premium)", category: "Card", unit: "pcs", avgCost: 40, sellingPrice: 100, priceFloor: 80, stockQty: 100, lowStockThreshold: 20, isStockTracked: true, weightKg: 0.02 },
+    { sku: "GV-0010", name: "Gift Wrap & Ribbon", category: "Gift Wrap", unit: "pcs", avgCost: 25, sellingPrice: 60, priceFloor: 50, stockQty: 200, lowStockThreshold: 30, isStockTracked: true, weightKg: 0.05 },
   ];
   const productIdBySku = new Map<string, number>();
   for (const p of demoProducts) {
@@ -347,6 +352,49 @@ async function main() {
     });
     productIdBySku.set(sku, product.id);
   }
+
+  // 6b. Component-only packing materials (CORRECTIONS Products §1): stocked,
+  // purchasable, damageable — but no selling price and never in the order form.
+  const demoComponentProducts = [
+    { sku: "GV-0011", name: "Chocolate Safety Box", category: "Packaging", unit: "pcs", avgCost: 30, stockQty: 150, lowStockThreshold: 30, isStockTracked: true, weightKg: 0.05 },
+    { sku: "GV-0012", name: "Big Shipping Carton", category: "Packaging", unit: "pcs", avgCost: 60, stockQty: 80, lowStockThreshold: 20, isStockTracked: true, weightKg: 0.2 },
+    { sku: "GV-0013", name: "Saree Combo Box", category: "Packaging", unit: "pcs", avgCost: 45, stockQty: 60, lowStockThreshold: 15, isStockTracked: true, weightKg: 0.1 },
+  ];
+  for (const p of demoComponentProducts) {
+    const { sku, category, ...fields } = p;
+    const data = {
+      ...fields,
+      productType: "COMPONENT" as const,
+      sellingPrice: 0,
+      priceFloor: 0,
+      categoryId: catIdByName.get(category)!,
+      reservedQty: 0,
+    };
+    const product = await prisma.product.upsert({
+      where: { sku },
+      update: data,
+      create: { sku, ...data },
+    });
+    productIdBySku.set(sku, product.id);
+  }
+
+  // 6c. Product-level packing materials (CORRECTIONS Products §2): consumed per
+  // unit sold, standalone or inside any package — never re-listed in package
+  // BOMs (the explosion pulls them in automatically).
+  const demoProductComponents = [
+    { productSku: "GV-0003", componentSku: "GV-0011", qty: 1 }, // Chocolate Box → 1 Safety Box
+    { productSku: "GV-0005", componentSku: "GV-0013", qty: 1 }, // Jamdani Saree → 1 Combo Box
+  ];
+  await prisma.productComponent.deleteMany({
+    where: { product: { sku: { in: demoProductComponents.map((c) => c.productSku) } } },
+  });
+  await prisma.productComponent.createMany({
+    data: demoProductComponents.map((c) => ({
+      productId: productIdBySku.get(c.productSku)!,
+      componentId: productIdBySku.get(c.componentSku)!,
+      qty: c.qty,
+    })),
+  });
 
   // 7. Packages + BOMs (SPEC §6.2). Items are replaced on each seed run.
   const demoPackages = [
@@ -405,6 +453,71 @@ async function main() {
         productId: productIdBySku.get(it.sku)!,
         qty: it.qty,
       })),
+    });
+  }
+
+  // 7b. Nested combo package with a choice group (CORRECTIONS Products §5):
+  // PKG-004 = Chocolate Love Bundle (sub-package, independently sellable) +
+  // Jamdani Saree + a Teddy-size choice + the Big Carton (component-only).
+  // The explosion auto-includes the Safety Box (via GV-0003) and Combo Box
+  // (via GV-0005). Not used by the demo orders — kept simple for browser tests.
+  {
+    const combo = await prisma.package.upsert({
+      where: { code: "PKG-004" },
+      update: {
+        name: "Probashi Combo Package",
+        sellingPrice: 6800, // vs ৳7,050+ standalone
+        priceFloor: 6200,
+        isActive: true,
+      },
+      create: {
+        code: "PKG-004",
+        name: "Probashi Combo Package",
+        sellingPrice: 6800,
+        priceFloor: 6200,
+      },
+    });
+    packageIdByCode.set("PKG-004", combo.id);
+    await prisma.packageItem.deleteMany({ where: { packageId: combo.id } });
+    await prisma.packageItem.create({
+      data: {
+        packageId: combo.id,
+        kind: "PACKAGE",
+        childPackageId: packageIdByCode.get("PKG-003")!,
+        qty: 1,
+      },
+    });
+    await prisma.packageItem.create({
+      data: {
+        packageId: combo.id,
+        kind: "PRODUCT",
+        productId: productIdBySku.get("GV-0005")!, // Jamdani Saree
+        qty: 1,
+      },
+    });
+    await prisma.packageItem.create({
+      data: {
+        packageId: combo.id,
+        kind: "CHOICE",
+        choiceLabel: "Teddy size",
+        qty: 1,
+        options: {
+          createMany: {
+            data: [
+              { productId: productIdBySku.get("GV-0001")!, isDefault: true }, // Teddy (M)
+              { productId: productIdBySku.get("GV-0002")!, isDefault: false }, // Teddy (L)
+            ],
+          },
+        },
+      },
+    });
+    await prisma.packageItem.create({
+      data: {
+        packageId: combo.id,
+        kind: "PRODUCT",
+        productId: productIdBySku.get("GV-0012")!, // Big Shipping Carton
+        qty: 1,
+      },
     });
   }
 
@@ -520,6 +633,11 @@ async function main() {
     recipientName: string; recipientPhoneBd: string; relation: string;
     address: string; district: string; thana: string; occasion: string | null;
     items: DemoLine[]; discount?: number; courier?: number;
+    // CORRECTIONS Orders §1/§2/§3 — requested delivery timing. FIXED carries
+    // deliveryInDays (0 = today, 1 = tomorrow, negative not used); ASAP/ANY_DAY
+    // carry no date. Feeds the Delivery Schedule, late-risk flags + the planner.
+    deliveryDateMode?: "ASAP" | "ANY_DAY" | "FIXED";
+    deliveryInDays?: number;
     // chain[0] = status at creation (order createdAt = its day)
     chain: DemoStatusStep[];
     payments: DemoPayment[];
@@ -658,6 +776,9 @@ async function main() {
       recipientName: "Nazma Khatun", recipientPhoneBd: "01818000008", relation: "Mother",
       address: "Vill: Baniachong", district: "Habiganj", thana: "Baniachong", occasion: "Eid",
       items: [{ pkg: "PKG-001", qty: 1 }], courier: 150,
+      // §2 — PACKED with a fixed date 3 days out: a dated schedule group (safe,
+      // already packed → not late-risk).
+      deliveryDateMode: "FIXED", deliveryInDays: 3,
       chain: [
         { to: "CONFIRMED", day: 3, byEmail: SE2 },
         { to: "PACKED", day: 2, byEmail: PCK },
@@ -671,6 +792,8 @@ async function main() {
       recipientName: "Liton Das", recipientPhoneBd: "01919000009", relation: "Friend",
       address: "New Market Area", district: "Khulna", thana: "Sonadanga", occasion: "Birthday",
       items: [{ sku: "GV-0001", qty: 2 }, { sku: "GV-0007", qty: 1 }], courier: 100,
+      // §2 — PACKED ASAP order: sits in Today's section.
+      deliveryDateMode: "ASAP",
       chain: [
         { to: "CONFIRMED", day: 2, byEmail: SE1 },
         { to: "PACKED", day: 1, byEmail: PCK },
@@ -684,6 +807,8 @@ async function main() {
       recipientName: "Amina Khatun", recipientPhoneBd: "01711000001", relation: "Mother",
       address: "House 12, Road 3, Dhanmondi", district: "Dhaka", thana: "Dhanmondi", occasion: "Just Because",
       items: [{ pkg: "PKG-003", qty: 1 }], courier: 120,
+      // §3 — CONFIRMED, fixed date TODAY, still un-packed → late-risk red flag.
+      deliveryDateMode: "FIXED", deliveryInDays: 0,
       chain: [{ to: "CONFIRMED", day: 2, byEmail: SE1 }],
       payments: [
         { type: "ADVANCE", method: "BKASH", amount: 1000, day: 2, txn: "DEMO-BK-1011" },
@@ -694,6 +819,8 @@ async function main() {
       recipientName: "Hasina Begum", recipientPhoneBd: "01711000011", relation: "Relative",
       address: "Vill: Ramganj", district: "Lakshmipur", thana: "Ramganj", occasion: "Other",
       items: [{ sku: "GV-0004", qty: 3 }], discount: 150, courier: 100,
+      // §3 — CONFIRMED, fixed date TOMORROW, un-packed → late-risk red flag.
+      deliveryDateMode: "FIXED", deliveryInDays: 1,
       chain: [{ to: "CONFIRMED", day: 1, byEmail: SE2 }],
       payments: [
         { type: "ADVANCE", method: "NAGAD", amount: 700, day: 1, txn: "DEMO-NG-1012" },
@@ -704,6 +831,8 @@ async function main() {
       recipientName: "Jashim Molla (self pickup)", recipientPhoneBd: "01712000012", relation: "Other",
       address: "Office pickup — Gift Valy, Dhaka", district: "Dhaka", thana: "Gulshan", occasion: "Wedding",
       items: [{ sku: "GV-0002", qty: 1 }, { sku: "GV-0003", qty: 1 }],
+      // §2 — CONFIRMED ASAP order (self-pickup): Today's section.
+      deliveryDateMode: "ASAP",
       chain: [{ to: "CONFIRMED", day: 0, byEmail: TL }],
       payments: [
         { type: "ADVANCE", method: "CASH", amount: 2600, day: 0 },
@@ -777,7 +906,11 @@ async function main() {
   // Opening stock (SPEC §14 "current stock = SUM(movements)"): one ADJUST_PLUS
   // baseline per tracked product so the ledger reconciles with the seeded
   // stock_qty cache. Perishables (non-stock-tracked) never hit the ledger.
-  const trackedProducts = demoProducts.filter((p) => p.isStockTracked && p.stockQty > 0);
+  // Component-only packing materials are stocked like anything else (§1).
+  const trackedProducts = [
+    ...demoProducts,
+    ...demoComponentProducts,
+  ].filter((p) => p.isStockTracked && p.stockQty > 0);
   await prisma.stockMovement.createMany({
     data: trackedProducts.map((p) => ({
       productId: productIdBySku.get(p.sku)!,
@@ -826,10 +959,11 @@ async function main() {
     const purchase = await prisma.purchase.create({
       data: {
         supplierName: dp.supplier,
-        purchaseDate: dp.date,
+        // @db.Date columns — pin to the Dhaka calendar day
+        purchaseDate: dhakaDateBound(dp.date),
         totalAmount: total,
         paymentStatus: status,
-        dueDate: status === "PAID" ? null : dp.dueDate,
+        dueDate: status === "PAID" || !dp.dueDate ? null : dhakaDateBound(dp.dueDate),
         createdBy: accountsId,
         updatedBy: accountsId,
         items: { create: [{ productId, qty: dp.qty, unitCost, lineTotal: total }] },
@@ -854,7 +988,7 @@ async function main() {
     if (paid > 0) {
       await prisma.expense.create({
         data: {
-          expenseDate: dp.date,
+          expenseDate: dhakaDateBound(dp.date), // @db.Date
           categoryId: purchaseCategory.id,
           amount: paid,
           walletId: dp.walletId,
@@ -869,15 +1003,31 @@ async function main() {
   }
 
   // BOM-expanded stock requirement per tracked product for an order's lines
-  // (PRODUCT lines count themselves; PACKAGE lines expand their BOM).
-  const isTrackedBySku = new Map(demoProducts.map((p) => [p.sku, p.isStockTracked]));
+  // (PRODUCT lines count themselves; PACKAGE lines expand their BOM) — incl.
+  // each product's packing materials (CORRECTIONS Products §2), mirroring
+  // lib/stock.ts orderStockRequirements so cache and engine agree at PACK time.
+  const isTrackedBySku = new Map(
+    [...demoProducts, ...demoComponentProducts].map((p) => [p.sku, p.isStockTracked])
+  );
+  const componentsBySku = new Map<string, { sku: string; qty: number }[]>();
+  for (const c of demoProductComponents) {
+    const list = componentsBySku.get(c.productSku) ?? [];
+    list.push({ sku: c.componentSku, qty: c.qty });
+    componentsBySku.set(c.productSku, list);
+  }
   const pkgItemsByCode = new Map(demoPackages.map((pkg) => [pkg.code, pkg.items]));
   const trackedRequirements = (items: DemoLine[]) => {
     const need = new Map<number, number>();
     const add = (sku: string, qty: number) => {
-      if (!isTrackedBySku.get(sku)) return;
-      const id = productIdBySku.get(sku)!;
-      need.set(id, (need.get(id) ?? 0) + qty);
+      if (isTrackedBySku.get(sku)) {
+        const id = productIdBySku.get(sku)!;
+        need.set(id, (need.get(id) ?? 0) + qty);
+      }
+      for (const c of componentsBySku.get(sku) ?? []) {
+        if (!isTrackedBySku.get(c.sku)) continue;
+        const cid = productIdBySku.get(c.sku)!;
+        need.set(cid, (need.get(cid) ?? 0) + qty * c.qty);
+      }
     };
     for (const it of items) {
       if (it.sku) add(it.sku, it.qty);
@@ -941,6 +1091,13 @@ async function main() {
           district: d.district,
           thana: d.thana,
           occasion: d.occasion,
+          // CORRECTIONS Orders §1/§2 — requested delivery timing. FIXED stores a
+          // @db.Date (Dhaka calendar day) `deliveryInDays` ahead of today.
+          deliveryDateMode: d.deliveryDateMode ?? "ANY_DAY",
+          requestedDeliveryDate:
+            d.deliveryDateMode === "FIXED" && d.deliveryInDays != null
+              ? dhakaDateBound(daysAgo(-d.deliveryInDays))
+              : null,
           subtotal,
           discount,
           courierChargeCustomer: courier,
@@ -1030,6 +1187,13 @@ async function main() {
           d.chain[d.chain.length - 1].day;
         const deliveredStep = d.chain.find((s) => s.to === "DELIVERED");
         const returnedStep = d.chain.find((s) => s.to === "RETURNED");
+        // CORRECTIONS Orders §R6 — when the parcel reached In Transit (warehouse
+        // receive) feeds the Duration column + stuck detection. Migrations
+        // backfill existing rows from history, but the seed creates shipments
+        // directly, so set the clocks here for the demo. courier_status_at starts
+        // at the same instant (parcel enters at the "Pending" sub-status).
+        const inTransitStep = d.chain.find((s) => s.to === "IN_TRANSIT");
+        const inTransitAt = inTransitStep ? daysAgo(inTransitStep.day, 12) : null;
         const codPaymentDay = d.payments.find((p) => p.type === "COD_COURIER")?.day;
         const codReceived = codPaymentDay !== undefined;
 
@@ -1038,12 +1202,17 @@ async function main() {
             orderId: order.id,
             courierId,
             trackingNo: `TRK-${1000 + idx}`,
-            handoverDate: daysAgo(handoverDay, 9),
+            // @db.Date columns — pin to the Dhaka calendar day
+            handoverDate: dhakaDateBound(daysAgo(handoverDay, 9)),
             codAmount: cod,
-            expectedDelivery: daysAgo(Math.max(handoverDay - 2, 0), 9),
+            expectedDelivery: dhakaDateBound(daysAgo(Math.max(handoverDay - 2, 0), 9)),
             status: shipmentStatus,
             deliveredAt: deliveredStep ? daysAgo(deliveredStep.day, 14) : null,
             returnedAt: returnedStep ? daysAgo(returnedStep.day, 14) : null,
+            // §R6 — time-in-status clocks (only meaningful once a parcel has
+            // reached In Transit; harmless on later stages, which don't show them).
+            inTransitAt,
+            courierStatusAt: inTransitAt,
             courierCostActual: shipmentStatus === "DELIVERED" ? (d.courier ?? 0) : null,
             codReceived,
             codReceivedAt: codReceived ? daysAgo(codPaymentDay!, 12) : null,
@@ -1056,7 +1225,7 @@ async function main() {
         if (codReceived && codFee > 0) {
           const feeExpense = await tx.expense.create({
             data: {
-              expenseDate: daysAgo(codPaymentDay!, 12),
+              expenseDate: dhakaDateBound(daysAgo(codPaymentDay!, 12)), // @db.Date
               categoryId: courierCategory.id,
               amount: codFee,
               walletId: bankWalletId, // fee netted from the COD settled to the bank (§9.3)
@@ -1101,7 +1270,9 @@ async function main() {
     );
   const followUpAt = (offsetDays: number, hour: number) =>
     new Date(`${dhakaDateStr(offsetDays)}T${String(hour).padStart(2, "0")}:00:00+06:00`);
-  const leadDateOf = (n: number) => new Date(`${dhakaDateStr(-n)}T00:00:00+06:00`);
+  // @db.Date value for the Dhaka day n days ago — UTC-midnight, NOT a +06
+  // instant (which Prisma would truncate to the previous UTC day).
+  const leadDateOf = (n: number) => new Date(`${dhakaDateStr(-n)}T00:00:00.000Z`);
 
   const demoLeads = [
     { phone: "+9665500010001", name: "Imran Chowdhury", country: "KSA", se: sanjoyId,
@@ -1172,7 +1343,7 @@ async function main() {
   for (const [i, o] of convOrders.entries()) {
     const lead = await prisma.lead.create({
       data: {
-        leadDate: o.createdAt,
+        leadDate: dhakaDateBound(o.createdAt), // @db.Date — the order's Dhaka day
         source: convSources[i % convSources.length],
         campaignName: convCampaigns[i % convCampaigns.length],
         customerName: o.customer.name,
@@ -1236,7 +1407,7 @@ async function main() {
     if (day % 8 === 5) continue; // occasional zero-spend day (visible in the chart)
     const amount = round2(900 + (day % 5) * 420 + (day % 3) * 260);
     demoExpenses.push({
-      expenseDate: daysAgo(day, 11),
+      expenseDate: dhakaDateBound(daysAgo(day, 11)), // @db.Date
       categoryId: adCostCategoryId,
       amount,
       walletId: bkashWalletId,
@@ -1263,7 +1434,7 @@ async function main() {
     const categoryId = expenseCategoryIdByName.get(f.name);
     if (!categoryId) continue;
     demoExpenses.push({
-      expenseDate: daysAgo(f.day, 12),
+      expenseDate: dhakaDateBound(daysAgo(f.day, 12)), // @db.Date
       categoryId,
       amount: f.amount,
       walletId: f.walletId,
@@ -1337,6 +1508,29 @@ async function main() {
     },
   });
 
+  // ---- Currency rates (SPEC §5 — customer-currency display on invoices) ----
+  // Starter rows for the common probashi corridors. skipDuplicates: reruns
+  // never clobber rates the Admin has since updated.
+  const currencyRatesSeed = [
+    { code: "SAR", name: "Saudi Riyal", bdtPerUnit: 32.5, countries: ["Saudi Arabia", "KSA"] },
+    { code: "AED", name: "UAE Dirham", bdtPerUnit: 33.2, countries: ["UAE", "United Arab Emirates", "Dubai"] },
+    { code: "USD", name: "US Dollar", symbol: "$", bdtPerUnit: 122, countries: ["USA", "United States", "America"] },
+    { code: "GBP", name: "British Pound", symbol: "£", bdtPerUnit: 155, countries: ["UK", "United Kingdom", "England", "London"] },
+    { code: "EUR", name: "Euro", symbol: "€", bdtPerUnit: 133, countries: ["Italy", "France", "Germany", "Spain", "Portugal", "Greece"] },
+    { code: "MYR", name: "Malaysian Ringgit", bdtPerUnit: 26, countries: ["Malaysia"] },
+    { code: "KWD", name: "Kuwaiti Dinar", bdtPerUnit: 397, countries: ["Kuwait"] },
+    { code: "QAR", name: "Qatari Riyal", bdtPerUnit: 33.4, countries: ["Qatar"] },
+    { code: "OMR", name: "Omani Rial", bdtPerUnit: 317, countries: ["Oman"] },
+    { code: "BHD", name: "Bahraini Dinar", bdtPerUnit: 324, countries: ["Bahrain"] },
+    { code: "SGD", name: "Singapore Dollar", bdtPerUnit: 90, countries: ["Singapore"] },
+    { code: "CAD", name: "Canadian Dollar", bdtPerUnit: 88, countries: ["Canada"] },
+    { code: "AUD", name: "Australian Dollar", bdtPerUnit: 79, countries: ["Australia"] },
+  ];
+  await prisma.currencyRate.createMany({
+    data: currencyRatesSeed,
+    skipDuplicates: true,
+  });
+
   const orderCount = await prisma.order.count();
   const leadCount = await prisma.lead.count();
   const convertedLeadCount = await prisma.lead.count({ where: { status: "CONVERTED" } });
@@ -1350,7 +1544,7 @@ async function main() {
   console.log("Seed complete:");
   console.log(`  ${PERMISSION_DEFS.length} permissions, ${ROLE_NAMES.length} roles (matrix applied)`);
   console.log("  Team: Team Alpha");
-  console.log(`  Catalog: ${categoryNames.length} categories, ${demoProducts.length} products, ${demoPackages.length} packages`);
+  console.log(`  Catalog: ${categoryNames.length} categories, ${demoProducts.length} sellable + ${demoComponentProducts.length} component products, ${demoPackages.length + 1} packages (incl. nested PKG-004 combo with a choice group)`);
   console.log(`  Demo data: ${demoCustomers.length} customers, ${demoOrders.length} demo orders (${orderCount} total), ${paymentCount} payments`);
   console.log(`  Leads: ${leadCount} leads (${convertedLeadCount} converted), ${dailyCountTotal} daily-count rows`);
   console.log(`  Stock: ${movementCount} movements (opening balances + confirmed-order reservations)`);
@@ -1358,6 +1552,7 @@ async function main() {
   console.log(`  Money: ${demoWallets.length} wallets (bKash/Nagad/Rocket/Bank/Cash), payments attributed by method`);
   console.log(`  Expenses: ${expenseCategoryCount} categories (fixed/variable), ${expenseCount} expenses (ad-cost trend + fixed costs + auto COD fees)`);
   console.log(`  Targets:  ${rewardRulesSeed.length} reward rules, 3 user + 1 team target for ${seedMonthKey}; onboarding grace = 30 days`);
+  console.log(`  Currency: ${currencyRatesSeed.length} invoice display rates (SAR/AED/USD/… — Admin-editable)`);
   console.log("  Admin:    mh.neshad39@gmail.com / Admin@GV2026");
   console.log("  Manager:  manager@giftvaly.com  / Manager@GV2026");
   console.log("  TL:       sakib@giftvaly.com    / Team@GV2026");

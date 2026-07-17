@@ -45,6 +45,7 @@ import {
   SHIPMENT_STATUS_LABELS,
   type ShipmentStatusValue,
 } from "@/lib/courier-constants";
+import { STEADFAST_COURIER_NAME, normalizeBdPhone } from "@/lib/steadfast-constants";
 
 export interface CourierOptionRow {
   id: number;
@@ -152,6 +153,16 @@ export function ShipmentsBoardClient({
     setHoNote("");
   }
 
+  // Steadfast auto-booking (STEADFAST_INTEGRATION.md §2): picking the Steadfast
+  // courier with the tracking field left blank creates the consignment via the
+  // API on save; a typed tracking number records a manual handover instead.
+  const selectedCourier = couriers.find((c) => String(c.id) === courierId);
+  const steadfastSelected =
+    steadfastEnabled && selectedCourier?.name === STEADFAST_COURIER_NAME;
+  const steadfastAuto = steadfastSelected && !trackingNo.trim();
+  const hoPhoneInvalid =
+    steadfastAuto && !!hoOrder && !normalizeBdPhone(hoOrder.recipientPhoneBd);
+
   async function handOver() {
     if (!hoOrder) return;
     setSaving(true);
@@ -169,12 +180,16 @@ export function ShipmentsBoardClient({
       }),
     });
     setSaving(false);
+    const data = await res.json().catch(() => null);
     if (!res.ok) {
-      const data = await res.json().catch(() => null);
       toast.error(data?.error ?? "Failed to hand over");
       return;
     }
-    toast.success(`${hoOrder.orderNo} handed to courier`);
+    toast.success(
+      data?.trackingCode
+        ? `${hoOrder.orderNo} sent to Steadfast — tracking ${data.trackingCode}`
+        : `${hoOrder.orderNo} handed to courier`
+    );
     setHoOrder(null);
     router.refresh();
   }
@@ -229,9 +244,9 @@ export function ShipmentsBoardClient({
 
       {noCouriers && (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
-          No active couriers yet — add one under{" "}
-          <Link href="/courier/companies" className="underline">
-            Courier Companies
+          No active couriers yet — configure Steadfast on the{" "}
+          <Link href="/courier" className="underline">
+            Courier page
           </Link>{" "}
           before handing orders over.
         </div>
@@ -270,8 +285,10 @@ export function ShipmentsBoardClient({
                     <div className="text-xs text-muted-foreground">{o.recipientPhoneBd}</div>
                   </TableCell>
                   <TableCell>
-                    {o.district}
-                    <span className="text-muted-foreground"> · {o.thana}</span>
+                    {o.district || "—"}
+                    {o.thana && (
+                      <span className="text-muted-foreground"> · {o.thana}</span>
+                    )}
                   </TableCell>
                   <TableCell className="text-right">{money(o.codAmount)}</TableCell>
                   <TableCell className="text-muted-foreground">{o.salesExecutive}</TableCell>
@@ -336,7 +353,8 @@ export function ShipmentsBoardClient({
                       {s.orderNo}
                     </Link>
                     <div className="text-xs text-muted-foreground">
-                      {s.recipientName} · {s.district}
+                      {s.recipientName}
+                      {s.district ? ` · ${s.district}` : ""}
                     </div>
                   </TableCell>
                   <TableCell>{s.courier}</TableCell>
@@ -435,7 +453,7 @@ export function ShipmentsBoardClient({
                       </Link>
                     </TableCell>
                     <TableCell>{s.courier}</TableCell>
-                    <TableCell>{s.district}</TableCell>
+                    <TableCell>{s.district || "—"}</TableCell>
                     <TableCell className="text-right">{money(s.codAmount)}</TableCell>
                     <TableCell>
                       {s.codAmount <= 0 ? (
@@ -484,7 +502,30 @@ export function ShipmentsBoardClient({
             </div>
             <div className="grid gap-2">
               <Label>Tracking / consignment no (optional)</Label>
-              <Input value={trackingNo} onChange={(e) => setTrackingNo(e.target.value)} />
+              <Input
+                value={trackingNo}
+                onChange={(e) => setTrackingNo(e.target.value)}
+                placeholder={steadfastSelected ? "Leave blank to book via API" : undefined}
+              />
+              {steadfastAuto && !hoPhoneInvalid && (
+                <p className="text-xs text-muted-foreground">
+                  Steadfast is connected — the consignment will be created via the
+                  API and the tracking code filled in automatically.
+                </p>
+              )}
+              {steadfastSelected && !!trackingNo.trim() && (
+                <p className="text-xs text-muted-foreground">
+                  A tracking number is entered, so this records a manual handover
+                  (no consignment is created at Steadfast).
+                </p>
+              )}
+              {hoPhoneInvalid && hoOrder && (
+                <p className="text-xs text-destructive">
+                  Recipient phone “{hoOrder.recipientPhoneBd}” is not a valid
+                  11-digit BD number — fix it on the order before sending to
+                  Steadfast, or enter a tracking number manually.
+                </p>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-2">
@@ -527,8 +568,11 @@ export function ShipmentsBoardClient({
             <Button variant="outline" onClick={() => setHoOrder(null)}>
               Cancel
             </Button>
-            <Button onClick={handOver} disabled={saving || !courierId || !handoverDate}>
-              {saving ? "Saving…" : "Hand over"}
+            <Button
+              onClick={handOver}
+              disabled={saving || !courierId || !handoverDate || hoPhoneInvalid}
+            >
+              {saving ? "Saving…" : steadfastAuto ? "Send to Steadfast" : "Hand over"}
             </Button>
           </DialogFooter>
         </DialogContent>

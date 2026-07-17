@@ -4,14 +4,21 @@ import { z } from "zod";
 import { prisma } from "./db";
 import { AuthzError } from "./authz";
 import { dhakaDayStart } from "./orders";
-import { normalizePhone } from "./order-constants";
+import { dbDate, normalizePhone } from "./order-constants";
+import { AD_COST_CATEGORY } from "./expense-constants";
+import { presetRange } from "./date-filter";
 import {
+  LEAD_PAGE_SIZES,
   LEAD_SOURCES,
+  LEAD_STATUSES,
   LOST_REASONS,
   MANUAL_LEAD_STATUSES,
   OPEN_LEAD_STATUSES,
+  timeSince,
   type InterestedItem,
   type LeadRow,
+  type LeadSourceValue,
+  type LeadStatusValue,
 } from "./lead-constants";
 
 type Tx = Prisma.TransactionClient | PrismaClient;
@@ -75,6 +82,169 @@ export async function dailyCountScopeWhere(
   });
   const ids = new Set<number>([session.user.id, ...members.map((m) => m.id)]);
   return { userId: { in: [...ids] } };
+}
+
+// Reassign targets / assign-on-entry / SE-filter options for the caller's scope:
+// own → just me; team → me + my team(s); all → every active seller role.
+export async function getAssignableUsers(
+  session: Session,
+  permissions: string[]
+): Promise<{ id: number; name: string }[]> {
+  const scope = leadViewScope(permissions);
+  const me = await prisma.user.findUniqueOrThrow({
+    where: { id: session.user.id },
+    select: { id: true, teamId: true, leaderOf: { select: { id: true } } },
+  });
+  let where: Prisma.UserWhereInput;
+  if (scope === "all") {
+    // Always include the caller: an Admin isn't a seller role but must be able
+    // to assign to themself, appear in the SE filter and in reassign targets.
+    where = {
+      isActive: true,
+      OR: [
+        { id: me.id },
+        { role: { name: { in: ["SalesExecutive", "TeamLeader", "Manager"] } } },
+      ],
+    };
+  } else if (scope === "team") {
+    const teamIds = [
+      ...(me.teamId ? [me.teamId] : []),
+      ...me.leaderOf.map((t) => t.id),
+    ];
+    where = { isActive: true, OR: [{ id: me.id }, { teamId: { in: teamIds } }] };
+  } else {
+    where = { id: me.id };
+  }
+  return prisma.user.findMany({
+    where,
+    orderBy: { name: "asc" },
+    select: { id: true, name: true },
+  });
+}
+
+// Options both entry forms and the edit dialog need: the sellable catalog for
+// "interested in" (component-only packing materials excluded, CORRECTIONS
+// Products §1) and known campaign names for autocomplete.
+export async function getLeadFormOptions(scope: Prisma.LeadWhereInput): Promise<{
+  catalog: { itemType: "PRODUCT" | "PACKAGE"; id: number; name: string }[];
+  campaigns: string[];
+}> {
+  const [products, packages, adCampaigns, leadCampaigns] = await Promise.all([
+    prisma.product.findMany({
+      where: { isActive: true, productType: "SELLABLE" },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    }),
+    prisma.package.findMany({
+      where: { isActive: true },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    }),
+    prisma.expense.findMany({
+      where: { category: { name: AD_COST_CATEGORY }, campaignName: { not: null } },
+      select: { campaignName: true },
+      distinct: ["campaignName"],
+      take: 100,
+    }),
+    prisma.lead.findMany({
+      where: { AND: [scope, { campaignName: { not: null } }] },
+      select: { campaignName: true },
+      distinct: ["campaignName"],
+      take: 100,
+    }),
+  ]);
+  const catalog = [
+    ...packages.map((p) => ({ itemType: "PACKAGE" as const, id: p.id, name: p.name })),
+    ...products.map((p) => ({ itemType: "PRODUCT" as const, id: p.id, name: p.name })),
+  ];
+  const campaigns = [
+    ...new Set(
+      [...adCampaigns, ...leadCampaigns]
+        .map((c) => c.campaignName?.trim())
+        .filter((c): c is string => !!c)
+    ),
+  ].sort((a, b) => a.localeCompare(b));
+  return { catalog, campaigns };
+}
+
+// ---------- list filters & pagination (CORRECTIONS Leads §4) ----------
+
+export interface LeadListQuery {
+  filters: Prisma.LeadWhereInput[]; // scope + search + selects + date window
+  // Same window/source/SE on lead_daily_counts — the bulk half of the §6
+  // combined total shown next to the list count.
+  bulkFilters: Prisma.LeadDailyCountWhereInput[];
+  page: number;
+  size: number;
+  q: string;
+  rangeAll: boolean;
+}
+
+// URL params → Prisma filters, mirroring buildOrderListFilters: the window
+// defaults to the current Dhaka month (the old all-time default loaded far too
+// much) unless explicit dates, ?range=all, or a search — search spans all time.
+export function buildLeadListFilters(
+  params: Record<string, string | undefined>,
+  scope: Prisma.LeadWhereInput
+): LeadListQuery {
+  const q = (params.q ?? "").trim();
+  const rangeAll = params.range === "all";
+
+  const filters: Prisma.LeadWhereInput[] = [scope];
+  const bulkFilters: Prisma.LeadDailyCountWhereInput[] = [];
+
+  if (q) {
+    const digits = q.replace(/\D/g, "");
+    const or: Prisma.LeadWhereInput[] = [
+      { customerName: { contains: q, mode: "insensitive" } },
+      { campaignName: { contains: q, mode: "insensitive" } },
+    ];
+    if (digits.length >= 3) or.push({ whatsappNumber: { contains: digits } });
+    filters.push({ OR: or });
+  }
+  if (
+    params.status &&
+    LEAD_STATUSES.includes(params.status as LeadStatusValue)
+  ) {
+    filters.push({ status: params.status as LeadStatusValue });
+  }
+  if (
+    params.source &&
+    LEAD_SOURCES.includes(params.source as LeadSourceValue)
+  ) {
+    filters.push({ source: params.source as LeadSourceValue });
+    bulkFilters.push({ source: params.source as LeadSourceValue });
+  }
+  const seId = Number(params.seId);
+  if (seId) {
+    filters.push({ assignedTo: seId });
+    bulkFilters.push({ userId: seId });
+  }
+
+  // leadDate / date are @db.Date — bound with UTC-midnight dates (dbDate), not
+  // +06:00 instants Prisma would truncate to the previous UTC day.
+  const hasFrom = !!params.from && DATE_RE.test(params.from);
+  const hasTo = !!params.to && DATE_RE.test(params.to);
+  if (hasFrom) {
+    filters.push({ leadDate: { gte: dbDate(params.from!) } });
+    bulkFilters.push({ date: { gte: dbDate(params.from!) } });
+  }
+  if (hasTo) {
+    filters.push({ leadDate: { lte: dbDate(params.to!) } });
+    bulkFilters.push({ date: { lte: dbDate(params.to!) } });
+  }
+  if (!hasFrom && !hasTo && !rangeAll && !q) {
+    const monthFrom = dbDate(presetRange("month").from);
+    filters.push({ leadDate: { gte: monthFrom } });
+    bulkFilters.push({ date: { gte: monthFrom } });
+  }
+
+  const page = Math.max(1, Math.floor(Number(params.page)) || 1);
+  const sizeParam = Number(params.size);
+  const size = (LEAD_PAGE_SIZES as readonly number[]).includes(sizeParam)
+    ? sizeParam
+    : LEAD_PAGE_SIZES[0];
+  return { filters, bulkFilters, page, size, q, rangeAll };
 }
 
 // A user may edit a lead if they hold leads.edit (any lead they can already see)
@@ -213,6 +383,7 @@ export function serializeLead(l: LeadWithRelations): LeadRow {
       ? (l.interestedIn as unknown as InterestedItem[])
       : [],
     status: l.status,
+    committedAt: l.committedAt ? l.committedAt.toISOString() : null,
     followUpAt: l.followUpAt ? l.followUpAt.toISOString() : null,
     lostReason: l.lostReason,
     notes: l.notes,
@@ -298,29 +469,69 @@ export async function buildFollowUps(
   const dayEnd = new Date(dayStart.getTime() + DAY_MS);
   const open = { status: { in: OPEN_LEAD_STATUSES } };
 
-  const [overdue, today] = await Promise.all([
+  const overdueWhere = { AND: [scopeWhere, open, { followUpAt: { lt: dayStart } }] };
+  const todayWhere = {
+    AND: [scopeWhere, open, { followUpAt: { gte: dayStart, lt: dayEnd } }],
+  };
+
+  // Rows are capped for display; counts are real (the overdue notice must say
+  // 80 when there are 80, not 50).
+  const [overdue, today, overdueCount, todayCount] = await Promise.all([
     db.lead.findMany({
-      where: {
-        AND: [scopeWhere, open, { followUpAt: { lt: dayStart } }],
-      },
+      where: overdueWhere,
       include: LEAD_INCLUDE,
       orderBy: { followUpAt: "asc" },
       take: 50,
     }),
     db.lead.findMany({
-      where: {
-        AND: [scopeWhere, open, { followUpAt: { gte: dayStart, lt: dayEnd } }],
-      },
+      where: todayWhere,
       include: LEAD_INCLUDE,
       orderBy: { followUpAt: "asc" },
       take: 50,
     }),
+    db.lead.count({ where: overdueWhere }),
+    db.lead.count({ where: todayWhere }),
   ]);
 
   return {
     overdue: overdue.map(serializeLead),
     today: today.map(serializeLead),
-    overdueCount: overdue.length,
-    todayCount: today.length,
+    overdueCount,
+    todayCount,
   };
+}
+
+// ---------- Committed queue (CORRECTIONS Leads §9) ----------
+
+export interface CommittedLeadRow extends LeadRow {
+  committedSince: string; // "45m" / "6h" / "2d 4h" — time since commitment
+  chaseOverdue: boolean; // committed > 24h ago and still unpaid — chase hard
+}
+
+// Leads whose customer has verbally confirmed + promised the advance but
+// hasn't paid. Oldest commitment first — these need chasing until the payment
+// lands (a linked DRAFT order confirms → the lead flips to CONVERTED and
+// drops out of this queue automatically). Age fields are precomputed here so
+// components render them without clock calls.
+export async function buildCommittedQueue(
+  scopeWhere: Prisma.LeadWhereInput,
+  db: Tx = prisma,
+  take = 50
+): Promise<CommittedLeadRow[]> {
+  const rows = await db.lead.findMany({
+    where: { AND: [scopeWhere, { status: "COMMITTED" }] },
+    include: LEAD_INCLUDE,
+    orderBy: [{ committedAt: "asc" }, { updatedAt: "asc" }],
+    take,
+  });
+  const now = Date.now();
+  return rows.map((l) => {
+    const row = serializeLead(l);
+    const since = row.committedAt ?? row.updatedAt;
+    return {
+      ...row,
+      committedSince: timeSince(since, now),
+      chaseOverdue: now - new Date(since).getTime() > DAY_MS,
+    };
+  });
 }

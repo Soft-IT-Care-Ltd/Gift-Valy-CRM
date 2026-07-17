@@ -16,8 +16,17 @@ import {
   mapSteadfastStatus,
   normalizeBdPhone,
   isFinalSteadfastStatus,
+  realRider,
+  findRiderInfo,
+  findNumericField,
+  DELIVERY_CHARGE_KEY,
   STEADFAST_COURIER_NAME,
 } from "../lib/steadfast-constants";
+import {
+  displayedCourierStatus,
+  isOvercharged,
+  formatDuration,
+} from "../lib/courier-constants";
 import {
   encryptSecret,
   decryptSecret,
@@ -60,8 +69,20 @@ function unitTests() {
   console.log("status mapper — case-insensitive (§3B):");
   check('"Delivered" (capitalized) → DELIVERED', mapSteadfastStatus("Delivered").to === "DELIVERED");
   check('"delivered" → DELIVERED', mapSteadfastStatus("delivered").to === "DELIVERED");
-  check('"delivered_approval_pending" → DELIVERED', mapSteadfastStatus("delivered_approval_pending").to === "DELIVERED");
+  // §6m — approval-pending statuses stay IN_TRANSIT under a courier sub-state;
+  // only the FINAL delivered/cancelled move the order.
+  check(
+    '"delivered_approval_pending" → stays IN_TRANSIT + sub-state (§6m)',
+    mapSteadfastStatus("delivered_approval_pending").to === "IN_TRANSIT" &&
+      mapSteadfastStatus("delivered_approval_pending").courierStatus === "DELIVERY_APPROVAL_PENDING"
+  );
+  check(
+    '"cancelled_approval_pending" → stays IN_TRANSIT + sub-state (§6m)',
+    mapSteadfastStatus("cancelled_approval_pending").to === "IN_TRANSIT" &&
+      mapSteadfastStatus("cancelled_approval_pending").courierStatus === "RETURN_APPROVAL_PENDING"
+  );
   check('"pending" → IN_TRANSIT', mapSteadfastStatus("pending").to === "IN_TRANSIT");
+  check('"pending" → sub-state PENDING (§6m)', mapSteadfastStatus("pending").courierStatus === "PENDING");
   check('"hold" → IN_TRANSIT + onHold flag', mapSteadfastStatus("hold").to === "IN_TRANSIT" && mapSteadfastStatus("hold").onHold);
   check('"in_review" → no status move', mapSteadfastStatus("in_review").to === null);
   check('"cancelled" → RETURNED', mapSteadfastStatus("cancelled").to === "RETURNED");
@@ -71,6 +92,12 @@ function unitTests() {
   check('undocumented status → unrecognized + needs_attention', !mapSteadfastStatus("zzz").recognized && mapSteadfastStatus("zzz").needsAttention);
   check("delivered is final (stop polling)", isFinalSteadfastStatus("Delivered"));
   check("pending is not final", !isFinalSteadfastStatus("pending"));
+  // §6m — the shipment still awaits the hub manager: keep polling.
+  check(
+    "approval-pending is NOT final since C6 (keep polling)",
+    !isFinalSteadfastStatus("delivered_approval_pending") &&
+      !isFinalSteadfastStatus("cancelled_approval_pending")
+  );
 
   console.log("\nphone normalization — 11-digit BD (§2, acceptance #4):");
   check('"+8801712345678" → 01712345678', normalizeBdPhone("+8801712345678") === "01712345678");
@@ -80,6 +107,60 @@ function unitTests() {
   check('10-digit "1712345678" → blocked (null)', normalizeBdPhone("1712345678") === null);
   check('foreign "+966512345678" → blocked (null)', normalizeBdPhone("+966512345678") === null);
   check('empty → null', normalizeBdPhone("") === null);
+
+  // §R2 — a rider counts only with a name AND a contact; the display/filter
+  // helper never lets an ASSIGNED-with-no-rider row read as Assigned.
+  console.log("\n§R2 rider gating + Assigned display:");
+  check("rider name + phone → real rider", realRider({ name: "Karim", phone: "01711111111" }) != null);
+  check("rider name only (no contact) → NOT a real rider", realRider({ name: "Karim", phone: null }) === null);
+  check("blank name → NOT a real rider", realRider({ name: "   ", phone: "01711111111" }) === null);
+  check("null rider → null", realRider(null) === null);
+  check(
+    "a delivery_status payload (no rider) yields no rider",
+    findRiderInfo({ notification_type: "delivery_status", consignment_id: 1, status: "pending", delivery_charge: 60 }) === null
+  );
+  check(
+    "flat rider_name + rider_phone in a payload → real rider",
+    realRider(findRiderInfo({ rider_name: "Rahim", rider_phone: "01822222222" })) != null
+  );
+  check("ASSIGNED + rider → shows Assigned", displayedCourierStatus("ASSIGNED", true) === "ASSIGNED");
+  check("ASSIGNED + NO rider → shows Pending (§R2)", displayedCourierStatus("ASSIGNED", false) === "PENDING");
+  check("null sub-state → shows Pending", displayedCourierStatus(null, false) === "PENDING");
+  check("approval sub-state unaffected by rider", displayedCourierStatus("DELIVERY_APPROVAL_PENDING", false) === "DELIVERY_APPROVAL_PENDING");
+
+  // §R3 — the charge is mined from any payload under any of its spellings.
+  console.log("\n§R3 delivery-charge capture from varied payload keys:");
+  check("delivery_charge key", findNumericField({ delivery_charge: 70 }, DELIVERY_CHARGE_KEY) === 70);
+  check("total_delivery_charge key", findNumericField({ result: { total_delivery_charge: 90 } }, DELIVERY_CHARGE_KEY) === 90);
+  check("delivery_fee key", findNumericField({ delivery_fee: 55 }, DELIVERY_CHARGE_KEY) === 55);
+  check("case-insensitive DeliveryCharge", findNumericField({ DeliveryCharge: 65 }, DELIVERY_CHARGE_KEY) === 65);
+  check("cod_charge is NOT matched as delivery charge", findNumericField({ cod_charge: 20 }, DELIVERY_CHARGE_KEY) === null);
+
+  // §R4 — overcharge alert fires only past the tolerance.
+  console.log("\n§R4 overcharge tolerance:");
+  check("SF 10% over, tol 10% → not flagged (within)", isOvercharged(100, 110, 10) === false);
+  check("SF >10% over, tol 10% → flagged", isOvercharged(100, 110.01, 10) === true);
+  check("SF below ours → never flagged", isOvercharged(100, 80, 10) === false);
+  check("no baseline (ours null) → never flagged", isOvercharged(null, 500, 10) === false);
+  check("weight 2.5 vs 2.9 kg, tol 10% → flagged (16% over)", isOvercharged(2.5, 2.9, 10) === true);
+
+  // §R6 / C10 §6b — Duration column format: <1h "45m", <24h "5h 20m",
+  // ≥1d "5d 3h" (days never show minutes); zero sub-units drop.
+  console.log("\n§R6 duration format (C10 §6b):");
+  const M = 60_000;
+  const H = 60 * M;
+  const D = 24 * H;
+  check("45 min → '45m'", formatDuration(45 * M) === "45m");
+  check("5h 20m → '5h 20m'", formatDuration(5 * H + 20 * M) === "5h 20m");
+  check(
+    "5d 3h 40m → '5d 3h' (no minutes once ≥1d)",
+    formatDuration(5 * D + 3 * H + 40 * M) === "5d 3h"
+  );
+  check("exact days → '2d' (zero hours drop)", formatDuration(2 * D) === "2d");
+  check("exact hours → '3h' (zero minutes drop)", formatDuration(3 * H) === "3h");
+  check("just under 1h → '59m'", formatDuration(59 * M + 59_000) === "59m");
+  check("just under 1d → '23h 59m'", formatDuration(23 * H + 59 * M) === "23h 59m");
+  check("negative clock skew → '0m'", formatDuration(-5_000) === "0m");
 
   console.log("\nwebhook Bearer auth (§3A, acceptance #5):");
   const token = generateToken(32);
@@ -185,6 +266,61 @@ async function integrationTests() {
           s1.status === "DELIVERED" && Number(s1.codAmount) > 0 && s1.codReceived === false
         );
 
+        // ---- B2. §R2 rider→ASSIGNED gating + §R3 charge capture, end-to-end ----
+        console.log("\nB2. §R2 warehouse-received stays Pending until a real rider; §R3 charge:");
+        const oR2 = await makePackedOrder("GV-SFTEST-R2", 800);
+        const shipR2 = await sendViaSteadfast(oR2.id, 1000090, 800);
+        // Warehouse receive (pending) with NO rider → Pending, never Assigned.
+        await ingestDeliveryStatus(tx, {
+          shipment: asSync(await load(shipR2.id)),
+          rawStatus: "pending",
+          source: "POLL",
+          rawPayload: { consignment_id: 1000090, delivery_status: "pending" },
+        });
+        let sR2 = await load(shipR2.id);
+        check("§R2 pending, no rider → courierStatus PENDING", sR2.courierStatus === "PENDING");
+        check("§R2 pending, no rider → riderName stays null", sR2.riderName === null);
+
+        // A payload with a rider NAME but no contact must NOT flip Assigned.
+        await ingestDeliveryStatus(tx, {
+          shipment: asSync(await load(shipR2.id)),
+          rawStatus: "pending",
+          source: "POLL",
+          rawPayload: { consignment_id: 1000090, delivery_status: "pending", rider: { name: "Placeholder Hub" } },
+        });
+        sR2 = await load(shipR2.id);
+        check("§R2 rider name only (no contact) → still PENDING", sR2.courierStatus === "PENDING");
+        check("§R2 rider name only → riderName not stored", sR2.riderName === null);
+
+        // A real rider (name + phone) in the payload → ASSIGNED with rider stored,
+        // and §R3 mines the charge from an undocumented `total_delivery_charge`.
+        await ingestDeliveryStatus(tx, {
+          shipment: asSync(await load(shipR2.id)),
+          rawStatus: "pending",
+          source: "POLL",
+          rawPayload: {
+            consignment_id: 1000090,
+            delivery_status: "pending",
+            rider: { name: "Karim Rider", phone: "01711111111" },
+            total_delivery_charge: 95,
+          },
+        });
+        sR2 = await load(shipR2.id);
+        check("§R2 real rider (name+phone) → ASSIGNED", sR2.courierStatus === "ASSIGNED");
+        check("§R2 real rider → riderName + riderPhone stored", sR2.riderName === "Karim Rider" && sR2.riderPhone === "01711111111");
+        check("§R3 charge mined from total_delivery_charge → courier_cost_actual", Number(sR2.courierCostActual) === 95);
+
+        // A later pending with NO rider must NOT downgrade a genuine ASSIGNED.
+        await ingestDeliveryStatus(tx, {
+          shipment: asSync(await load(shipR2.id)),
+          rawStatus: "pending",
+          source: "POLL",
+          rawPayload: { consignment_id: 1000090, delivery_status: "pending" },
+        });
+        sR2 = await load(shipR2.id);
+        check("§R2 later pending (no rider) → ASSIGNED not downgraded", sR2.courierStatus === "ASSIGNED");
+        check("§R2 rider on record is kept", sR2.riderName === "Karim Rider");
+
         // ---- C. idempotency: replayed webhook (§3A step 5 / acceptance #7) ----
         console.log("\nC. Duplicate webhook is idempotent:");
         const histBefore = await tx.orderStatusHistory.count({ where: { orderId: o1.id } });
@@ -217,7 +353,7 @@ async function integrationTests() {
           rawPayload: { notification_type: "delivery_status", consignment_id: 1000002, status: "cancelled" },
         });
         check("webhook 'cancelled' → order RETURNED", (await orderStatus(o2.id)) === "RETURNED");
-        check("stock restore NOT auto-approved (waits for Admin, §1.3)", (await load(ship2.id)).returnApproved === false);
+        check("stock restore waits for the receive inspection (§6n)", (await load(ship2.id)).returnApproved === false);
         const hist2 = await tx.orderStatusHistory.count({ where: { orderId: o2.id } });
         await ingestDeliveryStatus(tx, {
           shipment: asSync(await load(ship2.id)),

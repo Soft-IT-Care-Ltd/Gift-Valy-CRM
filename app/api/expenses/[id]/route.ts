@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { requirePermission, apiError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
 import { serializeExpense, EXPENSE_INCLUDE } from "@/lib/expense-constants";
+import { dbDate } from "@/lib/orders";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -70,9 +71,8 @@ export async function PATCH(req: Request, { params }: Params) {
     const after = await prisma.expense.update({
       where: { id },
       data: {
-        expenseDate: data.expenseDate
-          ? new Date(`${data.expenseDate}T00:00:00+06:00`)
-          : undefined,
+        // @db.Date — UTC-midnight, not a +06 instant
+        expenseDate: data.expenseDate ? dbDate(data.expenseDate) : undefined,
         categoryId: data.categoryId,
         amount: data.amount,
         walletId: data.walletId === undefined ? undefined : data.walletId,

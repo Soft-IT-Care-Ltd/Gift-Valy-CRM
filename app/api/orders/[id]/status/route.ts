@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requireUser, apiError, AuthzError } from "@/lib/authz";
 import { getEffectivePermissions } from "@/lib/rbac";
 import { logAudit } from "@/lib/audit";
 import { generateInvoiceSafe } from "@/lib/invoice";
 import {
+  confirmDraftTx,
   orderScopeWhere,
   orderViewScope,
   statusChangePermitted,
@@ -41,7 +43,9 @@ export async function POST(req: Request, { params }: Params) {
       where: { id },
       include: { payments: { select: { type: true, amount: true, isRejected: true } } },
     });
-    if (!order) {
+    // findUnique bypasses the trash auto-filter — a trashed order (§6f) is
+    // frozen until restored.
+    if (!order || order.deletedAt) {
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
     }
 
@@ -103,26 +107,46 @@ export async function POST(req: Request, { params }: Params) {
       }
     }
 
-    await prisma.$transaction(async (tx) => {
-      await tx.order.update({
-        where: { id },
-        data: {
-          status: to,
-          cancelReason: to === "CANCELLED" ? note : order.cancelReason,
-          updatedBy: session.user.id,
-        },
+    // DRAFT → CONFIRMED runs the full confirm-from-draft path (real GV number,
+    // reserve, lead → Converted; CORRECTIONS Leads §10). Retries cover a
+    // concurrent GV-number collision.
+    if (order.status === "DRAFT" && to === "CONFIRMED") {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await prisma.$transaction(async (tx) => {
+            await confirmDraftTx(tx, id, session.user.id, note);
+          });
+          break;
+        } catch (err) {
+          const collision =
+            err instanceof Prisma.PrismaClientKnownRequestError &&
+            err.code === "P2002" &&
+            (err.meta?.target as string[] | undefined)?.includes("order_no");
+          if (!collision || attempt === 2) throw err;
+        }
+      }
+    } else {
+      await prisma.$transaction(async (tx) => {
+        await tx.order.update({
+          where: { id },
+          data: {
+            status: to,
+            cancelReason: to === "CANCELLED" ? note : order.cancelReason,
+            updatedBy: session.user.id,
+          },
+        });
+        await tx.orderStatusHistory.create({
+          data: {
+            orderId: id,
+            fromStatus: order.status,
+            toStatus: to,
+            byUser: session.user.id,
+            note,
+          },
+        });
+        await syncStockForStatus(tx, id, to, session.user.id, note);
       });
-      await tx.orderStatusHistory.create({
-        data: {
-          orderId: id,
-          fromStatus: order.status,
-          toStatus: to,
-          byUser: session.user.id,
-          note,
-        },
-      });
-      await syncStockForStatus(tx, id, to, session.user.id, note);
-    });
+    }
     await logAudit({
       userId: session.user.id,
       action: "order.status_change",

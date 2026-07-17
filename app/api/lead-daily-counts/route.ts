@@ -3,13 +3,15 @@ import { prisma } from "@/lib/db";
 import { requirePermissionCtx, apiError, AuthzError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
 import { dailyCountSchema } from "@/lib/leads";
+import { dbDate } from "@/lib/orders";
 
 // SPEC §3.1 bulk quick-entry — log a daily lead count per source/campaign when
 // individual entry isn't practical. One row per (date, user, source, campaign);
 // re-submitting the same key replaces the count (a correction, not an add).
+// Gated by its own leads.bulk permission (CORRECTIONS Leads §7).
 export async function POST(req: Request) {
   try {
-    const { session, permissions } = await requirePermissionCtx("leads.create");
+    const { session, permissions } = await requirePermissionCtx("leads.bulk");
     const data = dailyCountSchema.parse(await req.json());
 
     let userId = session.user.id;
@@ -25,7 +27,7 @@ export async function POST(req: Request) {
       userId = data.userId;
     }
 
-    const date = new Date(`${data.date}T00:00:00+06:00`);
+    const date = dbDate(data.date); // @db.Date — UTC-midnight, not a +06 instant
     const campaignName = data.campaignName; // null-safe manual upsert (see @@index, no unique)
 
     // Manual upsert: composite key includes a nullable campaign, so match

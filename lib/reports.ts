@@ -1,6 +1,12 @@
 import { prisma } from "@/lib/db";
-import { packageAvailable, packageCost } from "@/lib/catalog";
-import { dhakaDayStart, dhakaMonthStart } from "@/lib/orders";
+import {
+  BomError,
+  explodePackage,
+  packageAvailability,
+  packageCost,
+} from "@/lib/bom";
+import { loadBomCatalog } from "@/lib/bom-db";
+import { dhakaDateBound, dhakaDayStart, dhakaMonthStart } from "@/lib/orders";
 import type {
   PaymentMethodValue,
   PaymentTypeValue,
@@ -111,6 +117,80 @@ export async function buildStockReport(showCosts: boolean): Promise<StockReport>
   return { rows, totalStockValue, lowStockCount };
 }
 
+// ============ Damaged stock report (CORRECTIONS Orders §6n) ============
+
+export interface DamagedStockRow {
+  id: number;
+  inspectedAt: string;
+  sku: string;
+  productName: string;
+  qty: number;
+  orderNo: string | null;
+  inspector: string;
+  note: string | null;
+  unitCost?: number; // frozen at inspection — cost-visible roles only
+  lossValue?: number; // qty × unitCost — cost-visible roles only
+}
+
+export interface DamagedStockReport {
+  rows: DamagedStockRow[];
+  totalQty: number;
+  totalLoss: number | null; // Σ lossValue; null when cost-blind
+}
+
+// Every unit the receive-time inspection marked Damaged (§6n): never restocked,
+// its at-cost value posted as a "Damaged Stock" expense. This report is the
+// audit view over damage_logs; cost columns are stripped for cost-blind roles.
+export async function buildDamagedStockReport(opts: {
+  showCosts: boolean;
+  from?: Date;
+  to?: Date;
+}): Promise<DamagedStockReport> {
+  const logs = await prisma.damageLog.findMany({
+    where: {
+      ...(opts.from || opts.to
+        ? {
+            inspectedAt: {
+              ...(opts.from ? { gte: opts.from } : {}),
+              ...(opts.to ? { lte: opts.to } : {}),
+            },
+          }
+        : {}),
+    },
+    orderBy: { inspectedAt: "desc" },
+    include: {
+      product: { select: { name: true, sku: true } },
+      order: { select: { orderNo: true } },
+      inspector: { select: { name: true } },
+    },
+  });
+
+  const rows: DamagedStockRow[] = logs.map((l) => ({
+    id: l.id,
+    inspectedAt: l.inspectedAt.toISOString(),
+    sku: l.product.sku,
+    productName: l.product.name,
+    qty: l.qty,
+    orderNo: l.order?.orderNo ?? null,
+    inspector: l.inspector.name,
+    note: l.note,
+    ...(opts.showCosts
+      ? {
+          unitCost: Number(l.unitCost),
+          lossValue: round2(l.qty * Number(l.unitCost)),
+        }
+      : {}),
+  }));
+
+  return {
+    rows,
+    totalQty: rows.reduce((s, r) => s + r.qty, 0),
+    totalLoss: opts.showCosts
+      ? round2(rows.reduce((s, r) => s + (r.lossValue ?? 0), 0))
+      : null,
+  };
+}
+
 // ============ R5 — Package availability (SPEC §6.2) ============
 
 export interface PackageComponentRow {
@@ -144,30 +224,48 @@ export interface PackageReport {
 export async function buildPackageReport(
   showCosts: boolean
 ): Promise<PackageReport> {
-  const packages = await prisma.package.findMany({
-    orderBy: { name: "asc" },
-    include: {
-      items: {
-        include: { product: true },
-        orderBy: { id: "asc" },
-      },
-    },
-  });
+  const [packages, catalog, skuById] = await Promise.all([
+    prisma.package.findMany({
+      orderBy: { name: "asc" },
+      select: { id: true, code: true, name: true, isActive: true, sellingPrice: true },
+    }),
+    loadBomCatalog(prisma),
+    prisma.product
+      .findMany({ select: { id: true, sku: true, unit: true } })
+      .then((rows) => new Map(rows.map((r) => [r.id, r]))),
+  ]);
 
+  // CORRECTIONS Products §2/§4/§5 — components come from the full recursive
+  // explosion (nested sub-packages with default variants, plus every product's
+  // auto-included packing materials), so buildable counts match what packing
+  // will actually deduct. A structurally broken BOM degrades to an empty row.
   const rows: PackageReportRow[] = packages.map((pkg) => {
-    const buildable = packageAvailable(pkg); // number | null (SPEC §6.2)
+    let leaves: [number, number][] = [];
+    let buildable: number | null = null;
+    let cost: number | undefined;
+    try {
+      leaves = [...explodePackage(catalog, pkg.id, 1)];
+      buildable = packageAvailability(catalog, pkg.id);
+      cost = showCosts ? packageCost(catalog, pkg.id) : undefined;
+    } catch (e) {
+      if (!(e instanceof BomError)) throw e;
+    }
 
-    const components: PackageComponentRow[] = pkg.items.map((it) => ({
-      productName: it.product.name,
-      sku: it.product.sku,
-      unit: it.product.unit,
-      qtyPerPackage: it.qty,
-      isStockTracked: it.product.isStockTracked,
-      stockQty: it.product.stockQty,
-      buildableFrom: it.product.isStockTracked
-        ? Math.floor(it.product.stockQty / it.qty)
-        : null,
-    }));
+    const components: PackageComponentRow[] = leaves.map(([productId, qty]) => {
+      const p = catalog.products.get(productId)!;
+      const meta = skuById.get(productId);
+      return {
+        productName: p.name,
+        sku: meta?.sku ?? "",
+        unit: meta?.unit ?? "pcs",
+        qtyPerPackage: qty,
+        isStockTracked: p.isStockTracked,
+        stockQty: p.stockQty,
+        buildableFrom: p.isStockTracked
+          ? Math.floor(p.stockQty / qty)
+          : null,
+      };
+    });
 
     // The binding constraint(s): tracked components whose per-component cap
     // equals the package's buildable qty — what to restock to make more.
@@ -179,14 +277,13 @@ export async function buildPackageReport(
       limitedBy = binding.length > 0 ? binding.join(", ") : null;
     }
 
-    const cost = showCosts ? round2(packageCost(pkg)) : undefined;
     return {
       id: pkg.id,
       code: pkg.code,
       name: pkg.name,
       isActive: pkg.isActive,
       sellingPrice: Number(pkg.sellingPrice),
-      componentCount: pkg.items.length,
+      componentCount: components.length,
       buildable,
       limitedBy,
       ...(showCosts
@@ -295,6 +392,9 @@ export async function buildCourierReport(): Promise<CourierReport> {
       },
     }),
     prisma.shipment.findMany({
+      // shipment-level query — exclude trashed orders explicitly (§6f); the
+      // trash auto-filter only covers top-level Order queries.
+      where: { order: { deletedAt: null } },
       include: {
         courier: { select: { id: true, name: true } },
         order: { select: { id: true, orderNo: true, recipientName: true, district: true } },
@@ -529,9 +629,14 @@ export async function buildCollectionReport(opts: {
   const now = Date.now();
 
   const [payments, dueOrders, rejectedAgg] = await Promise.all([
-    // Rejected payments (money never received) are excluded from collections.
+    // Rejected payments (money never received) are excluded from collections,
+    // and so are payments on trashed orders (§6f — nested filter needed).
     prisma.payment.findMany({
-      where: { paymentDate: { gte: from, lte: to }, isRejected: false },
+      where: {
+        paymentDate: { gte: from, lte: to },
+        isRejected: false,
+        order: { deletedAt: null },
+      },
       orderBy: { paymentDate: "desc" },
       include: {
         wallet: { select: { id: true, name: true, type: true } },
@@ -565,7 +670,11 @@ export async function buildCollectionReport(opts: {
     }),
     // Rejected in-range, for transparency (shown as a KPI, not counted).
     prisma.payment.aggregate({
-      where: { paymentDate: { gte: from, lte: to }, isRejected: true },
+      where: {
+        paymentDate: { gte: from, lte: to },
+        isRejected: true,
+        order: { deletedAt: null },
+      },
       _sum: { amount: true },
       _count: true,
     }),
@@ -731,14 +840,27 @@ export async function buildWalletBalances(): Promise<WalletBalances> {
       // Inflow: everything except refunds, grouped by wallet. Rejected payments
       // (money never received, SPEC §8) are excluded so the balance reconciles
       // with the actual wallet statement.
+      // Trashed orders' payments are excluded (§6f) — the purge hard-deletes
+      // them after 30 days, so counting them meanwhile would make balances
+      // jump when the cron runs.
       prisma.payment.groupBy({
         by: ["walletId"],
-        where: { walletId: { not: null }, type: { not: "REFUND" }, isRejected: false },
+        where: {
+          walletId: { not: null },
+          type: { not: "REFUND" },
+          isRejected: false,
+          order: { deletedAt: null },
+        },
         _sum: { amount: true },
       }),
       prisma.payment.groupBy({
         by: ["walletId"],
-        where: { walletId: { not: null }, type: "REFUND", isRejected: false },
+        where: {
+          walletId: { not: null },
+          type: "REFUND",
+          isRejected: false,
+          order: { deletedAt: null },
+        },
         _sum: { amount: true },
       }),
       prisma.expense.groupBy({
@@ -747,7 +869,12 @@ export async function buildWalletBalances(): Promise<WalletBalances> {
         _sum: { amount: true },
       }),
       prisma.payment.aggregate({
-        where: { walletId: null, type: { not: "REFUND" }, isRejected: false },
+        where: {
+          walletId: null,
+          type: { not: "REFUND" },
+          isRejected: false,
+          order: { deletedAt: null },
+        },
         _sum: { amount: true },
       }),
     ]);
@@ -843,6 +970,8 @@ function dhakaYmd(d: Date): string {
   }).format(d);
 }
 
+// `@db.Date` range bounds use dhakaDateBound (lib/orders) — see its comment.
+
 const AD_TREND_MAX_DAYS = 120;
 
 export async function buildExpenseReport(opts: {
@@ -854,7 +983,9 @@ export async function buildExpenseReport(opts: {
   const to = opts.to ?? new Date(dhakaDayStart().getTime() + DAY_MS - 1);
 
   const raw = await prisma.expense.findMany({
-    where: { expenseDate: { gte: from, lte: to } },
+    // expenseDate is @db.Date — bound on the Dhaka calendar day, not the raw
+    // +06:00 instant, so a month range doesn't pull in the prior month's last day.
+    where: { expenseDate: { gte: dhakaDateBound(from), lte: dhakaDateBound(to) } },
     include: EXPENSE_INCLUDE,
     orderBy: [{ expenseDate: "desc" }, { id: "desc" }],
   });
@@ -947,14 +1078,15 @@ export async function buildExpenseReport(opts: {
 
 // ============ R2 — Lead report (SPEC §3.2 / §12) ============
 // Leads by SE / source / campaign / date, conversion %, lost-reason breakdown.
-// Bulk daily counts (§3.1) are folded in as an extra "leads received" total so
-// conversion math still has a denominator when individual leads weren't logged.
+// Every total combines detailed leads + bulk daily counts (CORRECTIONS Leads
+// §6): 10 manual + 30 bulk on one day = 40 leads that day. Conversions are
+// only ever tracked per detailed lead, so converted counts come from those.
 
 export interface LeadConversionRow {
   key: string;
   label: string;
-  total: number; // detailed leads
-  converted: number;
+  total: number; // detailed leads + bulk daily counts (§6)
+  converted: number; // from detailed leads only
   conversionPct: number; // converted / total, 0 when total is 0
 }
 
@@ -966,11 +1098,12 @@ export interface LostReasonRow {
 
 export interface LeadReport {
   range: { from: string; to: string };
-  totalLeads: number; // detailed leads in range
+  totalLeads: number; // detailed + bulk combined (§6)
+  detailedCount: number; // individually-logged leads in range
   converted: number;
   lost: number;
-  open: number;
-  conversionPct: number;
+  open: number; // detailed leads still on the live funnel
+  conversionPct: number; // converted / totalLeads (combined denominator)
   bulkCount: number; // Σ lead_daily_counts in range (leads logged in bulk)
   bySE: LeadConversionRow[];
   bySource: LeadConversionRow[];
@@ -979,6 +1112,9 @@ export interface LeadReport {
   lostReasons: LostReasonRow[];
   // Bulk counts per source (extra denominator context when detail is missing).
   bulkBySource: { source: LeadSourceValue; count: number }[];
+  // CORRECTIONS Leads §10 — draft→confirm pipeline: drafts saved in range vs
+  // drafts whose advance landed (DRAFT → CONFIRMED transition) in range.
+  draftPipeline: { created: number; confirmed: number; conversionPct: number };
 }
 
 interface LeadReportInput {
@@ -986,6 +1122,9 @@ interface LeadReportInput {
   to?: Date;
   leadWhere: Prisma.LeadWhereInput; // scope (SE own / TL team / all)
   dailyCountWhere: Prisma.LeadDailyCountWhereInput;
+  // Order scope for the draft→confirm metric (CORRECTIONS Leads §10) — the
+  // caller's orderScopeWhere; omitted → the metric reports zeros.
+  orderWhere?: Prisma.OrderWhereInput;
   seId?: number;
   source?: LeadSourceValue;
   campaign?: string; // exact match; "" ignored
@@ -1000,7 +1139,9 @@ export async function buildLeadReport(
 
   const filters: Prisma.LeadWhereInput[] = [
     opts.leadWhere,
-    { leadDate: { gte: from, lte: to } },
+    // leadDate is @db.Date — bound on the Dhaka calendar day, not the raw
+    // +06:00 instant, so a month range doesn't pull in the prior month's last day.
+    { leadDate: { gte: dhakaDateBound(from), lte: dhakaDateBound(to) } },
   ];
   if (opts.seId) filters.push({ assignedTo: opts.seId });
   if (opts.source) filters.push({ source: opts.source });
@@ -1024,34 +1165,54 @@ export async function buildLeadReport(
     where: {
       AND: [
         opts.dailyCountWhere,
-        { date: { gte: from, lte: to } },
+        // date is @db.Date — same Dhaka-day bounding as leadDate above.
+        { date: { gte: dhakaDateBound(from), lte: dhakaDateBound(to) } },
         ...(opts.source ? [{ source: opts.source }] : []),
         ...(opts.campaign ? [{ campaignName: opts.campaign }] : []),
         ...(opts.seId ? [{ userId: opts.seId }] : []),
       ],
     },
-    select: { source: true, count: true },
+    select: {
+      date: true,
+      source: true,
+      campaignName: true,
+      count: true,
+      userId: true,
+      user: { select: { name: true } },
+    },
   });
 
-  const totalLeads = leads.length;
+  const detailedCount = leads.length;
   const converted = leads.filter((l) => l.status === "CONVERTED").length;
   const lost = leads.filter((l) => l.status === "LOST").length;
-  const open = totalLeads - converted - lost;
+  const open = detailedCount - converted - lost;
+  const bulkCount = dailyCounts.reduce((s, d) => s + d.count, 0);
+  // §6 — the headline total (and the conversion denominator) combines both
+  // entry modes: only detailed leads can convert, but every lead counts.
+  const totalLeads = detailedCount + bulkCount;
   const conversionPct = totalLeads > 0 ? round2((converted / totalLeads) * 100) : 0;
 
-  // Generic grouping into conversion rows.
+  // Generic grouping into conversion rows. Detailed leads carry conversions;
+  // bulk daily counts add to the same group's total (§6).
   function group(
     keyOf: (l: (typeof leads)[number]) => string,
-    labelOf: (l: (typeof leads)[number]) => string
+    labelOf: (l: (typeof leads)[number]) => string,
+    bulkKeyOf: (d: (typeof dailyCounts)[number]) => { key: string; label: string }
   ): LeadConversionRow[] {
     const map = new Map<string, LeadConversionRow>();
-    for (const l of leads) {
-      const key = keyOf(l);
+    const add = (key: string, label: string, total: number, conv: number) => {
       const row =
-        map.get(key) ?? { key, label: labelOf(l), total: 0, converted: 0, conversionPct: 0 };
-      row.total += 1;
-      if (l.status === "CONVERTED") row.converted += 1;
+        map.get(key) ?? { key, label, total: 0, converted: 0, conversionPct: 0 };
+      row.total += total;
+      row.converted += conv;
       map.set(key, row);
+    };
+    for (const l of leads) {
+      add(keyOf(l), labelOf(l), 1, l.status === "CONVERTED" ? 1 : 0);
+    }
+    for (const d of dailyCounts) {
+      const b = bulkKeyOf(d);
+      add(b.key, b.label, d.count, 0);
     }
     return [...map.values()]
       .map((r) => ({
@@ -1063,19 +1224,29 @@ export async function buildLeadReport(
 
   const bySE = group(
     (l) => String(l.assignedTo),
-    (l) => l.assignee.name
+    (l) => l.assignee.name,
+    (d) => ({ key: String(d.userId), label: d.user.name })
   );
   const bySource = group(
     (l) => l.source,
-    (l) => l.source
+    (l) => l.source,
+    (d) => ({ key: d.source, label: d.source })
   );
   const byCampaign = group(
     (l) => l.campaignName?.trim() || "(none)",
-    (l) => l.campaignName?.trim() || "(none)"
+    (l) => l.campaignName?.trim() || "(none)",
+    (d) => ({
+      key: d.campaignName?.trim() || "(none)",
+      label: d.campaignName?.trim() || "(none)",
+    })
   );
   const byDate = group(
     (l) => l.leadDate.toISOString().slice(0, 10),
-    (l) => l.leadDate.toISOString().slice(0, 10)
+    (l) => l.leadDate.toISOString().slice(0, 10),
+    (d) => ({
+      key: d.date.toISOString().slice(0, 10),
+      label: d.date.toISOString().slice(0, 10),
+    })
   ).sort((a, b) => a.key.localeCompare(b.key));
 
   // Lost-reason breakdown.
@@ -1093,20 +1264,55 @@ export async function buildLeadReport(
     }))
     .sort((a, b) => b.count - a.count);
 
-  // Bulk daily counts.
+  // Bulk daily counts per source (already inside every total above).
   const bulkMap = new Map<LeadSourceValue, number>();
-  let bulkCount = 0;
   for (const d of dailyCounts) {
     bulkMap.set(d.source, (bulkMap.get(d.source) ?? 0) + d.count);
-    bulkCount += d.count;
   }
   const bulkBySource = [...bulkMap.entries()]
     .map(([source, count]) => ({ source, count }))
     .sort((a, b) => b.count - a.count);
 
+  // Draft→confirm pipeline (CORRECTIONS Leads §10): status-history transitions
+  // are the ground truth — a draft saved in range (created AS DRAFT) vs a
+  // draft whose advance landed in range (DRAFT → CONFIRMED).
+  let draftPipeline = { created: 0, confirmed: 0, conversionPct: 0 };
+  if (opts.orderWhere) {
+    const orderFilter = {
+      AND: [
+        opts.orderWhere,
+        ...(opts.seId ? [{ salesExecutiveId: opts.seId }] : []),
+      ],
+    };
+    const [created, confirmed] = await Promise.all([
+      db.orderStatusHistory.count({
+        where: {
+          fromStatus: null,
+          toStatus: "DRAFT",
+          at: { gte: from, lte: to },
+          order: orderFilter,
+        },
+      }),
+      db.orderStatusHistory.count({
+        where: {
+          fromStatus: "DRAFT",
+          toStatus: "CONFIRMED",
+          at: { gte: from, lte: to },
+          order: orderFilter,
+        },
+      }),
+    ]);
+    draftPipeline = {
+      created,
+      confirmed,
+      conversionPct: created > 0 ? round2((confirmed / created) * 100) : 0,
+    };
+  }
+
   return {
     range: { from: from.toISOString(), to: to.toISOString() },
     totalLeads,
+    detailedCount,
     converted,
     lost,
     open,
@@ -1118,5 +1324,6 @@ export async function buildLeadReport(
     byDate,
     lostReasons,
     bulkBySource,
+    draftPipeline,
   };
 }

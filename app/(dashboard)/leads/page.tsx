@@ -2,118 +2,94 @@ import { prisma } from "@/lib/db";
 import { requirePagePermission } from "@/lib/page-auth";
 import { getEffectivePermissions } from "@/lib/rbac";
 import {
-  leadScopeWhere,
-  leadViewScope,
+  buildCommittedQueue,
   buildFollowUps,
+  buildLeadListFilters,
+  dailyCountScopeWhere,
+  getAssignableUsers,
+  getLeadFormOptions,
+  leadScopeWhere,
   serializeLead,
   LEAD_INCLUDE,
 } from "@/lib/leads";
-import { AD_COST_CATEGORY } from "@/lib/expense-constants";
-import {
-  LeadsClient,
-  type CatalogPick,
-  type UserPick,
-} from "@/components/leads/leads-client";
-import type { Prisma } from "@prisma/client";
+import { OPEN_LEAD_STATUSES } from "@/lib/lead-constants";
+import { dhakaDayStart } from "@/lib/orders";
+import { LeadsListClient } from "@/components/leads/leads-list-client";
 
 export const dynamic = "force-dynamic";
 
-// SPEC §3 — Lead Management home: quick entry, bulk daily count, follow-up
-// reminders and the scoped lead list. Scope follows §2.2 (SE own / TL team / all).
-export default async function LeadsPage() {
+// Leads landing = the LIST (CORRECTIONS Leads §7), restructured like Orders:
+// entry lives on /leads/new (and /leads/bulk), the window defaults to the
+// current Dhaka month and the list is paginated server-side (§4). Scope
+// follows §2.2 (SE own / TL team / all).
+export default async function LeadsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | undefined>>;
+}) {
   const session = await requirePagePermission("leads.view_own");
   const permissions = await getEffectivePermissions(session.user.id);
+  const params = await searchParams;
+
   const scope = await leadScopeWhere(session, permissions);
-  const viewScope = leadViewScope(permissions);
+  const { filters, bulkFilters, page, size, q, rangeAll } =
+    buildLeadListFilters(params, scope);
+  const dcScope = await dailyCountScopeWhere(session, permissions);
 
-  // Team ids for the assignable-user set (reassign targets + SE filter).
-  const me = await prisma.user.findUniqueOrThrow({
-    where: { id: session.user.id },
-    select: { id: true, name: true, teamId: true, leaderOf: { select: { id: true } } },
-  });
-  const teamIds = [
-    ...(me.teamId ? [me.teamId] : []),
-    ...me.leaderOf.map((t) => t.id),
-  ];
-
-  let assignableWhere: Prisma.UserWhereInput;
-  if (viewScope === "all") {
-    assignableWhere = {
-      isActive: true,
-      role: { name: { in: ["SalesExecutive", "TeamLeader", "Manager"] } },
-    };
-  } else if (viewScope === "team") {
-    assignableWhere = {
-      isActive: true,
-      OR: [{ id: me.id }, { teamId: { in: teamIds } }],
-    };
-  } else {
-    assignableWhere = { id: me.id };
-  }
-
-  const [leadsRaw, followUps, products, packages, adCampaigns, leadCampaigns, assignable] =
+  const [leadsRaw, total, bulkAgg, committed, followUps, options, assignable] =
     await Promise.all([
       prisma.lead.findMany({
-        where: scope,
+        where: { AND: filters },
         include: LEAD_INCLUDE,
         orderBy: { createdAt: "desc" },
-        take: 300,
+        skip: (page - 1) * size,
+        take: size,
       }),
+      prisma.lead.count({ where: { AND: filters } }),
+      // Bulk daily counts in the same window/source/SE — the §6 combined total.
+      prisma.leadDailyCount.aggregate({
+        _sum: { count: true },
+        where: { AND: [dcScope, ...bulkFilters] },
+      }),
+      buildCommittedQueue(scope),
       buildFollowUps(scope),
-      prisma.product.findMany({
-        where: { isActive: true },
-        orderBy: { name: "asc" },
-        select: { id: true, name: true },
-      }),
-      prisma.package.findMany({
-        where: { isActive: true },
-        orderBy: { name: "asc" },
-        select: { id: true, name: true },
-      }),
-      prisma.expense.findMany({
-        where: { category: { name: AD_COST_CATEGORY }, campaignName: { not: null } },
-        select: { campaignName: true },
-        distinct: ["campaignName"],
-        take: 100,
-      }),
-      prisma.lead.findMany({
-        where: { AND: [scope, { campaignName: { not: null } }] },
-        select: { campaignName: true },
-        distinct: ["campaignName"],
-        take: 100,
-      }),
-      prisma.user.findMany({
-        where: assignableWhere,
-        orderBy: { name: "asc" },
-        select: { id: true, name: true },
-      }),
+      getLeadFormOptions(scope),
+      getAssignableUsers(session, permissions),
     ]);
 
-  const catalog: CatalogPick[] = [
-    ...packages.map((p) => ({ itemType: "PACKAGE" as const, id: p.id, name: p.name })),
-    ...products.map((p) => ({ itemType: "PRODUCT" as const, id: p.id, name: p.name })),
-  ];
-  const campaigns = [
-    ...new Set(
-      [...adCampaigns, ...leadCampaigns]
-        .map((c) => c.campaignName?.trim())
-        .filter((c): c is string => !!c)
-    ),
-  ].sort((a, b) => a.localeCompare(b));
-
-  const assignableUsers: UserPick[] = assignable.map((u) => ({ id: u.id, name: u.name }));
+  // Overdue = follow-up before today (Dhaka) on a still-open lead — computed
+  // over the page rows, so pagination can't hide a red flag.
+  const dayStart = dhakaDayStart();
+  const overdueLeadIds = leadsRaw
+    .filter(
+      (l) =>
+        l.followUpAt &&
+        l.followUpAt < dayStart &&
+        (OPEN_LEAD_STATUSES as string[]).includes(l.status)
+    )
+    .map((l) => l.id);
 
   return (
-    <LeadsClient
+    <LeadsListClient
       leads={leadsRaw.map(serializeLead)}
+      committed={committed}
       todayCount={followUps.todayCount}
-      overdueLeadIds={followUps.overdue.map((l) => l.id)}
-      catalog={catalog}
-      assignableUsers={assignableUsers}
-      campaigns={campaigns}
+      overdueCount={followUps.overdueCount}
+      overdueLeadIds={overdueLeadIds}
+      bulkCount={bulkAgg._sum.count ?? 0}
+      total={total}
+      page={page}
+      size={size}
+      q={q}
+      rangeAll={rangeAll}
+      catalog={options.catalog}
+      assignableUsers={assignable}
+      campaigns={options.campaigns}
+      canCreate={permissions.includes("leads.create")}
+      canBulk={permissions.includes("leads.bulk")}
       canReassign={permissions.includes("leads.reassign")}
       canConvert={permissions.includes("orders.create")}
-      me={{ id: me.id, name: me.name }}
+      me={{ id: session.user.id, name: session.user.name ?? "" }}
     />
   );
 }

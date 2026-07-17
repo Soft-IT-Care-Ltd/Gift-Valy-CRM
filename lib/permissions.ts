@@ -31,6 +31,7 @@ export interface PermissionDef {
 export const PERMISSION_DEFS: PermissionDef[] = [
   // Leads
   { key: "leads.create", label: "Create leads", group: "Leads" },
+  { key: "leads.bulk", label: "Bulk daily lead counts", group: "Leads" },
   { key: "leads.view_own", label: "View own leads", group: "Leads" },
   { key: "leads.view_team", label: "View team leads", group: "Leads" },
   { key: "leads.view_all", label: "View all leads", group: "Leads" },
@@ -44,6 +45,15 @@ export const PERMISSION_DEFS: PermissionDef[] = [
   { key: "orders.edit", label: "Edit orders", group: "Orders" },
   { key: "orders.approve_edit", label: "Approve order edits", group: "Orders" },
   { key: "orders.cancel", label: "Cancel orders", group: "Orders" },
+  { key: "orders.trash", label: "Trash & restore orders", group: "Orders" },
+  // CORRECTIONS Orders §R5 — manual courier-stage overrides (correct a status by
+  // hand when Steadfast is wrong) + trash from ANY status. Seeded to Admin only
+  // (the RBAC layer grants Admin every permission row); grant to others per user.
+  {
+    key: "orders.courier_override",
+    label: "Manual courier status overrides",
+    group: "Orders",
+  },
   { key: "orders.pack", label: "Packing queue & mark packed", group: "Orders" },
   { key: "invoice.generate", label: "Generate invoices", group: "Orders" },
   // Money
@@ -58,9 +68,9 @@ export const PERMISSION_DEFS: PermissionDef[] = [
   // Stock
   { key: "stock.view", label: "View stock (read)", group: "Stock" },
   { key: "stock.adjust", label: "Adjust stock", group: "Stock" },
-  // Courier
+  // Courier — return approval was removed in C6: the Packaging team's
+  // receive-time inspection (orders.pack) IS the approval (CORRECTIONS §6n).
   { key: "courier.manage", label: "Manage courier & shipments", group: "Courier" },
-  { key: "courier.approve_return", label: "Approve returns (stock restore)", group: "Courier" },
   // Reports
   { key: "reports.own", label: "Own reports", group: "Reports" },
   { key: "reports.team", label: "Team reports", group: "Reports" },
@@ -89,22 +99,23 @@ export const ALL_PERMISSION_KEYS = PERMISSION_DEFS.map((p) => p.key);
 export const ROLE_MATRIX: Record<RoleName, string[]> = {
   Admin: ALL_PERMISSION_KEYS,
   Manager: [
-    "leads.create", "leads.view_own", "leads.view_team", "leads.view_all",
+    "leads.create", "leads.bulk", "leads.view_own", "leads.view_team", "leads.view_all",
     "leads.edit", "leads.reassign",
     "orders.create", "orders.view_own", "orders.view_team", "orders.view_all",
-    "orders.edit", "orders.approve_edit", "orders.cancel", "orders.pack",
+    "orders.edit", "orders.approve_edit", "orders.cancel", "orders.trash",
+    "orders.pack",
     "invoice.generate",
     "payments.create", "payments.verify", "wallets.manage",
     "expenses.create", "purchases.create",
     "catalog.view", "catalog.manage",
     "stock.view", "stock.adjust",
-    "courier.manage", "courier.approve_return",
+    "courier.manage",
     "reports.own", "reports.team", "reports.all",
     "targets.view_own", "targets.view_team", "targets.manage",
     "attendance.own", "attendance.view_all",
   ],
   TeamLeader: [
-    "leads.create", "leads.view_own", "leads.view_team", "leads.edit", "leads.reassign",
+    "leads.create", "leads.bulk", "leads.view_own", "leads.view_team", "leads.edit", "leads.reassign",
     "orders.create", "orders.view_own", "orders.view_team", "orders.approve_edit",
     "invoice.generate",
     "payments.create",

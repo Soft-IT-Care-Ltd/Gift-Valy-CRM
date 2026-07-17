@@ -5,6 +5,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requirePermission, apiError } from "@/lib/authz";
 import { logAudit, auditSafeUser } from "@/lib/audit";
+import { dhakaDateBound } from "@/lib/orders";
 
 export async function GET() {
   try {
@@ -66,7 +67,8 @@ export async function POST(req: Request) {
         teamId: data.teamId ?? null,
         isOnboarding: data.isOnboarding,
         mustChangePassword: data.mustChangePassword,
-        joinedAt: data.joinedAt ? new Date(data.joinedAt) : new Date(),
+        // joinedAt is @db.Date; "now" must be today's Dhaka day, not the raw instant
+        joinedAt: data.joinedAt ? new Date(data.joinedAt) : dhakaDateBound(new Date()),
         createdBy: session.user.id,
         updatedBy: session.user.id,
       },

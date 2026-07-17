@@ -4,8 +4,8 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { DateFilter } from "@/components/ui/date-filter";
+import { detectPreset } from "@/lib/date-filter";
 import {
   Card,
   CardContent,
@@ -30,11 +30,13 @@ import {
 } from "@/components/ui/select";
 import { money, formatDate } from "@/lib/format";
 import { toCsv, downloadCsv, csvDateStamp } from "@/lib/csv";
+import { ExportPdfButton } from "@/components/reports/export-pdf-button";
 import {
   COST_TYPE_LABELS,
   autoExpenseSource,
   type ExpenseRow,
 } from "@/lib/expense-constants";
+import type { ReportPdfPayload, ReportPdfSection } from "@/lib/report-pdf";
 import type { ExpenseReport, AdCostDay } from "@/lib/reports";
 
 export function ExpenseReportClient({
@@ -54,16 +56,11 @@ export function ExpenseReportClient({
   const [fCategory, setFCategory] = useState("ALL");
   const [fSource, setFSource] = useState("ALL");
 
-  function applyRange() {
+  function applyRange(f: string, t: string) {
     const params = new URLSearchParams();
-    if (fromDate) params.set("from", fromDate);
-    if (toDate) params.set("to", toDate);
+    if (f) params.set("from", f);
+    if (t) params.set("to", t);
     router.push(`/reports/expenses${params.toString() ? `?${params}` : ""}`);
-  }
-  function resetRange() {
-    setFromDate("");
-    setToDate("");
-    router.push("/reports/expenses");
   }
 
   const filtered = useMemo(() => {
@@ -116,41 +113,143 @@ export function ExpenseReportClient({
   const rangeLabel = `${formatDate(report.range.from)} → ${formatDate(report.range.to)}`;
   const maxCatAmount = report.byCategory[0]?.amount ?? 0;
 
+  function pdfPayload(): ReportPdfPayload {
+    const detailFilters = [
+      fCategory !== "ALL"
+        ? `Category: ${report.byCategory.find((c) => String(c.categoryId) === fCategory)?.name ?? fCategory}`
+        : null,
+      fSource === "MANUAL" ? "Manual only" : fSource === "AUTO" ? "Auto only" : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    // Chart data as a table — on continuous series, zero-spend days are noise.
+    const adDaily = report.adCost.dailyContinuous
+      ? report.adCost.daily.filter((d) => d.amount > 0)
+      : report.adCost.daily;
+
+    const sections: ReportPdfSection[] = [
+      {
+        heading: "By category",
+        note: "Where the money went, largest first.",
+        headers: ["Category", "Type", "Share %", "Entries", "Amount"],
+        aligns: ["l", "l", "r", "r", "r"],
+        rows: report.byCategory.map((c) => [
+          c.name,
+          COST_TYPE_LABELS[c.costType],
+          `${c.share}%`,
+          c.count,
+          money(c.amount),
+        ]),
+      },
+    ];
+    if (adDaily.length > 0) {
+      sections.push({
+        heading: "Ad cost — daily trend",
+        note: `${money(report.adCost.total)} total ad spend${
+          report.adCost.dailyContinuous
+            ? " · zero-spend days omitted"
+            : " · long range: only days with spend are shown"
+        }.`,
+        headers: ["Date", "Amount"],
+        aligns: ["l", "r"],
+        rows: adDaily.map((d) => [d.date, money(d.amount)]),
+      });
+    }
+    if (report.adCost.byCampaign.length > 0) {
+      sections.push({
+        heading: "Ad cost by campaign",
+        headers: ["Campaign", "Entries", "Amount"],
+        aligns: ["l", "r", "r"],
+        rows: report.adCost.byCampaign.map((c) => [
+          c.campaign,
+          c.count,
+          money(c.amount),
+        ]),
+      });
+    }
+    sections.push({
+      heading: `Expenses (${filtered.length})`,
+      note: detailFilters
+        ? `Filtered — ${detailFilters}.`
+        : "Every expense in the range.",
+      headers: [
+        "Date",
+        "Category",
+        "Type",
+        "Wallet",
+        "Campaign",
+        "Notes",
+        "Source",
+        "Amount",
+      ],
+      aligns: ["l", "l", "l", "l", "l", "l", "l", "r"],
+      rows: filtered.map((e) => [
+        formatDate(e.expenseDate),
+        e.categoryName,
+        COST_TYPE_LABELS[e.costType],
+        e.walletName ?? "—",
+        e.campaignName ?? "—",
+        e.notes ?? "—",
+        autoExpenseSource(e.refTable)?.label ?? "Manual",
+        money(e.amount),
+      ]),
+    });
+
+    return {
+      title: "Expense Report (R8)",
+      subtitle: rangeLabel,
+      landscape: true,
+      kpis: [
+        {
+          label: "Total expenses",
+          value: `${money(report.total)} · ${report.count} entries`,
+        },
+        {
+          label: "Fixed",
+          value: `${money(report.fixedTotal)} · ${fixedPct}% of total`,
+        },
+        {
+          label: "Variable",
+          value: `${money(report.variableTotal)} · ${100 - fixedPct}% of total`,
+        },
+        {
+          label: "Ad cost",
+          value: `${money(report.adCost.total)} · peak ${money(report.adCost.peak)}/day`,
+        },
+      ],
+      sections,
+    };
+  }
+
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">Expense report</h1>
-        <p className="text-sm text-muted-foreground">
-          R8 — expenses by category, fixed vs variable split, and the ad-cost daily
-          trend. Includes auto-expenses from the purchase and courier modules.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h1 className="text-2xl font-semibold">Expense report</h1>
+          <p className="text-sm text-muted-foreground">
+            R8 — expenses by category, fixed vs variable split, and the ad-cost daily
+            trend. Includes auto-expenses from the purchase and courier modules.
+          </p>
+        </div>
+        <ExportPdfButton
+          filename={`expense-report-${csvDateStamp()}.pdf`}
+          build={pdfPayload}
+        />
       </div>
 
       {/* Date range */}
       <Card>
         <CardContent className="flex flex-wrap items-end gap-3 pt-6">
-          <div className="grid gap-1">
-            <Label className="text-xs">From</Label>
-            <Input
-              type="date"
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-              className="w-40"
-            />
-          </div>
-          <div className="grid gap-1">
-            <Label className="text-xs">To</Label>
-            <Input
-              type="date"
-              value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-              className="w-40"
-            />
-          </div>
-          <Button onClick={applyRange}>Apply</Button>
-          <Button variant="outline" onClick={resetRange}>
-            This month
-          </Button>
+          <DateFilter
+            value={detectPreset(fromDate, toDate, "month")}
+            from={fromDate}
+            to={toDate}
+            onApply={(_preset, f, t) => {
+              setFromDate(f);
+              setToDate(t);
+              applyRange(f, t);
+            }}
+          />
           <span className="ml-auto self-center text-sm text-muted-foreground">
             Showing {rangeLabel}
           </span>

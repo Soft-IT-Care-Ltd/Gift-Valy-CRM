@@ -44,6 +44,7 @@ model User {
   rewards            Reward[]                 @relation("UserRewards")
   attendance         Attendance[]             @relation("UserAttendance")
   leaveRequests      LeaveRequest[]           @relation("UserLeaves")
+  damageInspections  DamageLog[]              @relation("DamageInspections")
 
   @@map("users")
 }
@@ -124,11 +125,15 @@ enum LeadSource {
 
 // SPEC §3.1 funnel statuses. CONVERTED is set by the auto-convert hook when an
 // order is created from the lead (§3.2); LOST requires a lostReason.
+// COMMITTED (CORRECTIONS Leads §9): customer verbally confirmed and promised
+// the advance but hasn't paid — sits between NEGOTIATING and CONVERTED and
+// feeds the "Committed queue" that gets chased until the payment lands.
 enum LeadStatus {
   NEW
   CONTACTED
   FOLLOW_UP
   NEGOTIATING
+  COMMITTED
   CONVERTED
   LOST
 }
@@ -158,6 +163,9 @@ model Lead {
   whatsappNumber String      @map("whatsapp_number")
   interestedIn   Json?       @map("interested_in")
   status         LeadStatus  @default(NEW)
+  // CORRECTIONS Leads §9 — when the lead last entered COMMITTED; drives the
+  // "time since commitment" column of the Committed queue.
+  committedAt    DateTime?   @map("committed_at")
   followUpAt     DateTime?   @map("follow_up_at")
   lostReason     LostReason? @map("lost_reason")
   notes          String?
@@ -217,19 +225,44 @@ model Category {
   @@map("categories")
 }
 
+// CORRECTIONS Products §1 — SELLABLE products go in the order form/catalog;
+// COMPONENT products (packing materials: cartons, safety boxes, gift wrap) have
+// no selling price, are never sold standalone, but ARE stocked, purchased,
+// damaged, and consumed by BOMs like any other product.
+enum ProductType {
+  SELLABLE
+  COMPONENT
+}
+
+// CORRECTIONS Products §3 — the recipient's delivery zone. Shared by the
+// per-product/package customer-facing delivery charges and (later, C5) the
+// courier cost rate table.
+enum DeliveryZone {
+  INSIDE_DHAKA
+  SUB_DHAKA
+  OUTSIDE_DHAKA
+}
+
 model Product {
-  id                Int      @id @default(autoincrement())
-  sku               String   @unique
+  id                Int         @id @default(autoincrement())
+  sku               String      @unique
   name              String
-  categoryId        Int      @map("category_id")
-  photoUrl          String?  @map("photo_url")
-  unit              String   @default("pcs") // pcs | box | set
-  avgCost           Decimal  @default(0) @map("avg_cost") @db.Decimal(12, 2) // weighted avg, recomputed on purchase (Phase 2)
-  sellingPrice      Decimal  @map("selling_price") @db.Decimal(12, 2)
-  priceFloor        Decimal  @default(0) @map("price_floor") @db.Decimal(12, 2)
-  lowStockThreshold Int      @default(0) @map("low_stock_threshold")
-  isStockTracked    Boolean  @default(true) @map("is_stock_tracked") // false = perishable/per-order (cake, flowers)
-  isActive          Boolean  @default(true) @map("is_active")
+  productType       ProductType @default(SELLABLE) @map("product_type")
+  categoryId        Int         @map("category_id")
+  photoUrl          String?     @map("photo_url")
+  unit              String      @default("pcs") // pcs | box | set
+  avgCost           Decimal     @default(0) @map("avg_cost") @db.Decimal(12, 2) // weighted avg, recomputed on purchase (Phase 2)
+  sellingPrice      Decimal     @map("selling_price") @db.Decimal(12, 2) // forced 0 for COMPONENT products
+  priceFloor        Decimal     @default(0) @map("price_floor") @db.Decimal(12, 2)
+  lowStockThreshold Int         @default(0) @map("low_stock_threshold")
+  isStockTracked    Boolean     @default(true) @map("is_stock_tracked") // false = perishable/per-order (cake, flowers)
+  isActive          Boolean     @default(true) @map("is_active")
+  // CORRECTIONS Products §3 — optional weight (kg) + optional customer-facing
+  // delivery charge per zone (all 0 = free delivery, the usual case).
+  weightKg                   Decimal? @map("weight_kg") @db.Decimal(8, 3)
+  deliveryChargeInsideDhaka  Decimal  @default(0) @map("delivery_charge_inside_dhaka") @db.Decimal(12, 2)
+  deliveryChargeSubDhaka     Decimal  @default(0) @map("delivery_charge_sub_dhaka") @db.Decimal(12, 2)
+  deliveryChargeOutsideDhaka Decimal  @default(0) @map("delivery_charge_outside_dhaka") @db.Decimal(12, 2)
   // Caches — pure sums over stock_movements, written in the SAME transaction
   // as the movement rows (SPEC §14 integrity rule 2). stock_qty = physical
   // on-hand; reserved_qty = held by CONFIRMED orders; available = qty − reserved.
@@ -240,13 +273,37 @@ model Product {
   createdBy         Int?     @map("created_by")
   updatedBy         Int?     @map("updated_by")
 
-  category       Category        @relation(fields: [categoryId], references: [id])
+  category       Category            @relation(fields: [categoryId], references: [id])
   packageItems   PackageItem[]
+  choiceOptions  PackageItemOption[]
   orderItems     OrderItem[]
   stockMovements StockMovement[]
   purchaseItems  PurchaseItem[]
+  // CORRECTIONS Products §2 — this product's own packing materials…
+  components     ProductComponent[]  @relation("ProductComponents")
+  // …and the reverse: which products consume THIS one as a component.
+  componentOf    ProductComponent[]  @relation("ComponentUsage")
+  damageLogs     DamageLog[]
 
   @@map("products")
+}
+
+// CORRECTIONS Products §2 — product-level packing materials: a SELLABLE product
+// consumes qty × component per unit sold (standalone or inside any package).
+// Only SELLABLE products may own components and only COMPONENT products may BE
+// components (enforced in the API) — that keeps this one level deep by
+// construction, so the BOM explosion can never cycle through products.
+model ProductComponent {
+  id          Int @id @default(autoincrement())
+  productId   Int @map("product_id")
+  componentId Int @map("component_id")
+  qty         Int
+
+  product   Product @relation("ProductComponents", fields: [productId], references: [id], onDelete: Cascade)
+  component Product @relation("ComponentUsage", fields: [componentId], references: [id])
+
+  @@unique([productId, componentId])
+  @@map("product_components")
 }
 
 // ============ STOCK MOVEMENTS (SPEC §6.3 / §14) ============
@@ -382,37 +439,81 @@ model Package {
   sellingPrice Decimal  @map("selling_price") @db.Decimal(12, 2)
   priceFloor   Decimal  @default(0) @map("price_floor") @db.Decimal(12, 2)
   isActive     Boolean  @default(true) @map("is_active")
+  // CORRECTIONS Products §3 — weight auto-sums from the BOM explosion; a
+  // non-null value here is a manual override. Zone delivery charges as products.
+  weightKg                   Decimal? @map("weight_kg") @db.Decimal(8, 3)
+  deliveryChargeInsideDhaka  Decimal  @default(0) @map("delivery_charge_inside_dhaka") @db.Decimal(12, 2)
+  deliveryChargeSubDhaka     Decimal  @default(0) @map("delivery_charge_sub_dhaka") @db.Decimal(12, 2)
+  deliveryChargeOutsideDhaka Decimal  @default(0) @map("delivery_charge_outside_dhaka") @db.Decimal(12, 2)
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
   createdBy    Int?     @map("created_by")
   updatedBy    Int?     @map("updated_by")
 
-  items      PackageItem[]
+  items      PackageItem[] @relation("PackageBom")
+  usedIn     PackageItem[] @relation("SubPackageUsage")
   orderItems OrderItem[]
 
   @@map("packages")
 }
 
+// CORRECTIONS Products §5 — a BOM line is a product, a nested sub-package, or a
+// choice group ("pick 1 of: Red Teddy / Pink Teddy" × qty, options below).
+enum PackageItemKind {
+  PRODUCT
+  PACKAGE
+  CHOICE
+}
+
 // The BOM. Editing it affects future orders only — order_items freeze
 // unit_cost_snapshot at PACKED (SPEC §6.2 / integrity rule 4).
+// Exactly one of product_id / child_package_id / options is populated,
+// according to kind (validated in the API; lib/bom.ts explodes recursively
+// with cycle prevention and a nesting cap).
 model PackageItem {
-  id        Int @id @default(autoincrement())
-  packageId Int @map("package_id")
-  productId Int @map("product_id")
-  qty       Int
+  id             Int             @id @default(autoincrement())
+  packageId      Int             @map("package_id")
+  kind           PackageItemKind @default(PRODUCT)
+  productId      Int?            @map("product_id") // kind = PRODUCT
+  childPackageId Int?            @map("child_package_id") // kind = PACKAGE
+  choiceLabel    String?         @map("choice_label") // kind = CHOICE (e.g. "Teddy colour")
+  qty            Int
 
-  package Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id])
+  package      Package             @relation("PackageBom", fields: [packageId], references: [id], onDelete: Cascade)
+  product      Product?            @relation(fields: [productId], references: [id])
+  childPackage Package?            @relation("SubPackageUsage", fields: [childPackageId], references: [id])
+  options      PackageItemOption[]
 
   @@unique([packageId, productId])
+  @@unique([packageId, childPackageId])
   @@map("package_items")
+}
+
+// CORRECTIONS Products §5 — the variants of one CHOICE line. Exactly one option
+// per group is flagged default (used for catalog cost/availability estimates);
+// the SE's actual pick is stored on the order item (order_items.choice_selections).
+model PackageItemOption {
+  id            Int     @id @default(autoincrement())
+  packageItemId Int     @map("package_item_id")
+  productId     Int     @map("product_id")
+  isDefault     Boolean @default(false) @map("is_default")
+
+  item    PackageItem @relation(fields: [packageItemId], references: [id], onDelete: Cascade)
+  product Product     @relation(fields: [productId], references: [id])
+
+  @@unique([packageItemId, productId])
+  @@map("package_item_options")
 }
 
 // ============ CUSTOMERS & ORDERS (SPEC §4 / §14) ============
 
 // SPEC §1.3 — LEAD/FOLLOW_UP exist in the lifecycle but orders are entered at
 // CONFIRMED (§4.1 E); pre-order stages live in the Leads module (Phase 3).
+// DRAFT (CORRECTIONS Leads §10): a fully-detailed order saved before the
+// advance arrives — no stock reserve, no invoice, excluded from sales; carries
+// a temporary DRAFT-XXXX number until CONFIRM assigns the real GV number.
 enum OrderStatus {
+  DRAFT
   LEAD
   FOLLOW_UP
   CONFIRMED
@@ -456,6 +557,14 @@ enum EditRequestStatus {
   REJECTED
 }
 
+// CORRECTIONS Orders §1 — how the customer wants the delivery timed. FIXED
+// carries a date in orders.requested_delivery_date; ASAP/ANY_DAY don't.
+enum DeliveryDateMode {
+  ASAP
+  ANY_DAY
+  FIXED
+}
+
 // The probashi payer — phone_foreign is the repeat-customer lookup key (§4.1 A).
 model Customer {
   id           Int      @id @default(autoincrement())
@@ -469,9 +578,35 @@ model Customer {
   createdBy    Int?     @map("created_by")
   updatedBy    Int?     @map("updated_by")
 
-  orders Order[]
+  orders    Order[]
+  occasions CustomerOccasion[]
 
   @@map("customers")
+}
+
+// CORRECTIONS Orders §7 — the customer↔recipient occasion profile. One row per
+// (customer, recipient BD phone): birthday/anniversary entered on the order
+// form persist here (not just on the order), so the upcoming-occasions engine
+// (C8) can pitch repeat sales. Dates are @db.Date — write via dbDate().
+model CustomerOccasion {
+  id               Int       @id @default(autoincrement())
+  customerId       Int       @map("customer_id")
+  recipientName    String    @map("recipient_name")
+  recipientPhoneBd String    @map("recipient_phone_bd")
+  relation         String?
+  birthday         DateTime? @db.Date
+  anniversary      DateTime? @db.Date
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  createdBy        Int?      @map("created_by")
+  updatedBy        Int?      @map("updated_by")
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, recipientPhoneBd])
+  @@index([birthday])
+  @@index([anniversary])
+  @@map("customer_occasions")
 }
 
 model Order {
@@ -483,9 +618,19 @@ model Order {
   recipientPhoneBd      String      @map("recipient_phone_bd") // number 2 of 2 (§1.2)
   recipientRelation     String?     @map("recipient_relation")
   deliveryAddress       String      @map("delivery_address")
-  district              String
-  thana                 String
+  // CORRECTIONS Orders §5 — District/Thana were removed from the order form
+  // (Steadfast only needs the address string). Kept as columns for legacy rows;
+  // new orders store "".
+  district              String      @default("")
+  thana                 String      @default("")
+  // CORRECTIONS Products §3 — recipient zone; drives the delivery-charge
+  // auto-fill from item zone charges on the order form. Nullable: legacy
+  // orders and free-delivery entries have no zone.
+  deliveryZone          DeliveryZone? @map("delivery_zone")
   occasion              String?
+  // CORRECTIONS Orders §1 — ASAP / Any day / Fixed date. FIXED requires
+  // requested_delivery_date; the other modes keep it null.
+  deliveryDateMode      DeliveryDateMode @default(ANY_DAY) @map("delivery_date_mode")
   requestedDeliveryDate DateTime?   @map("requested_delivery_date") @db.Date
   subtotal              Decimal     @db.Decimal(12, 2)
   discount              Decimal     @default(0) @db.Decimal(12, 2)
@@ -496,9 +641,19 @@ model Order {
   codAmount             Decimal     @default(0) @map("cod_amount") @db.Decimal(12, 2)
   status                OrderStatus @default(CONFIRMED)
   cancelReason          String?     @map("cancel_reason")
+  // CORRECTIONS Orders §6d — 3-note system. `notes` = Order Note (internal);
+  // invoice_note prints on the invoice (customer-visible); courier_note is the
+  // delivery instruction sent to Steadfast as the consignment `note`.
   notes                 String?
+  invoiceNote           String?     @map("invoice_note")
+  courierNote           String?     @map("courier_note")
   salesExecutiveId      Int         @map("sales_executive_id")
   teamId                Int?        @map("team_id")
+  // CORRECTIONS Orders §6f — soft delete (Trash). A trashed order keeps its row
+  // for 30 days (restorable), is excluded from every list/report/stock query
+  // (lib/db.ts auto-filter), then the cron purge deletes it permanently.
+  deletedAt             DateTime?   @map("deleted_at")
+  deletedBy             Int?        @map("deleted_by")
   createdAt             DateTime    @default(now()) @map("created_at")
   updatedAt             DateTime    @updatedAt @map("updated_at")
   createdBy             Int?        @map("created_by")
@@ -511,9 +666,11 @@ model Order {
   items          OrderItem[]
   payments       Payment[]
   statusHistory  OrderStatusHistory[]
-  editRequests   OrderEditRequest[]
-  invoices       Invoice[]
-  shipment       Shipment?
+  editRequests     OrderEditRequest[]
+  invoices         Invoice[]
+  shipment         Shipment?
+  whatsappMessages WhatsAppMessage[]
+  damageLogs       DamageLog[]
 
   // List queries filter by scope/status/window and sort by created_at desc —
   // composite indexes keep them fast as data accumulates (SPEC-scale: years).
@@ -522,6 +679,7 @@ model Order {
   @@index([teamId, createdAt])
   @@index([createdAt])
   @@index([recipientPhoneBd])
+  @@index([deletedAt])
   @@map("orders")
 }
 
@@ -536,6 +694,11 @@ model OrderItem {
   unitPrice        Decimal       @map("unit_price") @db.Decimal(12, 2)
   unitCostSnapshot Decimal?      @map("unit_cost_snapshot") @db.Decimal(12, 2) // frozen at PACKED (integrity rule 4, Phase 2)
   lineTotal        Decimal       @map("line_total") @db.Decimal(12, 2)
+  // CORRECTIONS Products §5 — the SE's picks for the package's choice groups:
+  // [{ groupId, label, productId, name }] snapshotted at order time (groupId =
+  // package_items.id of the CHOICE line, unique across the whole nested tree).
+  // Stock reserve/deduct and cost snapshots follow the chosen variant.
+  choiceSelections Json?         @map("choice_selections")
 
   order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product Product? @relation(fields: [productId], references: [id])
@@ -618,7 +781,10 @@ model Payment {
   createdBy       Int?          @map("created_by")
   updatedBy       Int?          @map("updated_by")
 
-  order  Order   @relation(fields: [orderId], references: [id])
+  // Cascade: the 30-day trash purge (CORRECTIONS Orders §6f) hard-deletes the
+  // order row; its payments go with it (the order was already excluded from
+  // collections/wallets the moment it was trashed).
+  order  Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   wallet Wallet? @relation(fields: [walletId], references: [id])
 
   @@index([orderId])
@@ -661,18 +827,96 @@ model Invoice {
   generatedAt DateTime @default(now()) @map("generated_at")
   generatedBy Int?     @map("generated_by")
 
-  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order            Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  whatsappMessages WhatsAppMessage[]
 
   @@unique([orderId, version])
   @@map("invoices")
+}
+
+// ============ WHATSAPP INVOICE SEND (SPEC §5 / §16 Phase 4) ============
+
+// Singleton row (id=1 by convention) holding the Meta WhatsApp Cloud API
+// connection. The access token is encrypted at rest (lib/crypto, same scheme
+// as courier_integrations); phone_number_id is not a secret. auto_send_invoice
+// controls whether a freshly generated invoice is pushed to the customer's
+// WhatsApp automatically (order confirm / approved edit).
+model WhatsAppIntegration {
+  id                   Int       @id @default(autoincrement())
+  phoneNumberId        String?   @map("phone_number_id")
+  accessTokenEncrypted String?   @map("access_token_encrypted")
+  isEnabled            Boolean   @default(false) @map("is_enabled")
+  autoSendInvoice      Boolean   @default(true) @map("auto_send_invoice")
+  connectedAt          DateTime? @map("connected_at")
+  lastSentAt           DateTime? @map("last_sent_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  @@map("whatsapp_integrations")
+}
+
+enum WhatsAppTrigger {
+  AUTO_CONFIRM // invoice generated when the order was confirmed
+  AUTO_EDIT // invoice regenerated after an approved edit
+  MANUAL // user pressed "Send via WhatsApp" on the order page
+}
+
+enum WhatsAppSendStatus {
+  SENT
+  FAILED
+}
+
+// One row per send attempt (successful or not) — the order page shows the
+// latest, the settings page shows a recent log. invoice_id goes null if that
+// invoice version's row is ever removed; the order link is the durable one.
+model WhatsAppMessage {
+  id          Int                @id @default(autoincrement())
+  orderId     Int                @map("order_id")
+  invoiceId   Int?               @map("invoice_id")
+  toPhone     String             @map("to_phone")
+  trigger     WhatsAppTrigger
+  status      WhatsAppSendStatus
+  waMessageId String?            @map("wa_message_id") // Graph API message id on success
+  error       String?
+  sentBy      Int?               @map("sent_by") // null = automatic send
+  createdAt   DateTime           @default(now()) @map("created_at")
+
+  order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  invoice Invoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+
+  @@index([orderId, createdAt])
+  @@index([createdAt])
+  @@map("whatsapp_messages")
+}
+
+// ============ CURRENCY RATES (SPEC §5 — customer-currency display) ============
+
+// Admin-maintained conversion table for the OPTIONAL customer-currency display
+// on invoices (SPEC §5). bdt_per_unit = ৳ per 1 unit of the currency; countries
+// lists customer countries (matched case-insensitively against
+// customers.country) that price in this currency. Display-only — every stored
+// amount stays BDT; the invoice prints an "approx." line at the current rate.
+model CurrencyRate {
+  id         Int      @id @default(autoincrement())
+  code       String   @unique // ISO 4217 (SAR, AED, USD…)
+  name       String
+  symbol     String? // optional display symbol (﷼, د.إ, $…) — code is used when absent
+  bdtPerUnit Decimal  @map("bdt_per_unit") @db.Decimal(12, 4)
+  countries  String[] @default([])
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+  updatedBy  Int?     @map("updated_by")
+
+  @@map("currency_rates")
 }
 
 // ============ COURIER & DELIVERY (SPEC §7 / §14) ============
 
 // A courier company (Steadfast, Pathao, RedX, Sundarban…). cod_fee_percent is
 // the % the courier deducts when it remits collected COD — auto-recorded as an
-// expense at reconciliation (SPEC §7 / §9.1). Per-district charges live in
-// courier_zone_charges (drives the district-based courier charge on orders, §4.1 B).
+// expense at reconciliation (SPEC §7 / §9.1). The schema stays multi-courier
+// (CORRECTIONS Courier §2) even though the UI only exposes Steadfast for now.
 model Courier {
   id            Int      @id @default(autoincrement())
   name          String   @unique
@@ -685,24 +929,27 @@ model Courier {
   createdBy     Int?     @map("created_by")
   updatedBy     Int?     @map("updated_by")
 
-  zoneCharges CourierZoneCharge[]
-  shipments   Shipment[]
+  zoneRates CourierZoneRate[]
+  shipments Shipment[]
 
   @@map("couriers")
 }
 
-// Per-district delivery charge for a courier (SPEC §7 / §14). Replaced as a set
-// when a courier's zones are edited (like package BOM items).
-model CourierZoneCharge {
-  id        Int     @id @default(autoincrement())
-  courierId Int     @map("courier_id")
-  district  String
-  charge    Decimal @db.Decimal(12, 2)
+// CORRECTIONS Courier §1 — what WE pay the courier, by recipient zone: a base
+// rate + a per-kg rate for each of the 3 delivery zones. Replaced the old
+// per-district charge table. Drives the courier cost ESTIMATE at handover
+// (base + per_kg × weight); the webhook's actual delivery_charge overrides it.
+model CourierZoneRate {
+  id        Int          @id @default(autoincrement())
+  courierId Int          @map("courier_id")
+  zone      DeliveryZone
+  baseRate  Decimal      @default(0) @map("base_rate") @db.Decimal(12, 2)
+  perKgRate Decimal      @default(0) @map("per_kg_rate") @db.Decimal(12, 2)
 
   courier Courier @relation(fields: [courierId], references: [id], onDelete: Cascade)
 
-  @@unique([courierId, district])
-  @@map("courier_zone_charges")
+  @@unique([courierId, zone])
+  @@map("courier_zone_rates")
 }
 
 // SPEC §7 — the courier-stage statuses, mirroring the OrderStatus courier
@@ -712,6 +959,19 @@ enum ShipmentStatus {
   IN_TRANSIT
   DELIVERED
   RETURNED
+}
+
+// CORRECTIONS Orders §6m — the courier-side sub-state WHILE the order sits in
+// In Transit. PENDING = received at the Steadfast warehouse; ASSIGNED = a rider
+// took it (parsed from the public tracking page — not in the documented API);
+// *_APPROVAL_PENDING = the rider delivered/returned but the hub manager hasn't
+// approved yet (COD not yet in our Steadfast balance). Final approval moves the
+// ORDER status (delivered → DELIVERED tab, cancelled → RETURNED tab).
+enum CourierStatus {
+  PENDING
+  ASSIGNED
+  DELIVERY_APPROVAL_PENDING
+  RETURN_APPROVAL_PENDING
 }
 
 // One shipment per order (SPEC §7). Created at courier handover (moves the order
@@ -735,10 +995,15 @@ model Shipment {
   codReceived           Boolean        @default(false) @map("cod_received")
   codReceivedAt         DateTime?      @map("cod_received_at")
   codFeeExpenseId       Int?           @map("cod_fee_expense_id")
-  // Return flow (§1.3): Admin approval gates the stock restore + return charge.
+  // Return flow (CORRECTIONS Orders §6n): the Packaging team's receive-time
+  // inspection IS the approval — return_received_at/by stamp the physical
+  // receipt (Pending → Received sub-tab). The legacy return_approved columns
+  // are kept in sync by applyReturnReceive so older report queries stay true.
   returnApproved        Boolean        @default(false) @map("return_approved")
   returnApprovedAt      DateTime?      @map("return_approved_at")
   returnApprovedBy      Int?           @map("return_approved_by")
+  returnReceivedAt      DateTime?      @map("return_received_at")
+  returnReceivedBy      Int?           @map("return_received_by")
   returnCharge          Decimal?       @map("return_charge") @db.Decimal(12, 2)
   returnChargeExpenseId Int?           @map("return_charge_expense_id")
   // Steadfast API integration (STEADFAST_INTEGRATION.md §4). All nullable/default
@@ -752,6 +1017,34 @@ model Shipment {
   onHold                Boolean        @default(false) @map("on_hold")
   needsAttention        Boolean        @default(false) @map("needs_attention")
   lastPolledAt          DateTime?      @map("last_polled_at")
+  // CORRECTIONS Courier §1 + Orders §6l — zone + weight courier costing and the
+  // Steadfast-reported figures. delivery_zone/weight_kg are OUR handover inputs
+  // (weight pre-filled from the BOM item sum, editable); courier_cost_estimated
+  // = zone base + per-kg × weight. steadfast_weight_kg / courier_cost_actual are
+  // what Steadfast reports (webhook/API/tracking page) — P&L uses actual when
+  // present, else the estimate. tracking_url is the public tracking link
+  // (discovered from the raw create response, else built from tracking_code);
+  // tracking_page_checked_at caches the gentle tracking-page fetch.
+  deliveryZone          DeliveryZone?  @map("delivery_zone")
+  weightKg              Decimal?       @map("weight_kg") @db.Decimal(8, 3)
+  courierCostEstimated  Decimal?       @map("courier_cost_estimated") @db.Decimal(12, 2)
+  steadfastWeightKg     Decimal?       @map("steadfast_weight_kg") @db.Decimal(8, 3)
+  trackingUrl           String?        @map("tracking_url")
+  trackingPageCheckedAt DateTime?      @map("tracking_page_checked_at")
+  // CORRECTIONS Orders §6m — In Transit sub-state + rider. courier_status is
+  // set from the webhook/poll statuses; ASSIGNED + the rider fields come from
+  // the public tracking page ("Assigned To"), or any API payload carrying them.
+  courierStatus         CourierStatus? @map("courier_status")
+  riderName             String?        @map("rider_name")
+  riderPhone            String?        @map("rider_phone")
+  // CORRECTIONS Orders §R6 — time-in-status tracking (stuck-parcel detection).
+  // in_transit_at stamps when the parcel first reached IN_TRANSIT (warehouse
+  // receive) → total time in transit; courier_status_at stamps the last change
+  // of courier_status → time in the CURRENT sub-status. Both set at the single
+  // choke points (applyShipmentStatus / ingestDeliveryStatus) and backfilled
+  // for existing rows from order_status_history.
+  inTransitAt           DateTime?      @map("in_transit_at")
+  courierStatusAt       DateTime?      @map("courier_status_at")
   createdAt             DateTime       @default(now()) @map("created_at")
   updatedAt             DateTime       @updatedAt @map("updated_at")
   createdBy             Int?           @map("created_by")
@@ -761,6 +1054,7 @@ model Shipment {
   courier        Courier                 @relation(fields: [courierId], references: [id])
   statusLogs     ShipmentStatusLog[]
   trackingEvents ShipmentTrackingEvent[]
+  damageLogs     DamageLog[]
 
   @@index([status])
   @@index([courierId])
@@ -769,11 +1063,15 @@ model Shipment {
 
 // ============ STEADFAST COURIER INTEGRATION (STEADFAST_INTEGRATION.md §4) ============
 
-// Where a raw status update came from: the real-time webhook (primary) or the
-// polling fallback (§3A / §3B). Both go through the SAME status-update code path.
+// Where a raw status update came from: the real-time webhook (primary), the
+// polling fallback (§3A / §3B), or a direct API response we made ourselves
+// (consignment creation — logged in full so tracking-link/charge/weight fields
+// can be discovered, CORRECTIONS Orders §6l). Webhook/poll go through the SAME
+// status-update code path.
 enum StatusLogSource {
   WEBHOOK
   POLL
+  API
 }
 
 // Immutable audit trail of every raw status payload Steadfast sends us, via
@@ -807,6 +1105,33 @@ model ShipmentTrackingEvent {
 
   @@index([shipmentId])
   @@map("shipment_tracking_events")
+}
+
+// CORRECTIONS Orders §6n — the damage log. One row per (product, receive
+// inspection): items the Packaging team marked Damaged when a returned parcel
+// came back. Damaged units are NEVER added back to sellable stock; unit_cost
+// freezes the product's avg cost at inspection so the P&L loss (posted as a
+// "Damaged Stock" expense, ref = the shipment) and the damaged-stock report
+// stay stable even as later purchases move the average.
+model DamageLog {
+  id          Int      @id @default(autoincrement())
+  productId   Int      @map("product_id")
+  qty         Int
+  unitCost    Decimal  @map("unit_cost") @db.Decimal(12, 2)
+  orderId     Int?     @map("order_id")
+  shipmentId  Int?     @map("shipment_id")
+  note        String?
+  inspectedBy Int      @map("inspected_by")
+  inspectedAt DateTime @default(now()) @map("inspected_at")
+
+  product   Product   @relation(fields: [productId], references: [id])
+  order     Order?    @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  shipment  Shipment? @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+  inspector User      @relation("DamageInspections", fields: [inspectedBy], references: [id])
+
+  @@index([inspectedAt])
+  @@index([productId])
+  @@map("damage_logs")
 }
 
 // One integration currently: Steadfast. Keys are encrypted at rest (lib/crypto.ts)

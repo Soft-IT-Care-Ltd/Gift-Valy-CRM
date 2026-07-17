@@ -25,19 +25,30 @@ import {
 import { PhotoField } from "@/components/catalog/photo-field";
 import { money } from "@/lib/format";
 import {
-  BD_DISTRICTS,
   CUSTOMER_COUNTRIES,
+  DELIVERY_DATE_MODES,
+  DELIVERY_DATE_MODE_LABELS,
+  DELIVERY_ZONES,
+  DELIVERY_ZONE_LABELS,
   MFS_METHODS,
   OCCASIONS,
   ORDER_STATUS_LABELS,
   PAYMENT_METHOD_LABELS,
   RECIPIENT_RELATIONS,
+  type DeliveryDateModeValue,
+  type DeliveryZoneValue,
   type OrderStatusValue,
   type PaymentMethodValue,
 } from "@/lib/order-constants";
 import { WALLET_TYPE_LABELS, type WalletOption } from "@/lib/wallet";
 
 // ---- option shapes (page passes catalog without any cost fields) ----
+
+export interface ZoneCharges {
+  INSIDE_DHAKA: number;
+  SUB_DHAKA: number;
+  OUTSIDE_DHAKA: number;
+}
 
 export interface ProductOption {
   id: number;
@@ -46,6 +57,21 @@ export interface ProductOption {
   sellingPrice: number;
   priceFloor: number;
   unit: string;
+  zoneCharges: ZoneCharges;
+}
+
+// CORRECTIONS Products §5 — the choice groups of a package's whole nested
+// tree; the SE picks one option per group when the package is added.
+export interface ChoiceGroupOption {
+  groupId: number;
+  label: string;
+  path: string[];
+  options: {
+    productId: number;
+    name: string;
+    isDefault: boolean;
+    stockQty: number;
+  }[];
 }
 
 export interface PackageOption {
@@ -55,6 +81,8 @@ export interface PackageOption {
   sellingPrice: number;
   priceFloor: number;
   availableToSell: number | null;
+  zoneCharges: ZoneCharges;
+  choiceGroups: ChoiceGroupOption[];
 }
 
 interface LineState {
@@ -63,6 +91,8 @@ interface LineState {
   itemId: string; // product or package id as string for Select
   qty: string;
   unitPrice: string;
+  // groupId → productId (as strings for Select) — package lines only.
+  selections: Record<string, string>;
 }
 
 export interface OrderFormInitial {
@@ -70,9 +100,13 @@ export interface OrderFormInitial {
   recipientPhoneBd: string;
   recipientRelation: string | null;
   deliveryAddress: string;
-  district: string;
-  thana: string;
+  deliveryZone: string | null;
   occasion: string | null;
+  // CORRECTIONS Orders §7 (form part) — from the customer↔recipient profile.
+  recipientBirthday: string | null;
+  recipientAnniversary: string | null;
+  // CORRECTIONS Orders §1 — ASAP / Any day / Fixed date.
+  deliveryDateMode: DeliveryDateModeValue;
   requestedDeliveryDate: string | null;
   items: {
     itemType: "PRODUCT" | "PACKAGE";
@@ -80,11 +114,15 @@ export interface OrderFormInitial {
     packageId: number | null;
     qty: number;
     unitPrice: number;
+    choiceSelections?: { groupId: number; productId: number }[] | null;
   }[];
   discount: number;
   courierCharge: number;
   codAmount: number;
+  // 3-note system (CORRECTIONS Orders §6d).
   notes: string | null;
+  invoiceNote: string | null;
+  courierNote: string | null;
   customer: { name: string; phoneForeign: string; country: string };
   orderNo?: string;
   status?: OrderStatusValue;
@@ -158,21 +196,50 @@ export function OrderForm({
   const [foundCustomer, setFoundCustomer] = useState<FoundCustomer | null>(null);
   const lookupSeq = useRef(0);
 
-  // Section B — recipient
+  // Section B — recipient. District/Thana removed (CORRECTIONS Orders §5) —
+  // the full address is all Steadfast needs.
   const [recipientName, setRecipientName] = useState(initial?.recipientName ?? "");
   const [recipientPhoneBd, setRecipientPhoneBd] = useState(
     initial?.recipientPhoneBd ?? ""
   );
   const [relation, setRelation] = useState(initial?.recipientRelation ?? "");
   const [address, setAddress] = useState(initial?.deliveryAddress ?? "");
-  const [district, setDistrict] = useState(initial?.district ?? "");
-  const [thana, setThana] = useState(initial?.thana ?? "");
   const [occasion, setOccasion] = useState(initial?.occasion ?? "");
+  const [deliveryZone, setDeliveryZone] = useState<DeliveryZoneValue | "">(
+    (initial?.deliveryZone as DeliveryZoneValue | null) ?? ""
+  );
+  // CORRECTIONS Orders §1 — ASAP / Any day / Fixed date selector.
+  const [deliveryDateMode, setDeliveryDateMode] = useState<DeliveryDateModeValue>(
+    initial?.deliveryDateMode ?? "ANY_DAY"
+  );
   const [deliveryDate, setDeliveryDate] = useState(
     initial?.requestedDeliveryDate ?? ""
   );
+  // CORRECTIONS Orders §7 — optional recipient occasion dates → customer profile.
+  const [recipientBirthday, setRecipientBirthday] = useState(
+    initial?.recipientBirthday ?? ""
+  );
+  const [recipientAnniversary, setRecipientAnniversary] = useState(
+    initial?.recipientAnniversary ?? ""
+  );
 
-  // Section C — items
+  // Section C — items. Choice picks (§5) prefill from the saved order (edit)
+  // or the group defaults.
+  const defaultSelections = useCallback(
+    (packageId: number | null): Record<string, string> => {
+      const pkg = packages.find((p) => p.id === packageId);
+      if (!pkg) return {};
+      return Object.fromEntries(
+        pkg.choiceGroups.map((g) => [
+          String(g.groupId),
+          String(
+            (g.options.find((o) => o.isDefault) ?? g.options[0])?.productId ?? ""
+          ),
+        ])
+      );
+    },
+    [packages]
+  );
   const [lines, setLines] = useState<LineState[]>(() =>
     initial
       ? initial.items.map((it) => ({
@@ -181,8 +248,26 @@ export function OrderForm({
           itemId: String(it.itemType === "PRODUCT" ? it.productId : it.packageId),
           qty: String(it.qty),
           unitPrice: String(it.unitPrice),
+          selections: {
+            ...defaultSelections(it.packageId),
+            ...Object.fromEntries(
+              (it.choiceSelections ?? []).map((s) => [
+                String(s.groupId),
+                String(s.productId),
+              ])
+            ),
+          },
         }))
-      : [{ key: lineKey++, itemType: "PACKAGE", itemId: "", qty: "1", unitPrice: "" }]
+      : [
+          {
+            key: lineKey++,
+            itemType: "PACKAGE",
+            itemId: "",
+            qty: "1",
+            unitPrice: "",
+            selections: {},
+          },
+        ]
   );
   const [discountType, setDiscountType] = useState<"AMOUNT" | "PERCENT">("AMOUNT");
   const [discountValue, setDiscountValue] = useState(
@@ -204,8 +289,12 @@ export function OrderForm({
   );
   const [zeroAdvanceReason, setZeroAdvanceReason] = useState("");
 
-  // Section E — meta
+  // Section E — meta. 3-note system (CORRECTIONS Orders §6d): Order Note
+  // (internal) / Invoice Note (printed) / Courier Note (sent to Steadfast).
   const [notes, setNotes] = useState(initial?.notes ?? "");
+  const [invoiceNote, setInvoiceNote] = useState(initial?.invoiceNote ?? "");
+  const [courierNote, setCourierNote] = useState(initial?.courierNote ?? "");
+  const [noteTab, setNoteTab] = useState<"order" | "invoice" | "courier">("order");
   const [editReason, setEditReason] = useState("");
 
   const productById = useMemo(
@@ -246,15 +335,51 @@ export function OrderForm({
   function updateLine(key: number, patch: Partial<LineState>) {
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
   }
+
+  // CORRECTIONS Products §3 — Σ(qty × item's charge for the zone). 0 when no
+  // zone picked or nothing carries a zone charge (free delivery default).
+  const zoneChargeFor = useCallback(
+    (zone: DeliveryZoneValue | "", ls: LineState[]): number => {
+      if (!zone) return 0;
+      return ls.reduce((sum, l) => {
+        const opt =
+          l.itemType === "PRODUCT"
+            ? productById.get(l.itemId)
+            : packageById.get(l.itemId);
+        if (!opt) return sum;
+        return sum + (Number(l.qty) || 0) * opt.zoneCharges[zone];
+      }, 0);
+    },
+    [productById, packageById]
+  );
+
+  // Auto-fill the delivery charge on zone/item events (stays editable).
+  function autofillCharge(zone: DeliveryZoneValue | "", ls: LineState[]) {
+    if (!zone) return;
+    const sum = zoneChargeFor(zone, ls);
+    if (sum > 0) setCourierCharge(String(sum));
+  }
+
   function selectItem(line: LineState, itemId: string) {
     const opt =
       line.itemType === "PRODUCT"
         ? productById.get(itemId)
         : packageById.get(itemId);
-    updateLine(line.key, {
-      itemId,
-      unitPrice: opt ? String(opt.sellingPrice) : line.unitPrice,
-    });
+    const nextLines = lines.map((l) =>
+      l.key === line.key
+        ? {
+            ...l,
+            itemId,
+            unitPrice: opt ? String(opt.sellingPrice) : l.unitPrice,
+            selections:
+              line.itemType === "PACKAGE"
+                ? defaultSelections(Number(itemId))
+                : {},
+          }
+        : l
+    );
+    setLines(nextLines);
+    autofillCharge(deliveryZone, nextLines);
   }
   function lineFloor(line: LineState): number | null {
     const opt =
@@ -293,8 +418,7 @@ export function OrderForm({
     !recipientName.trim() ||
     !recipientPhoneBd.trim() ||
     !address.trim() ||
-    !district ||
-    !thana.trim() ||
+    (deliveryDateMode === "FIXED" && !deliveryDate) ||
     lines.some((l) => !l.itemId || !(Number(l.qty) > 0)) ||
     lines.length === 0 ||
     (floorBreaches.length > 0 && !canOverrideFloor) ||
@@ -305,29 +429,42 @@ export function OrderForm({
     mfsNeedsTxn ||
     (mode === "edit-request" && editReason.trim().length < 3);
 
-  async function submit() {
+  async function submit(saveAsDraft = false) {
     setSaving(true);
     const orderPayload = {
       recipientName,
       recipientPhoneBd,
       recipientRelation: relation || null,
       deliveryAddress: address,
-      district,
-      thana,
+      deliveryZone: deliveryZone || null,
       occasion: occasion || null,
-      requestedDeliveryDate: deliveryDate || null,
+      recipientBirthday: recipientBirthday || null,
+      recipientAnniversary: recipientAnniversary || null,
+      deliveryDateMode,
+      requestedDeliveryDate:
+        deliveryDateMode === "FIXED" ? deliveryDate || null : null,
       items: lines.map((l) => ({
         itemType: l.itemType,
         productId: l.itemType === "PRODUCT" ? Number(l.itemId) : null,
         packageId: l.itemType === "PACKAGE" ? Number(l.itemId) : null,
         qty: Number(l.qty),
         unitPrice: Number(l.unitPrice) || 0,
+        choiceSelections:
+          l.itemType === "PACKAGE" && Object.keys(l.selections).length > 0
+            ? Object.fromEntries(
+                Object.entries(l.selections)
+                  .filter(([, v]) => v !== "")
+                  .map(([k, v]) => [k, Number(v)])
+              )
+            : null,
       })),
       discountType,
       discountValue: Number(discountValue) || 0,
       courierCharge: Number(courierCharge) || 0,
       codAmount: codAmount === "" ? null : Number(codAmount),
       notes: notes || null,
+      invoiceNote: invoiceNote || null,
+      courierNote: courierNote || null,
     };
 
     let res: Response;
@@ -343,16 +480,19 @@ export function OrderForm({
             fbLink: fbLink || null,
           },
           order: orderPayload,
-          advance: {
-            amount: advance,
-            method: method || undefined,
-            walletId: advanceWalletId ? Number(advanceWalletId) : null,
-            transactionId: transactionId || null,
-            senderNumber: senderNumber || null,
-            screenshotUrl: screenshotUrl || null,
-          },
+          advance: saveAsDraft
+            ? { amount: 0 }
+            : {
+                amount: advance,
+                method: method || undefined,
+                walletId: advanceWalletId ? Number(advanceWalletId) : null,
+                transactionId: transactionId || null,
+                senderNumber: senderNumber || null,
+                screenshotUrl: screenshotUrl || null,
+              },
           zeroAdvanceReason: zeroAdvanceReason || undefined,
           leadId: leadId ?? undefined,
+          saveAsDraft,
         }),
       });
     } else if (mode === "edit") {
@@ -376,7 +516,11 @@ export function OrderForm({
     }
     if (mode === "create") {
       const data = await res.json();
-      toast.success(`Order ${data.orderNo} created`);
+      toast.success(
+        saveAsDraft
+          ? `Draft ${data.orderNo} saved — confirm it by recording the advance`
+          : `Order ${data.orderNo} created`
+      );
       router.push(`/orders/${data.id}`);
     } else if (mode === "edit") {
       toast.success("Order updated");
@@ -547,34 +691,62 @@ export function OrderForm({
               </Select>
             </div>
             <div className="grid gap-2">
-              <Label>District</Label>
-              <Select value={district} onValueChange={setDistrict}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Pick district" />
-                </SelectTrigger>
-                <SelectContent className="max-h-64">
-                  {BD_DISTRICTS.map((d) => (
-                    <SelectItem key={d} value={d}>
-                      {d}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label>Recipient birthday (optional)</Label>
+              <Input
+                type="date"
+                value={recipientBirthday}
+                onChange={(e) => setRecipientBirthday(e.target.value)}
+              />
             </div>
             <div className="grid gap-2">
-              <Label>Thana / Upazila</Label>
-              <Input value={thana} onChange={(e) => setThana(e.target.value)} />
+              <Label>Recipient anniversary (optional)</Label>
+              <Input
+                type="date"
+                value={recipientAnniversary}
+                onChange={(e) => setRecipientAnniversary(e.target.value)}
+              />
             </div>
           </div>
+          <p className="-mt-2 text-xs text-muted-foreground">
+            Birthday/anniversary save to the customer&apos;s recipient profile —
+            the team gets reminded before the date every year.
+          </p>
           <div className="grid gap-2">
             <Label>Full delivery address</Label>
             <Textarea
               value={address}
               onChange={(e) => setAddress(e.target.value)}
-              placeholder="House, road, area, landmarks…"
+              placeholder="House, road, area, landmarks — the courier gets exactly this"
             />
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-2">
+            <Label>Delivery zone (optional)</Label>
+            <Select
+              value={deliveryZone}
+              onValueChange={(v) => {
+                const zone = v as DeliveryZoneValue;
+                setDeliveryZone(zone);
+                autofillCharge(zone, lines);
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Inside Dhaka / Sub Dhaka / Outside Dhaka" />
+              </SelectTrigger>
+              <SelectContent>
+                {DELIVERY_ZONES.map((z) => (
+                  <SelectItem key={z} value={z}>
+                    {DELIVERY_ZONE_LABELS[z]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              If any ordered item has a zone delivery charge, the order’s
+              delivery charge auto-fills from the matching zone (editable
+              below). Default is free delivery.
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
             <div className="grid gap-2">
               <Label>Occasion (optional)</Label>
               <Select value={occasion} onValueChange={setOccasion}>
@@ -591,13 +763,41 @@ export function OrderForm({
               </Select>
             </div>
             <div className="grid gap-2">
-              <Label>Delivery date requested (optional)</Label>
-              <Input
-                type="date"
-                value={deliveryDate}
-                onChange={(e) => setDeliveryDate(e.target.value)}
-              />
+              <Label>Requested delivery</Label>
+              <Select
+                value={deliveryDateMode}
+                onValueChange={(v) => {
+                  const m = v as DeliveryDateModeValue;
+                  setDeliveryDateMode(m);
+                  if (m !== "FIXED") setDeliveryDate("");
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {DELIVERY_DATE_MODES.map((m) => (
+                    <SelectItem key={m} value={m}>
+                      {m === "FIXED" ? "🎯 " : ""}
+                      {DELIVERY_DATE_MODE_LABELS[m]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
+            {deliveryDateMode === "FIXED" && (
+              <div className="grid gap-2">
+                <Label>Deliver ON this date</Label>
+                <Input
+                  type="date"
+                  value={deliveryDate}
+                  onChange={(e) => setDeliveryDate(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Birthdays/anniversaries — must arrive on the day.
+                </p>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -632,6 +832,7 @@ export function OrderForm({
                           itemType: v as "PRODUCT" | "PACKAGE",
                           itemId: "",
                           unitPrice: "",
+                          selections: {},
                         })
                       }
                     >
@@ -717,6 +918,52 @@ export function OrderForm({
                       : "needs TL/Admin approval"}
                   </p>
                 )}
+                {/* CORRECTIONS Products §5 — variant picks for this package */}
+                {line.itemType === "PACKAGE" &&
+                  (packageById.get(line.itemId)?.choiceGroups.length ?? 0) >
+                    0 && (
+                    <div className="grid gap-2 rounded-md border bg-muted/30 p-2 sm:grid-cols-2">
+                      {packageById
+                        .get(line.itemId)!
+                        .choiceGroups.map((g) => (
+                          <div key={g.groupId} className="grid gap-1">
+                            <Label className="text-xs">
+                              {g.path.length > 0
+                                ? `${g.path.join(" → ")} · `
+                                : ""}
+                              {g.label}
+                            </Label>
+                            <Select
+                              value={line.selections[String(g.groupId)] ?? ""}
+                              onValueChange={(v) =>
+                                updateLine(line.key, {
+                                  selections: {
+                                    ...line.selections,
+                                    [String(g.groupId)]: v,
+                                  },
+                                })
+                              }
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Choose…" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {g.options.map((o) => (
+                                  <SelectItem
+                                    key={o.productId}
+                                    value={String(o.productId)}
+                                  >
+                                    {o.name}
+                                    {o.isDefault ? " (default)" : ""} — stock{" "}
+                                    {o.stockQty}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        ))}
+                    </div>
+                  )}
               </div>
             );
           })}
@@ -734,6 +981,7 @@ export function OrderForm({
                     itemId: "",
                     qty: "1",
                     unitPrice: "",
+                    selections: {},
                   },
                 ])
               }
@@ -927,8 +1175,10 @@ export function OrderForm({
                     </>
                   ) : (
                     <p className="text-xs text-amber-600">
-                      Order will start ON HOLD until an advance is recorded
-                      (SPEC rule).
+                      No advance → the order starts ON HOLD, or use{" "}
+                      <span className="font-medium">Save as draft</span> for a
+                      committed-but-unpaid order (confirms when the advance is
+                      recorded).
                     </p>
                   )}
                 </div>
@@ -973,9 +1223,69 @@ export function OrderForm({
               <div className="font-medium">{teamName ?? "—"}</div>
             </div>
           </div>
+          {/* 3-note system (CORRECTIONS Orders §6d) */}
           <div className="grid gap-2">
-            <Label>Internal notes (optional)</Label>
-            <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} />
+            <Label>Notes</Label>
+            <div className="flex gap-1 rounded-md bg-muted p-1 text-sm">
+              {(
+                [
+                  ["order", "Order Note", notes],
+                  ["invoice", "Invoice Note", invoiceNote],
+                  ["courier", "Courier Note", courierNote],
+                ] as const
+              ).map(([key, label, value]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setNoteTab(key)}
+                  className={`flex-1 rounded-sm px-2 py-1.5 font-medium transition-colors ${
+                    noteTab === key
+                      ? "bg-background shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {label}
+                  {value.trim() ? " •" : ""}
+                </button>
+              ))}
+            </div>
+            {noteTab === "order" && (
+              <>
+                <Textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder="Internal — visible to the team only"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Internal note — never leaves the team.
+                </p>
+              </>
+            )}
+            {noteTab === "invoice" && (
+              <>
+                <Textarea
+                  value={invoiceNote}
+                  onChange={(e) => setInvoiceNote(e.target.value)}
+                  placeholder="Printed on the invoice — the customer sees this"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Printed on the invoice PDF — customer-visible.
+                </p>
+              </>
+            )}
+            {noteTab === "courier" && (
+              <>
+                <Textarea
+                  value={courierNote}
+                  onChange={(e) => setCourierNote(e.target.value)}
+                  placeholder="Delivery instructions — sent to Steadfast with the parcel"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Sent to Steadfast as the consignment note (delivery
+                  instructions).
+                </p>
+              </>
+            )}
           </div>
           {mode === "edit-request" && (
             <div className="grid gap-2">
@@ -1000,7 +1310,19 @@ export function OrderForm({
         <Button variant="outline" onClick={() => router.back()}>
           Cancel
         </Button>
-        <Button onClick={submit} disabled={disableSubmit}>
+        {/* CORRECTIONS Leads §10 — committed-but-unpaid: save everything as a
+            DRAFT (no reserve/invoice); recording the advance later confirms it. */}
+        {mode === "create" && advance === 0 && (
+          <Button
+            variant="secondary"
+            onClick={() => submit(true)}
+            disabled={disableSubmit}
+            title="No advance yet — save the full order as a draft and confirm when the payment lands"
+          >
+            {saving ? "Saving…" : "Save as draft"}
+          </Button>
+        )}
+        <Button onClick={() => submit(false)} disabled={disableSubmit}>
           {saving
             ? "Saving…"
             : mode === "create"

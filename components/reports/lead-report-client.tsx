@@ -4,6 +4,8 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DateFilter } from "@/components/ui/date-filter";
+import { detectPreset } from "@/lib/date-filter";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -30,11 +32,13 @@ import {
 } from "@/components/ui/select";
 import { formatDate } from "@/lib/format";
 import { toCsv, downloadCsv, csvDateStamp } from "@/lib/csv";
+import { ExportPdfButton } from "@/components/reports/export-pdf-button";
 import {
   LEAD_SOURCES,
   LEAD_SOURCE_LABELS,
   LOST_REASON_LABELS,
 } from "@/lib/lead-constants";
+import type { ReportPdfPayload, ReportPdfSection } from "@/lib/report-pdf";
 import type { LeadReport, LeadConversionRow } from "@/lib/reports";
 
 export function LeadReportClient({
@@ -53,10 +57,10 @@ export function LeadReportClient({
   const [source, setSource] = useState(filters.source);
   const [campaign, setCampaign] = useState(filters.campaign);
 
-  function apply() {
+  function apply(f = from, t = to) {
     const p = new URLSearchParams();
-    if (from) p.set("from", from);
-    if (to) p.set("to", to);
+    if (f) p.set("from", f);
+    if (t) p.set("to", t);
     if (seId !== "ALL") p.set("seId", seId);
     if (source !== "ALL") p.set("source", source);
     if (campaign.trim()) p.set("campaign", campaign.trim());
@@ -79,27 +83,99 @@ export function LeadReportClient({
     downloadCsv(`leads-by-${name}-${csvDateStamp()}.csv`, toCsv(headers, body));
   }
 
+  function pdfPayload(): ReportPdfPayload {
+    const conv = (
+      heading: string,
+      labelHead: string,
+      rows: LeadConversionRow[]
+    ): ReportPdfSection => ({
+      heading,
+      headers: [labelHead, "Leads", "Converted", "Conversion %"],
+      aligns: ["l", "r", "r", "r"],
+      rows: rows.map((r) => [r.label, r.total, r.converted, `${r.conversionPct}%`]),
+    });
+    const sections: ReportPdfSection[] = [];
+    if (report.bulkCount > 0) {
+      sections.push({
+        heading: "Bulk daily counts",
+        note: `${report.bulkCount} leads logged as daily counts (§3.1) — included in every total; only detailed leads can convert.`,
+        headers: ["Source", "Leads"],
+        aligns: ["l", "r"],
+        rows: report.bulkBySource.map((b) => [LEAD_SOURCE_LABELS[b.source], b.count]),
+      });
+    }
+    sections.push(
+      conv("By sales executive", "SE", report.bySE),
+      conv(
+        "By source",
+        "Source",
+        report.bySource.map((r) => ({
+          ...r,
+          label:
+            LEAD_SOURCE_LABELS[r.label as keyof typeof LEAD_SOURCE_LABELS] ??
+            r.label,
+        }))
+      ),
+      conv("By campaign", "Campaign", report.byCampaign),
+      conv("By date", "Date", report.byDate),
+      {
+        heading: "Lost reasons",
+        note: `Why ${report.lost} leads were lost in this range.`,
+        headers: ["Reason", "Share", "Count"],
+        aligns: ["l", "r", "r"],
+        rows: report.lostReasons.map((r) => [
+          LOST_REASON_LABELS[r.reason],
+          `${r.share}%`,
+          r.count,
+        ]),
+      }
+    );
+    return {
+      title: "Lead Report (R2)",
+      subtitle: `${rangeLabel}${seId !== "ALL" ? ` · SE: ${seOptions.find((s) => String(s.id) === seId)?.name ?? seId}` : ""}${source !== "ALL" ? ` · Source: ${LEAD_SOURCE_LABELS[source as keyof typeof LEAD_SOURCE_LABELS] ?? source}` : ""}${campaign.trim() ? ` · Campaign: ${campaign.trim()}` : ""}`,
+      kpis: [
+        {
+          label: "Total leads",
+          value: `${report.totalLeads}${report.bulkCount > 0 ? ` (${report.detailedCount} + ${report.bulkCount} bulk)` : ""}`,
+        },
+        { label: "Converted", value: String(report.converted) },
+        { label: "Conversion %", value: `${report.conversionPct}%` },
+        { label: "Open", value: String(report.open) },
+        { label: "Lost", value: String(report.lost) },
+      ],
+      sections,
+    };
+  }
+
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">Lead report</h1>
-        <p className="text-sm text-muted-foreground">
-          R2 — leads by SE, source, campaign and date, with conversion % and the
-          lost-reason breakdown.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h1 className="text-2xl font-semibold">Lead report</h1>
+          <p className="text-sm text-muted-foreground">
+            R2 — leads by SE, source, campaign and date, with conversion % and the
+            lost-reason breakdown.
+          </p>
+        </div>
+        <ExportPdfButton
+          filename={`lead-report-${csvDateStamp()}.pdf`}
+          build={pdfPayload}
+        />
       </div>
 
       {/* Filters */}
       <Card>
         <CardContent className="flex flex-wrap items-end gap-3 pt-6">
-          <div className="grid gap-1">
-            <Label className="text-xs">From</Label>
-            <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="w-40" />
-          </div>
-          <div className="grid gap-1">
-            <Label className="text-xs">To</Label>
-            <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="w-40" />
-          </div>
+          <DateFilter
+            value={detectPreset(from, to, "month")}
+            from={from}
+            to={to}
+            onApply={(_preset, f, t) => {
+              setFrom(f);
+              setTo(t);
+              apply(f, t);
+            }}
+          />
           {seOptions.length > 0 && (
             <div className="grid gap-1">
               <Label className="text-xs">SE</Label>
@@ -130,7 +206,7 @@ export function LeadReportClient({
             <Label className="text-xs">Campaign</Label>
             <Input value={campaign} onChange={(e) => setCampaign(e.target.value)} className="w-40" placeholder="exact" />
           </div>
-          <Button onClick={apply}>Apply</Button>
+          <Button onClick={() => apply()}>Apply</Button>
           <Button variant="outline" onClick={reset}>This month</Button>
           <span className="ml-auto self-center text-sm text-muted-foreground">
             Showing {rangeLabel}
@@ -140,20 +216,49 @@ export function LeadReportClient({
 
       {/* KPIs */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-        <Kpi label="Total leads" value={String(report.totalLeads)} sub={report.bulkCount > 0 ? `+${report.bulkCount} logged in bulk` : "detailed entries"} />
+        <Kpi
+          label="Total leads"
+          value={String(report.totalLeads)}
+          sub={
+            report.bulkCount > 0
+              ? `${report.detailedCount} detailed + ${report.bulkCount} bulk`
+              : "detailed entries"
+          }
+        />
         <Kpi label="Converted" value={String(report.converted)} />
-        <Kpi label="Conversion %" value={`${report.conversionPct}%`} />
+        <Kpi label="Conversion %" value={`${report.conversionPct}%`} sub="of all leads, incl. bulk" />
         <Kpi label="Open" value={String(report.open)} />
         <Kpi label="Lost" value={String(report.lost)} />
       </div>
+
+      {/* Draft→confirm pipeline (CORRECTIONS Leads §10) */}
+      {(report.draftPipeline.created > 0 || report.draftPipeline.confirmed > 0) && (
+        <div className="grid gap-4 sm:grid-cols-3">
+          <Kpi
+            label="Drafts saved"
+            value={String(report.draftPipeline.created)}
+            sub="committed-but-unpaid orders"
+          />
+          <Kpi
+            label="Drafts confirmed"
+            value={String(report.draftPipeline.confirmed)}
+            sub="advance landed in range"
+          />
+          <Kpi
+            label="Draft → confirm %"
+            value={`${report.draftPipeline.conversionPct}%`}
+            sub="of drafts saved in range"
+          />
+        </div>
+      )}
 
       {report.bulkCount > 0 && (
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-base">Bulk daily counts</CardTitle>
             <CardDescription>
-              {report.bulkCount} leads logged as daily counts (§3.1) — no per-lead
-              conversion tracked, so they aren&apos;t in the conversion % above.
+              {report.bulkCount} leads logged as daily counts (§3.1) — included
+              in every total above; only detailed leads can convert.
             </CardDescription>
           </CardHeader>
           <CardContent>

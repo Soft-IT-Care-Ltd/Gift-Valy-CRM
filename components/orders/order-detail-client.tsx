@@ -44,22 +44,32 @@ import { PhotoField } from "@/components/catalog/photo-field";
 import { money, formatDate, formatDateTime } from "@/lib/format";
 import { StatusBadge } from "./orders-list-client";
 import {
+  DELIVERY_DATE_MODE_LABELS,
   MFS_METHODS,
   ORDER_STATUS_LABELS,
   PAYMENT_METHODS,
   PAYMENT_METHOD_LABELS,
   PAYMENT_TYPES,
   PAYMENT_TYPE_LABELS,
+  joinAddress,
   orderIsInvoiceable,
+  type DeliveryDateModeValue,
   type OrderStatusValue,
   type PaymentMethodValue,
   type PaymentTypeValue,
 } from "@/lib/order-constants";
 import {
+  COURIER_STATUS_LABELS,
   SHIPMENT_STATUS_LABELS,
+  displayedCourierStatus,
+  formatDuration,
+  isOvercharged,
+  stuckLevel,
   type ShipmentStatusValue,
 } from "@/lib/courier-constants";
 import { WALLET_TYPE_LABELS, type WalletOption } from "@/lib/wallet";
+import { buildInvoiceMessage } from "@/lib/invoice-message";
+import type { CurrencyDisplay } from "@/lib/currency-constants";
 
 export interface OrderDetail {
   id: number;
@@ -81,6 +91,7 @@ export interface OrderDetail {
   district: string;
   thana: string;
   occasion: string | null;
+  deliveryDateMode: DeliveryDateModeValue;
   requestedDeliveryDate: string | null;
   items: {
     id: number;
@@ -90,6 +101,9 @@ export interface OrderDetail {
     qty: number;
     unitPrice: number;
     lineTotal: number;
+    choiceSelections?:
+      | { groupId: number; label: string; productId: number; name: string }[]
+      | null;
   }[];
   subtotal: number;
   discount: number;
@@ -99,6 +113,8 @@ export interface OrderDetail {
   dueAmount: number;
   codAmount: number;
   notes: string | null;
+  invoiceNote: string | null;
+  courierNote: string | null;
   salesExecutive: { id: number; name: string };
   team: { id: number; name: string } | null;
   payments: {
@@ -137,6 +153,13 @@ export interface OrderDetail {
     version: number;
     generatedAt: string;
   }[];
+  whatsappSend: {
+    status: "SENT" | "FAILED";
+    trigger: "AUTO_CONFIRM" | "AUTO_EDIT" | "MANUAL";
+    toPhone: string;
+    error: string | null;
+    createdAt: string;
+  } | null; // latest WhatsApp API send attempt for this order
   shipment: {
     id: number;
     courier: string;
@@ -150,8 +173,24 @@ export interface OrderDetail {
     deliveredAt: string | null;
     returnedAt: string | null;
     returnApproved: boolean;
+    returnReceivedAt: string | null; // §6n — receive-time inspection stamp
     consignmentId: number | null;
+    trackingUrl: string | null; // §R7 — public tracking link
+    weightKg: number | null; // §R7 — our recorded weight (BOM sum)
+    steadfastWeightKg: number | null; // §R7 — what Steadfast counted
     steadfastStatus: string | null;
+    // §6m — In Transit sub-state + rider info
+    courierStatus:
+      | "PENDING"
+      | "ASSIGNED"
+      | "DELIVERY_APPROVAL_PENDING"
+      | "RETURN_APPROVAL_PENDING"
+      | null;
+    riderName: string | null;
+    riderPhone: string | null;
+    // §R6 — time-in-status clocks (ISO)
+    inTransitAt: string | null;
+    courierStatusAt: string | null;
     onHold: boolean;
     needsAttention: boolean;
     trackingEvents: {
@@ -160,8 +199,86 @@ export interface OrderDetail {
       eventAt: string;
       source: string;
     }[];
-    courierCostActual?: number;
+    // §R7 — courier cost estimate + actual (COSTS: cost-visible roles only).
+    courierCostActual?: number | null;
+    courierCostEstimated?: number | null;
   } | null;
+}
+
+// §R7 — a labelled "Ours: … / SF: …" pair for the courier block. Mirrors the In
+// Transit tab's OursVsSf: Steadfast's figure goes red with ⚠ when it exceeds our
+// own by more than the tolerance. "SF: —" until Steadfast reports its number.
+function CourierCompare({
+  label,
+  ours,
+  sf,
+  tolerancePct,
+  format,
+}: {
+  label: string;
+  ours: number | null | undefined;
+  sf: number | null | undefined;
+  tolerancePct: number;
+  format: (n: number) => string;
+}) {
+  const over = isOvercharged(ours ?? null, sf ?? null, tolerancePct);
+  return (
+    <div>
+      <div className="text-muted-foreground">{label}</div>
+      <div className="leading-tight">
+        <span className="text-muted-foreground">
+          Ours: {ours != null ? format(ours) : "—"}
+        </span>
+        {" · "}
+        <span
+          className={
+            over ? "font-semibold text-red-600 dark:text-red-400" : undefined
+          }
+        >
+          SF: {sf != null ? format(sf) : "—"}
+          {over && " ⚠"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// §R6/§R7 — total time in transit + time in the current sub-status, escalating
+// amber → red the longer the parcel sits (same thresholds as the In Transit tab).
+function TransitDuration({
+  inTransitAt,
+  courierStatusAt,
+  nowMs,
+  amberDays,
+  redDays,
+}: {
+  inTransitAt: string;
+  courierStatusAt: string | null;
+  nowMs: number;
+  amberDays: number;
+  redDays: number;
+}) {
+  const level = stuckLevel(courierStatusAt, nowMs, amberDays, redDays);
+  return (
+    <div
+      className={
+        level === "red"
+          ? "font-medium text-red-600 dark:text-red-400"
+          : level === "amber"
+            ? "text-amber-700 dark:text-amber-400"
+            : undefined
+      }
+    >
+      {formatDuration(nowMs - new Date(inTransitAt).getTime())}
+      {level === "red" && " ⚠"}
+      {courierStatusAt && (
+        <span className="text-xs text-muted-foreground">
+          {" "}
+          · this status {formatDuration(nowMs - new Date(courierStatusAt).getTime())}
+        </span>
+      )}
+    </div>
+  );
 }
 
 export function OrderDetailClient({
@@ -174,6 +291,13 @@ export function OrderDetailClient({
   canApprove,
   allowedTransitions,
   wallets,
+  waApiEnabled,
+  currency,
+  showCosts,
+  overchargeTolerancePct,
+  stuckAmberDays,
+  stuckRedDays,
+  nowMs,
 }: {
   order: OrderDetail;
   canEdit: boolean; // direct edit (privileged or within window)
@@ -184,6 +308,13 @@ export function OrderDetailClient({
   canApprove: boolean;
   allowedTransitions: OrderStatusValue[]; // already permission-filtered
   wallets: WalletOption[]; // active receiving wallets for the payment dialog
+  waApiEnabled: boolean; // WhatsApp Cloud API configured + enabled (SPEC §5 Phase 4)
+  currency: CurrencyDisplay | null; // customer-currency rate for this customer's country (§5)
+  showCosts: boolean; // §R7 — cost-visible role: shows courier cost estimate + actual
+  overchargeTolerancePct: number; // §R7/§R4 — Ours-vs-SF overcharge highlight tolerance
+  stuckAmberDays: number; // §R7/§R6 — duration escalation thresholds (days)
+  stuckRedDays: number;
+  nowMs: number; // §R6 — server render time; durations compute against it
 }) {
   const router = useRouter();
 
@@ -202,6 +333,9 @@ export function OrderDetailClient({
   // ---- payment reject dialog ----
   const [rejectId, setRejectId] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+
+  // ---- WhatsApp API send (SPEC §5 / §16 Phase 4) ----
+  const [waSending, setWaSending] = useState(false);
 
   const payMfsMissingTxn =
     !!payMethod && MFS_METHODS.includes(payMethod) && !payTxn.trim();
@@ -351,20 +485,41 @@ export function OrderDetailClient({
   }
 
   // wa.me pre-filled message to the customer (SPEC §5) — the SE attaches the
-  // downloaded PDF in the same chat.
-  const waText = [
-    `আসসালামু আলাইকুম ${order.customer.name}!`,
-    `Gift Valy-তে অর্ডার করার জন্য আপনাকে ধন্যবাদ। আপনার ইনভয়েস:`,
-    ``,
-    `🧾 Invoice: ${order.orderNo}`,
-    `মোট: ${money(order.totalAmount)}`,
-    `অগ্রিম জমা: ${money(order.advanceAmount)}`,
-    `বাকি (ডেলিভারিতে): ${money(order.dueAmount)}`,
-    `প্রাপক: ${order.recipientName}, ${order.district}`,
-    ``,
-    `ইনভয়েস PDF টি এই চ্যাটে পাঠানো হচ্ছে। যেকোনো প্রয়োজনে মেসেজ করুন। — Gift Valy`,
-  ].join("\n");
+  // downloaded PDF in the same chat. Same builder as the API-send caption, so
+  // both paths read identically (incl. the customer-currency approx lines).
+  const waText = buildInvoiceMessage(
+    {
+      orderNo: order.orderNo,
+      customerName: order.customer.name,
+      totalAmount: order.totalAmount,
+      advanceAmount: order.advanceAmount,
+      dueAmount: order.dueAmount,
+      recipientName: order.recipientName,
+      district: order.district,
+    },
+    currency
+  );
   const waHref = `https://wa.me/${order.customer.phoneForeign.replace(/\D/g, "")}?text=${encodeURIComponent(waText)}`;
+
+  // API send (SPEC §5 / §16 Phase 4): pushes the PDF into the customer's chat
+  // directly — no download/attach step.
+  async function sendWhatsApp() {
+    setWaSending(true);
+    try {
+      const res = await fetch(`/api/orders/${order.id}/invoice/whatsapp`, {
+        method: "POST",
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "WhatsApp send failed");
+      toast.success(`Invoice sent to +${body.toPhone} on WhatsApp`);
+      router.refresh();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "WhatsApp send failed");
+      router.refresh(); // the failed attempt is logged — show it
+    } finally {
+      setWaSending(false);
+    }
+  }
 
   return (
     <div className="mx-auto grid max-w-5xl gap-4">
@@ -405,6 +560,17 @@ export function OrderDetailClient({
       {order.status === "CANCELLED" && order.cancelReason && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
           Cancelled: {order.cancelReason}
+        </div>
+      )}
+
+      {/* Committed-but-unpaid draft (CORRECTIONS Leads §10) */}
+      {order.status === "DRAFT" && (
+        <div className="rounded-md border border-slate-300 bg-slate-50 p-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-300">
+          <span className="font-medium">Draft — awaiting advance payment.</span>{" "}
+          Nothing is reserved or invoiced yet.{" "}
+          {canAddPayment
+            ? "Record the advance below to confirm it — the real order number is assigned then."
+            : "Recording the advance payment confirms it (real order number, stock reserve, invoice)."}
         </div>
       )}
 
@@ -475,12 +641,22 @@ export function OrderDetailClient({
             </div>
             <div>{order.recipientPhoneBd}</div>
             <div className="text-muted-foreground">
-              {order.deliveryAddress}, {order.thana}, {order.district}
+              {joinAddress(order.deliveryAddress, order.thana, order.district)}
             </div>
-            <div className="text-muted-foreground">
-              {order.occasion && <span>Occasion: {order.occasion} · </span>}
-              {order.requestedDeliveryDate && (
-                <span>Deliver by: {formatDate(order.requestedDeliveryDate)}</span>
+            <div className="flex flex-wrap items-center gap-1.5 text-muted-foreground">
+              {order.occasion && <span>Occasion: {order.occasion} ·</span>}
+              {/* Delivery timing (CORRECTIONS Orders §1) — 🎯 highlights fixed dates */}
+              {order.deliveryDateMode === "FIXED" &&
+              order.requestedDeliveryDate ? (
+                <Badge className="bg-violet-100 text-violet-800 hover:bg-violet-100 dark:bg-violet-950 dark:text-violet-300">
+                  🎯 Deliver ON {formatDate(order.requestedDeliveryDate)}
+                </Badge>
+              ) : order.deliveryDateMode === "ASAP" ? (
+                <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-300">
+                  ⚡ {DELIVERY_DATE_MODE_LABELS.ASAP}
+                </Badge>
+              ) : (
+                <span>Delivery: {DELIVERY_DATE_MODE_LABELS.ANY_DAY}</span>
               )}
             </div>
           </CardContent>
@@ -493,7 +669,7 @@ export function OrderDetailClient({
             <CardTitle>Courier / Shipment</CardTitle>
             <CardDescription>
               {order.shipment
-                ? "Managed under the Courier module — status here mirrors the shipment."
+                ? "The full courier picture — status, rider, tracking and cost — mirrors the shipment (managed under the Courier module)."
                 : "Packed and ready — hand over to a courier from the Courier module."}
             </CardDescription>
           </CardHeader>
@@ -505,11 +681,30 @@ export function OrderDetailClient({
                   <div className="text-muted-foreground">Courier</div>
                   <div className="font-medium">{order.shipment.courier}</div>
                 </div>
+                {/* §R7 — Consignment ID + clickable tracking link */}
                 <div>
-                  <div className="text-muted-foreground">Tracking no</div>
+                  <div className="text-muted-foreground">Consignment ID</div>
                   <div className="font-mono text-xs">
-                    {order.shipment.trackingNo ?? "—"}
+                    {order.shipment.consignmentId ?? "—"}
                   </div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground">Tracking</div>
+                  {order.shipment.trackingUrl ? (
+                    <a
+                      href={order.shipment.trackingUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-mono text-xs text-primary underline-offset-4 hover:underline"
+                      title="Open the Steadfast tracking page"
+                    >
+                      {order.shipment.trackingNo ?? "Track"} ↗
+                    </a>
+                  ) : (
+                    <div className="font-mono text-xs">
+                      {order.shipment.trackingNo ?? "—"}
+                    </div>
+                  )}
                 </div>
                 <div>
                   <div className="text-muted-foreground">Status</div>
@@ -559,23 +754,96 @@ export function OrderDetailClient({
                     <div>{formatDateTime(order.shipment.deliveredAt)}</div>
                   </div>
                 )}
+                {/* §6m/§R2 — In Transit sub-state + rider (courier-side journey).
+                    ASSIGNED only shows with a real rider on record. */}
+                {order.shipment.status === "IN_TRANSIT" && (
+                  <div>
+                    <div className="text-muted-foreground">Courier status</div>
+                    <Badge variant="outline">
+                      {
+                        COURIER_STATUS_LABELS[
+                          displayedCourierStatus(
+                            order.shipment.courierStatus,
+                            !!order.shipment.riderName
+                          )
+                        ]
+                      }
+                    </Badge>
+                  </div>
+                )}
+                {order.shipment.status === "IN_TRANSIT" && (
+                  <div>
+                    <div className="text-muted-foreground">Rider</div>
+                    {order.shipment.riderName ? (
+                      <div>
+                        {order.shipment.riderName}
+                        {order.shipment.riderPhone && (
+                          <span className="ml-1 font-mono text-xs text-muted-foreground">
+                            {order.shipment.riderPhone}
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-muted-foreground">Unassigned</div>
+                    )}
+                  </div>
+                )}
+                {/* §R6 — time in transit + time in the current sub-status, with
+                    the same amber/red escalation as the In Transit tab. */}
+                {order.shipment.status === "IN_TRANSIT" &&
+                  order.shipment.inTransitAt && (
+                    <div>
+                      <div className="text-muted-foreground">Time in transit</div>
+                      <TransitDuration
+                        inTransitAt={order.shipment.inTransitAt}
+                        courierStatusAt={order.shipment.courierStatusAt}
+                        nowMs={nowMs}
+                        amberDays={stuckAmberDays}
+                        redDays={stuckRedDays}
+                      />
+                    </div>
+                  )}
+                {/* §R7 — our recorded weight vs Steadfast's counted weight (not
+                    cost data → shown to every role). */}
+                {(order.shipment.weightKg != null ||
+                  order.shipment.steadfastWeightKg != null) && (
+                  <CourierCompare
+                    label="Weight (ours / SF)"
+                    ours={order.shipment.weightKg}
+                    sf={order.shipment.steadfastWeightKg}
+                    tolerancePct={overchargeTolerancePct}
+                    format={(n) => `${n} kg`}
+                  />
+                )}
+                {/* §R7 — our zone+weight estimate vs Steadfast's counted charge.
+                    A COST comparison → cost-visible roles only. */}
+                {showCosts &&
+                  (order.shipment.courierCostEstimated != null ||
+                    order.shipment.courierCostActual != null) && (
+                    <CourierCompare
+                      label="Courier charge (ours / SF)"
+                      ours={order.shipment.courierCostEstimated}
+                      sf={order.shipment.courierCostActual}
+                      tolerancePct={overchargeTolerancePct}
+                      format={money}
+                    />
+                  )}
                 {order.shipment.returnedAt && (
                   <div>
                     <div className="text-muted-foreground">Returned</div>
                     <div>
                       {formatDateTime(order.shipment.returnedAt)}
-                      {!order.shipment.returnApproved && (
-                        <Badge variant="outline" className="ml-1">
-                          Approval pending
+                      {/* §6n — the Packaging team's receive-inspection state */}
+                      {order.shipment.returnReceivedAt ? (
+                        <Badge variant="outline" className="ml-1 bg-green-100 text-green-800">
+                          Received {formatDate(order.shipment.returnReceivedAt)}
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="ml-1 bg-orange-100 text-orange-800">
+                          Awaiting warehouse receive
                         </Badge>
                       )}
                     </div>
-                  </div>
-                )}
-                {order.shipment.courierCostActual != null && (
-                  <div>
-                    <div className="text-muted-foreground">Courier cost</div>
-                    <div>{money(order.shipment.courierCostActual)}</div>
                   </div>
                 )}
                 </div>
@@ -660,20 +928,60 @@ export function OrderDetailClient({
               <Button variant="outline" onClick={printInvoice}>
                 <Printer className="mr-1 size-4" /> Print
               </Button>
-              <Button asChild className="bg-green-600 text-white hover:bg-green-700">
-                <a href={waHref} target="_blank" rel="noreferrer">
-                  <MessageCircle className="mr-1 size-4" /> Send via WhatsApp
-                </a>
-              </Button>
+              {waApiEnabled ? (
+                <>
+                  <Button
+                    onClick={sendWhatsApp}
+                    disabled={waSending}
+                    className="bg-green-600 text-white hover:bg-green-700"
+                  >
+                    <MessageCircle className="mr-1 size-4" />
+                    {waSending ? "Sending…" : "Send via WhatsApp"}
+                  </Button>
+                  <Button variant="outline" asChild>
+                    <a href={waHref} target="_blank" rel="noreferrer">
+                      Open chat
+                    </a>
+                  </Button>
+                </>
+              ) : (
+                <Button asChild className="bg-green-600 text-white hover:bg-green-700">
+                  <a href={waHref} target="_blank" rel="noreferrer">
+                    <MessageCircle className="mr-1 size-4" /> Send via WhatsApp
+                  </a>
+                </Button>
+              )}
             </div>
           )}
         </CardHeader>
         {invoiceAvailable && (
           <CardContent className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span>
-              WhatsApp opens the customer&apos;s chat with the message pre-filled —
-              attach the downloaded PDF there.
-            </span>
+            {waApiEnabled ? (
+              order.whatsappSend ? (
+                order.whatsappSend.status === "SENT" ? (
+                  <span className="text-green-700 dark:text-green-500">
+                    ✓ Sent to +{order.whatsappSend.toPhone} ·{" "}
+                    {order.whatsappSend.trigger === "MANUAL"
+                      ? "manual"
+                      : "automatic"}{" "}
+                    · {formatDateTime(order.whatsappSend.createdAt)}
+                  </span>
+                ) : (
+                  <span className="text-destructive">
+                    ✗ Last WhatsApp send failed (
+                    {formatDateTime(order.whatsappSend.createdAt)})
+                    {order.whatsappSend.error ? ` — ${order.whatsappSend.error}` : ""}
+                  </span>
+                )
+              ) : (
+                <span>Not sent via WhatsApp yet.</span>
+              )
+            ) : (
+              <span>
+                WhatsApp opens the customer&apos;s chat with the message pre-filled —
+                attach the downloaded PDF there.
+              </span>
+            )}
             {order.invoices.length > 1 && (
               <span className="ml-auto">
                 Older versions:{" "}
@@ -717,6 +1025,13 @@ export function OrderDetailClient({
                     {it.code && (
                       <span className="ml-2 font-mono text-xs text-muted-foreground">
                         {it.code}
+                      </span>
+                    )}
+                    {(it.choiceSelections?.length ?? 0) > 0 && (
+                      <span className="block text-xs text-muted-foreground">
+                        {it.choiceSelections!
+                          .map((s) => `${s.label}: ${s.name}`)
+                          .join(" · ")}
                       </span>
                     )}
                   </TableCell>
@@ -921,9 +1236,22 @@ export function OrderDetailClient({
             <CardTitle>Notes & edit requests</CardTitle>
           </CardHeader>
           <CardContent className="grid gap-3 text-sm">
+            {/* 3-note system (CORRECTIONS Orders §6d) */}
             <div>
-              <div className="text-muted-foreground">Internal notes</div>
+              <div className="text-muted-foreground">Order note (internal)</div>
               <div>{order.notes ?? "—"}</div>
+            </div>
+            <div>
+              <div className="text-muted-foreground">
+                Invoice note (printed — customer sees it)
+              </div>
+              <div>{order.invoiceNote ?? "—"}</div>
+            </div>
+            <div>
+              <div className="text-muted-foreground">
+                Courier note (sent to Steadfast)
+              </div>
+              <div>{order.courierNote ?? "—"}</div>
             </div>
             {order.editRequests.length > 0 && (
               <div className="grid gap-2">

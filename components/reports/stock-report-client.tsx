@@ -29,7 +29,9 @@ import {
 } from "@/components/ui/table";
 import { money, formatDateTime } from "@/lib/format";
 import { toCsv, downloadCsv, csvDateStamp } from "@/lib/csv";
+import { ExportPdfButton } from "@/components/reports/export-pdf-button";
 import { STOCK_MOVEMENT_LABELS } from "@/lib/stock-constants";
+import type { ReportPdfPayload } from "@/lib/report-pdf";
 import type { StockReportRow } from "@/lib/reports";
 
 interface MovementRow {
@@ -153,9 +155,76 @@ export function StockReportClient({
     );
   }
 
+  function pdfPayload(): ReportPdfPayload {
+    const low = rows.filter((r) => r.isLow);
+    return {
+      title: "Stock Report (R4)",
+      ...(showCosts ? { landscape: true } : {}),
+      kpis: [
+        ...(totalStockValue != null
+          ? [{ label: "Total stock value (qty × avg cost)", value: money(totalStockValue) }]
+          : []),
+        { label: "Stock-tracked products", value: String(trackedCount) },
+        { label: "Low stock (available ≤ threshold)", value: String(lowStockCount) },
+      ],
+      sections: [
+        ...(lowStockCount > 0
+          ? [
+              {
+                heading: `Low-stock alerts (${lowStockCount})`,
+                note: "Active tracked products at or below their reorder threshold.",
+                headers: ["SKU", "Product", "Category", "Available", "Threshold"],
+                aligns: ["l", "l", "l", "r", "r"] as ("l" | "r")[],
+                rows: low.map((r) => [
+                  r.sku,
+                  r.name,
+                  r.category,
+                  `${r.available} ${r.unit}`,
+                  r.lowStockThreshold,
+                ]),
+              },
+            ]
+          : []),
+        {
+          heading: "All products",
+          note: "On hand is physical stock; reserved is held by confirmed orders; available = on hand − reserved.",
+          headers: [
+            "SKU",
+            "Product",
+            "Category",
+            "On hand",
+            "Reserved",
+            "Available",
+            ...(showCosts ? ["Avg cost", "Value"] : []),
+          ],
+          aligns: [
+            "l",
+            "l",
+            "l",
+            "r",
+            "r",
+            "r",
+            ...(showCosts ? ["r", "r"] : []),
+          ] as ("l" | "r")[],
+          rows: rows.map((r) => [
+            r.sku,
+            `${r.name}${!r.isStockTracked ? " (per-order)" : ""}${r.isLow ? " (low)" : ""}${!r.isActive ? " (inactive)" : ""}`,
+            r.category,
+            r.isStockTracked ? `${r.stockQty} ${r.unit}` : "—",
+            r.isStockTracked ? r.reservedQty : "—",
+            r.isStockTracked ? r.available : "—",
+            ...(showCosts
+              ? [money(r.avgCost ?? 0), r.isStockTracked ? money(r.stockValue ?? 0) : "—"]
+              : []),
+          ]),
+        },
+      ],
+    };
+  }
+
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h1 className="text-2xl font-semibold">Stock report</h1>
           <p className="text-sm text-muted-foreground">
@@ -163,9 +232,16 @@ export function StockReportClient({
             movement ledger.
           </p>
         </div>
-        <Button variant="outline" onClick={exportStock}>
-          Export CSV
-        </Button>
+        <div className="flex items-center gap-2">
+          <ExportPdfButton
+            filename={`stock-report-${csvDateStamp()}.pdf`}
+            build={pdfPayload}
+            size="default"
+          />
+          <Button variant="outline" onClick={exportStock}>
+            Export CSV
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">

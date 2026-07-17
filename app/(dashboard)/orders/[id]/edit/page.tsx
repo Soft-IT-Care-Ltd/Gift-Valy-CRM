@@ -2,9 +2,12 @@ import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { requirePagePermission } from "@/lib/page-auth";
 import { getEffectivePermissions } from "@/lib/rbac";
-import { packageAvailable } from "@/lib/catalog";
+import { loadBomCatalog } from "@/lib/bom-db";
+import { loadOrderFormOptions } from "@/lib/order-form-options";
+import type { StoredChoiceSelection } from "@/lib/bom";
 import { getOrderEditWindowMinutes } from "@/lib/settings";
 import { orderScopeWhere, withinEditWindow } from "@/lib/orders";
+import { findRecipientOccasions } from "@/lib/occasions";
 import { EDITABLE_STATUSES } from "@/lib/order-constants";
 import {
   OrderForm,
@@ -51,23 +54,25 @@ export default async function EditOrderPage({
     if (pending) redirect(`/orders/${id}`);
   }
 
-  const [products, packages] = await Promise.all([
-    prisma.product.findMany({ where: { isActive: true }, orderBy: { name: "asc" } }),
-    prisma.package.findMany({
-      where: { isActive: true },
-      orderBy: { name: "asc" },
-      include: { items: { include: { product: true } } },
-    }),
-  ]);
+  const catalog = await loadBomCatalog(prisma);
+  const { products, packages } = await loadOrderFormOptions(prisma, catalog);
+  // Occasion dates prefill from the customer↔recipient profile (§7 form part).
+  const occasions = await findRecipientOccasions(
+    prisma,
+    order.customerId,
+    order.recipientPhoneBd
+  );
 
   const initial: OrderFormInitial = {
     recipientName: order.recipientName,
     recipientPhoneBd: order.recipientPhoneBd,
     recipientRelation: order.recipientRelation,
     deliveryAddress: order.deliveryAddress,
-    district: order.district,
-    thana: order.thana,
+    deliveryZone: order.deliveryZone,
     occasion: order.occasion,
+    recipientBirthday: occasions.birthday,
+    recipientAnniversary: occasions.anniversary,
+    deliveryDateMode: order.deliveryDateMode,
     requestedDeliveryDate: order.requestedDeliveryDate
       ? order.requestedDeliveryDate.toISOString().slice(0, 10)
       : null,
@@ -77,11 +82,15 @@ export default async function EditOrderPage({
       packageId: it.packageId,
       qty: it.qty,
       unitPrice: Number(it.unitPrice),
+      choiceSelections:
+        (it.choiceSelections as StoredChoiceSelection[] | null) ?? null,
     })),
     discount: Number(order.discount),
     courierCharge: Number(order.courierChargeCustomer),
     codAmount: Number(order.codAmount),
     notes: order.notes,
+    invoiceNote: order.invoiceNote,
+    courierNote: order.courierNote,
     customer: {
       name: order.customer.name,
       phoneForeign: order.customer.phoneForeign,
@@ -95,22 +104,8 @@ export default async function EditOrderPage({
     <OrderForm
       mode={mode}
       orderId={order.id}
-      products={products.map((p) => ({
-        id: p.id,
-        sku: p.sku,
-        name: p.name,
-        sellingPrice: Number(p.sellingPrice),
-        priceFloor: Number(p.priceFloor),
-        unit: p.unit,
-      }))}
-      packages={packages.map((p) => ({
-        id: p.id,
-        code: p.code,
-        name: p.name,
-        sellingPrice: Number(p.sellingPrice),
-        priceFloor: Number(p.priceFloor),
-        availableToSell: packageAvailable(p),
-      }))}
+      products={products}
+      packages={packages}
       canOverrideFloor={permissions.includes("orders.approve_edit")}
       seName={order.salesExecutive.name}
       teamName={order.team?.name ?? null}

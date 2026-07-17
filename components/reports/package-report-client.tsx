@@ -28,6 +28,8 @@ import {
 } from "@/components/ui/table";
 import { money } from "@/lib/format";
 import { toCsv, downloadCsv, csvDateStamp } from "@/lib/csv";
+import { ExportPdfButton } from "@/components/reports/export-pdf-button";
+import type { ReportPdfPayload } from "@/lib/report-pdf";
 import type { PackageReportRow } from "@/lib/reports";
 
 // null buildable = every component is per-order (no stock constraint).
@@ -80,9 +82,43 @@ export function PackageReportClient({
     downloadCsv(`package-availability-${csvDateStamp()}.csv`, toCsv(headers, body));
   }
 
+  function pdfPayload(): ReportPdfPayload {
+    return {
+      title: "Package Availability (R5)",
+      ...(showCosts ? { landscape: true } : {}),
+      kpis: [
+        { label: "Packages", value: String(rows.length) },
+        { label: "Cannot build any (active)", value: String(outOfStock) },
+      ],
+      sections: [
+        {
+          heading: "Packages",
+          note: "Buildable qty per package = min over BOM components of ⌊stock ÷ qty required⌋. Per-component BOM detail is available on screen via each package's BOM dialog.",
+          headers: [
+            "Code",
+            "Package",
+            "Buildable",
+            "Limited by",
+            "Price",
+            ...(showCosts ? ["Cost", "Margin"] : []),
+          ],
+          aligns: ["l", "l", "r", "l", "r", ...(showCosts ? ["r", "r"] : [])] as ("l" | "r")[],
+          rows: rows.map((r) => [
+            r.code,
+            `${r.name}${!r.isActive ? " (inactive)" : ""}`,
+            buildableLabel(r.buildable),
+            r.limitedBy ?? "—",
+            money(r.sellingPrice),
+            ...(showCosts ? [money(r.cost ?? 0), money(r.margin ?? 0)] : []),
+          ]),
+        },
+      ],
+    };
+  }
+
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h1 className="text-2xl font-semibold">Package availability</h1>
           <p className="text-sm text-muted-foreground">
@@ -90,9 +126,16 @@ export function PackageReportClient({
             ÷ qty required⌋.
           </p>
         </div>
-        <Button variant="outline" onClick={exportPackages}>
-          Export CSV
-        </Button>
+        <div className="flex items-center gap-2">
+          <ExportPdfButton
+            filename={`package-availability-${csvDateStamp()}.pdf`}
+            build={pdfPayload}
+            size="default"
+          />
+          <Button variant="outline" onClick={exportPackages}>
+            Export CSV
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">

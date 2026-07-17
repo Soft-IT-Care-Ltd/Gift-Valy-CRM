@@ -39,8 +39,11 @@ export interface PackingOrder {
   district: string;
   thana: string;
   occasion: string | null;
+  deliveryDateMode: "ASAP" | "ANY_DAY" | "FIXED";
   requestedDeliveryDate: string | null;
+  lateRisk: boolean; // §3 — fixed date due today/tomorrow, still un-packed
   notes: string | null;
+  courierNote: string | null;
   items: { name: string; isPackage: boolean; qty: number }[];
   pickList: PickLine[];
   perOrderItems: PickLine[];
@@ -75,7 +78,7 @@ export function PackingQueueClient({ queue }: { queue: PackingOrder[] }) {
         <p className="text-sm text-muted-foreground">
           {queue.length === 0
             ? "No confirmed orders waiting to be packed."
-            : `${queue.length} confirmed order${queue.length === 1 ? "" : "s"} waiting, oldest first.`}
+            : `${queue.length} confirmed order${queue.length === 1 ? "" : "s"} waiting — ASAP first, then fixed dates, then flexible.`}
         </p>
       </div>
 
@@ -88,15 +91,28 @@ export function PackingQueueClient({ queue }: { queue: PackingOrder[] }) {
                 <CardTitle className="flex flex-wrap items-center gap-2">
                   {o.orderNo}
                   {shortage && <Badge variant="destructive">Stock short</Badge>}
-                  {o.requestedDeliveryDate && (
-                    <Badge variant="secondary">
-                      Deliver by {formatDate(o.requestedDeliveryDate)}
+                  {/* Delivery timing (CORRECTIONS Orders §1): fixed dates are
+                      highlighted — pack these in the right priority order. */}
+                  {o.deliveryDateMode === "FIXED" && o.requestedDeliveryDate && (
+                    <Badge className="bg-violet-100 text-violet-800 hover:bg-violet-100 dark:bg-violet-950 dark:text-violet-300">
+                      🎯 Deliver ON {formatDate(o.requestedDeliveryDate)}
+                    </Badge>
+                  )}
+                  {/* §3 — late-risk: fixed date due today/tomorrow, not packed yet */}
+                  {o.lateRisk && (
+                    <Badge variant="destructive">⚠ At risk — deliver soon</Badge>
+                  )}
+                  {o.deliveryDateMode === "ASAP" && (
+                    <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100 dark:bg-amber-950 dark:text-amber-300">
+                      ⚡ ASAP / Urgent
                     </Badge>
                   )}
                 </CardTitle>
                 <CardDescription>
                   Confirmed {formatDateTime(o.createdAt)} · To {o.recipientName} (
-                  {o.recipientPhoneBd}) · {o.thana}, {o.district}
+                  {o.recipientPhoneBd})
+                  {[o.thana, o.district].filter(Boolean).length > 0 &&
+                    ` · ${[o.thana, o.district].filter(Boolean).join(", ")}`}
                   {o.occasion ? ` · ${o.occasion}` : ""}
                 </CardDescription>
               </div>
@@ -117,7 +133,13 @@ export function PackingQueueClient({ queue }: { queue: PackingOrder[] }) {
               </div>
               {o.notes && (
                 <div className="rounded-md bg-muted px-3 py-2 text-sm">
-                  <span className="font-medium">Note:</span> {o.notes}
+                  <span className="font-medium">Order note:</span> {o.notes}
+                </div>
+              )}
+              {o.courierNote && (
+                <div className="rounded-md bg-muted px-3 py-2 text-sm">
+                  <span className="font-medium">Courier note:</span>{" "}
+                  {o.courierNote}
                 </div>
               )}
 

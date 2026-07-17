@@ -2,6 +2,7 @@
 // Client-safe: no Prisma/server imports (used by forms and API routes alike).
 
 export const ORDER_STATUSES = [
+  "DRAFT",
   "LEAD",
   "FOLLOW_UP",
   "CONFIRMED",
@@ -19,6 +20,7 @@ export const ORDER_STATUSES = [
 export type OrderStatusValue = (typeof ORDER_STATUSES)[number];
 
 export const ORDER_STATUS_LABELS: Record<OrderStatusValue, string> = {
+  DRAFT: "Draft",
   LEAD: "Lead",
   FOLLOW_UP: "Follow-up",
   CONFIRMED: "Confirmed",
@@ -34,9 +36,12 @@ export const ORDER_STATUS_LABELS: Record<OrderStatusValue, string> = {
 };
 
 // SPEC §1.3 lifecycle. Orders are entered at CONFIRMED (§4.1 E) — or ON_HOLD
-// when there is no advance yet (rule: no CONFIRMED without advance > 0).
-// COMPLETED additionally requires due_amount = 0 (checked server-side).
+// when there is no advance yet (rule: no CONFIRMED without advance > 0), or
+// DRAFT when a committed-but-unpaid order is saved ahead of the advance
+// (CORRECTIONS Leads §10). COMPLETED additionally requires due_amount = 0
+// (checked server-side). DRAFT → CONFIRMED assigns the real GV number.
 export const ALLOWED_TRANSITIONS: Record<OrderStatusValue, OrderStatusValue[]> = {
+  DRAFT: ["CONFIRMED", "CANCELLED"],
   LEAD: ["FOLLOW_UP", "CONFIRMED", "CANCELLED"],
   FOLLOW_UP: ["CONFIRMED", "CANCELLED"],
   CONFIRMED: ["PACKED", "ON_HOLD", "CANCELLED"],
@@ -52,16 +57,20 @@ export const ALLOWED_TRANSITIONS: Record<OrderStatusValue, OrderStatusValue[]> =
 };
 
 // Edits only make sense before courier handover; later corrections go through
-// cancel/return flows.
+// cancel/return flows. DRAFT is editable — details may change while the SE
+// chases the advance (CORRECTIONS Leads §10).
 export const EDITABLE_STATUSES: OrderStatusValue[] = [
+  "DRAFT",
   "CONFIRMED",
   "ON_HOLD",
   "PACKED",
 ];
 
 // SPEC §5 — invoices exist only once an order has reached CONFIRMED;
-// pre-sale stages and never-confirmed holds/cancels have nothing to invoice.
+// pre-sale stages (incl. DRAFT) and never-confirmed holds/cancels have
+// nothing to invoice.
 export const NON_INVOICEABLE_STATUSES: OrderStatusValue[] = [
+  "DRAFT",
   "LEAD",
   "FOLLOW_UP",
   "ON_HOLD",
@@ -80,6 +89,35 @@ export const NON_SALE_STATUSES: OrderStatusValue[] = [
   "RETURNED",
   "REFUNDED",
 ];
+
+// CORRECTIONS Leads §10 — DRAFT orders are not sales YET (committed-but-unpaid
+// pipeline): excluded from every sales/collection metric, but never counted as
+// "lost" the way the NON_SALE trio is. Sales filters use the combined list.
+export const PRE_SALE_STATUSES: OrderStatusValue[] = ["DRAFT"];
+
+export const EXCLUDED_SALE_STATUSES: OrderStatusValue[] = [
+  ...NON_SALE_STATUSES,
+  ...PRE_SALE_STATUSES,
+];
+
+// CORRECTIONS Orders §6f — Trash (soft delete). Statuses where stock is
+// physically out or money is settled stay untrashable: a PACKED box must be
+// cancelled first (which restores stock), an in-courier parcel must finish its
+// journey, and DELIVERED/COMPLETED are real sales (cancel/refund flows apply).
+// Every trashable status holds at most a reservation, which trash releases.
+export const TRASHABLE_STATUSES: OrderStatusValue[] = [
+  "DRAFT",
+  "LEAD",
+  "FOLLOW_UP",
+  "CONFIRMED",
+  "ON_HOLD",
+  "CANCELLED",
+  "RETURNED",
+  "REFUNDED",
+];
+
+// Days a trashed order stays restorable before the cron purge deletes it.
+export const TRASH_RETENTION_DAYS = 30;
 
 export const PAYMENT_TYPES = [
   "ADVANCE",
@@ -124,9 +162,28 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethodValue, string> = {
 // Transaction ID is mandatory for mobile-financial-service methods (§4.1 D / §8).
 export const MFS_METHODS: PaymentMethodValue[] = ["BKASH", "NAGAD", "ROCKET"];
 
+// CORRECTIONS Products §3 — the recipient's delivery zone. Order-form selector;
+// item zone charges auto-fill the order's delivery charge from the match.
+export const DELIVERY_ZONES = [
+  "INSIDE_DHAKA",
+  "SUB_DHAKA",
+  "OUTSIDE_DHAKA",
+] as const;
+
+export type DeliveryZoneValue = (typeof DELIVERY_ZONES)[number];
+
+export const DELIVERY_ZONE_LABELS: Record<DeliveryZoneValue, string> = {
+  INSIDE_DHAKA: "Inside Dhaka",
+  SUB_DHAKA: "Sub Dhaka",
+  OUTSIDE_DHAKA: "Outside Dhaka",
+};
+
+// CORRECTIONS Orders §4 — "Special One ❤" discreetly covers girlfriend/
+// boyfriend in one option (either direction).
 export const RECIPIENT_RELATIONS = [
   "Wife",
   "Husband",
+  "Special One ❤",
   "Mother",
   "Father",
   "Sibling",
@@ -136,6 +193,25 @@ export const RECIPIENT_RELATIONS = [
   "Relative",
   "Other",
 ] as const;
+
+// CORRECTIONS Orders §1 — requested-delivery timing modes.
+export const DELIVERY_DATE_MODES = ["ASAP", "ANY_DAY", "FIXED"] as const;
+
+export type DeliveryDateModeValue = (typeof DELIVERY_DATE_MODES)[number];
+
+export const DELIVERY_DATE_MODE_LABELS: Record<DeliveryDateModeValue, string> = {
+  ASAP: "ASAP / Urgent",
+  ANY_DAY: "Any day",
+  FIXED: "Fixed date",
+};
+
+// Join address parts, skipping empties — District/Thana are "" on new orders
+// (CORRECTIONS Orders §5) but still present on legacy rows.
+export function joinAddress(
+  ...parts: (string | null | undefined)[]
+): string {
+  return parts.map((p) => p?.trim()).filter(Boolean).join(", ");
+}
 
 export const OCCASIONS = [
   "Birthday",
@@ -198,4 +274,27 @@ export function normalizePhone(raw: string): string {
   const trimmed = raw.trim();
   const digits = trimmed.replace(/[^\d]/g, "");
   return trimmed.startsWith("+") ? `+${digits}` : digits;
+}
+
+// A `@db.Date` column stores a bare calendar day; Prisma truncates any Date
+// written or compared against it to the instant's UTC calendar date. A Dhaka
+// +06:00 instant (e.g. the 1st at 00:00+06 = the prior day 18:00 UTC) therefore
+// resolves to the PREVIOUS day — leaking the day before into `gte` ranges and
+// storing user-picked days one day early. Both helpers pin a value to
+// UTC-midnight of its Dhaka calendar day so `@db.Date` round-trips exactly.
+
+// Range bound (or derived write) from an existing Date/instant.
+export function dhakaDateBound(d: Date): Date {
+  const ymd = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Dhaka",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+  return new Date(`${ymd}T00:00:00.000Z`);
+}
+
+// Write value for a user-picked "YYYY-MM-DD" string.
+export function dbDate(ymd: string): Date {
+  return new Date(`${ymd}T00:00:00.000Z`);
 }

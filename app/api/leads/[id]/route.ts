@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { requirePermissionCtx, apiError, AuthzError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
 import { normalizePhone } from "@/lib/order-constants";
+import { dbDate } from "@/lib/orders";
 import {
   canEditLead,
   leadCoreSchema,
@@ -48,7 +49,7 @@ export async function PATCH(req: Request, { params }: Params) {
     await prisma.lead.update({
       where: { id },
       data: {
-        leadDate: new Date(`${data.leadDate}T00:00:00+06:00`),
+        leadDate: dbDate(data.leadDate), // @db.Date — UTC-midnight, not a +06 instant
         source: data.source,
         campaignName: data.campaignName,
         customerName: data.customerName,
@@ -56,6 +57,11 @@ export async function PATCH(req: Request, { params }: Params) {
         whatsappNumber: normalizePhone(data.whatsappNumber),
         interestedIn: interestedIn as unknown as Prisma.InputJsonValue,
         status: data.status as LeadStatus,
+        // CORRECTIONS Leads §9 — (re)entering COMMITTED restarts the
+        // time-since-commitment clock; the stamp is kept otherwise.
+        ...(data.status === "COMMITTED" && lead.status !== "COMMITTED"
+          ? { committedAt: new Date() }
+          : {}),
         followUpAt: data.followUpAt ? new Date(data.followUpAt) : null,
         // Clear the lost reason whenever the lead isn't LOST (§3.1).
         lostReason:

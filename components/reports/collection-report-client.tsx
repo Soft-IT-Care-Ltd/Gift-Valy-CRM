@@ -5,8 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { DateFilter } from "@/components/ui/date-filter";
+import { detectPreset } from "@/lib/date-filter";
 import {
   Card,
   CardContent,
@@ -31,12 +31,14 @@ import {
 } from "@/components/ui/select";
 import { money, formatDate, formatDateTime } from "@/lib/format";
 import { toCsv, downloadCsv, csvDateStamp } from "@/lib/csv";
+import { ExportPdfButton } from "@/components/reports/export-pdf-button";
 import {
   ORDER_STATUS_LABELS,
   PAYMENT_METHOD_LABELS,
   PAYMENT_TYPE_LABELS,
   type OrderStatusValue,
 } from "@/lib/order-constants";
+import type { ReportPdfPayload } from "@/lib/report-pdf";
 import type { CollectionReport } from "@/lib/reports";
 
 export function CollectionReportClient({
@@ -57,16 +59,11 @@ export function CollectionReportClient({
   const [fWallet, setFWallet] = useState("ALL");
   const [fVerified, setFVerified] = useState("ALL");
 
-  function applyRange() {
+  function applyRange(f: string, t: string) {
     const params = new URLSearchParams();
-    if (fromDate) params.set("from", fromDate);
-    if (toDate) params.set("to", toDate);
+    if (f) params.set("from", f);
+    if (t) params.set("to", t);
     router.push(`/reports/collection${params.toString() ? `?${params}` : ""}`);
-  }
-  function resetRange() {
-    setFromDate("");
-    setToDate("");
-    router.push("/reports/collection");
   }
 
   const walletFilterOptions = report.byWallet.map((w) => ({
@@ -143,41 +140,177 @@ export function CollectionReportClient({
 
   const rangeLabel = `${formatDate(report.range.from)} → ${formatDate(report.range.to)}`;
 
+  function pdfPayload(): ReportPdfPayload {
+    const methodRow = report.byMethod.find((m) => m.method === fMethod);
+    const payFilters = [
+      fMethod !== "ALL"
+        ? `Method: ${methodRow ? PAYMENT_METHOD_LABELS[methodRow.method] : fMethod}`
+        : null,
+      fWallet !== "ALL"
+        ? `Wallet: ${walletFilterOptions.find((w) => w.key === fWallet)?.name ?? fWallet}`
+        : null,
+      fVerified === "VERIFIED"
+        ? "Verified only"
+        : fVerified === "UNVERIFIED"
+          ? "Unverified only"
+          : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return {
+      title: "Collection Report (R7)",
+      subtitle: rangeLabel,
+      landscape: true,
+      kpis: [
+        {
+          label: "Net collected",
+          value: `${money(report.netCollected)} · ${report.paymentCount} payments`,
+        },
+        { label: "Collected (in)", value: money(report.totalCollected) },
+        { label: "Refunded (out)", value: money(report.totalRefunded) },
+        {
+          label: "Dues outstanding",
+          value: `${money(report.dues.totalOutstanding)} · ${report.dues.orderCount} orders`,
+        },
+        {
+          label: "Verified",
+          value: `${money(report.verified.amount)} · ${report.verified.count} payments`,
+        },
+        {
+          label: "Unverified",
+          value: `${money(report.unverified.amount)} · ${report.unverified.count} payments`,
+        },
+        {
+          label: "Rejected",
+          value: `${money(report.rejected.amount)} · ${report.rejected.count} payments`,
+        },
+      ],
+      sections: [
+        {
+          heading: "By method",
+          note: "Collected, refunded and net per method.",
+          headers: ["Method", "Collected", "Refunded", "Net", "Count"],
+          aligns: ["l", "r", "r", "r", "r"],
+          rows: report.byMethod.map((m) => [
+            PAYMENT_METHOD_LABELS[m.method],
+            money(m.collected),
+            m.refunded > 0 ? `−${money(m.refunded)}` : "—",
+            money(m.net),
+            m.count,
+          ]),
+        },
+        {
+          heading: "By wallet",
+          note: "Which company account received the money.",
+          headers: ["Wallet", "Collected", "Refunded", "Net", "Count"],
+          aligns: ["l", "r", "r", "r", "r"],
+          rows: report.byWallet.map((w) => [
+            w.walletId === null
+              ? `${w.walletName} (COD not posted)`
+              : w.walletName,
+            money(w.collected),
+            w.refunded > 0 ? `−${money(w.refunded)}` : "—",
+            money(w.net),
+            w.count,
+          ]),
+        },
+        {
+          heading: `Payments (${filteredPayments.length})`,
+          note: payFilters
+            ? `Filtered — ${payFilters}.`
+            : "Every payment in the range.",
+          headers: [
+            "Date",
+            "Order",
+            "Customer",
+            "Type",
+            "Method",
+            "Wallet",
+            "Amount",
+            "Verified",
+          ],
+          aligns: ["l", "l", "l", "l", "l", "l", "r", "l"],
+          rows: filteredPayments.map((p) => [
+            formatDateTime(p.paymentDate),
+            p.orderNo,
+            p.customerName,
+            PAYMENT_TYPE_LABELS[p.type],
+            PAYMENT_METHOD_LABELS[p.method],
+            p.walletName ?? "—",
+            p.type === "REFUND" ? `−${money(p.amount)}` : money(p.amount),
+            p.isVerified ? "Verified" : "Unverified",
+          ]),
+        },
+        {
+          heading: "Dues aging buckets",
+          headers: ["Bucket", "Orders", "Amount"],
+          aligns: ["l", "r", "r"],
+          rows: report.dues.buckets.map((b) => [
+            b.label,
+            b.count,
+            money(b.amount),
+          ]),
+        },
+        {
+          heading: `Dues outstanding — ${money(report.dues.totalOutstanding)} across ${report.dues.orderCount} orders`,
+          note: "Live snapshot of unpaid orders (independent of the date range), oldest first.",
+          headers: [
+            "Order",
+            "Customer",
+            "SE",
+            "Status",
+            "Created",
+            "Total",
+            "Paid",
+            "Due",
+            "Age",
+          ],
+          aligns: ["l", "l", "l", "l", "l", "r", "r", "r", "r"],
+          rows: report.dues.rows.map((r) => [
+            r.orderNo,
+            r.customerName,
+            r.salesExecutive,
+            ORDER_STATUS_LABELS[r.status as OrderStatusValue] ?? r.status,
+            formatDate(r.createdAt),
+            money(r.totalAmount),
+            money(r.paid),
+            money(r.dueAmount),
+            `${r.ageDays}d`,
+          ]),
+        },
+      ],
+    };
+  }
+
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">Collection report</h1>
-        <p className="text-sm text-muted-foreground">
-          R7 — collections by method, by wallet, verified vs unverified, and total
-          dues outstanding with order-wise aging.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h1 className="text-2xl font-semibold">Collection report</h1>
+          <p className="text-sm text-muted-foreground">
+            R7 — collections by method, by wallet, verified vs unverified, and total
+            dues outstanding with order-wise aging.
+          </p>
+        </div>
+        <ExportPdfButton
+          filename={`collection-report-${csvDateStamp()}.pdf`}
+          build={pdfPayload}
+        />
       </div>
 
       {/* Date range (§8 "by date range") */}
       <Card>
         <CardContent className="flex flex-wrap items-end gap-3 pt-6">
-          <div className="grid gap-1">
-            <Label className="text-xs">From</Label>
-            <Input
-              type="date"
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-              className="w-40"
-            />
-          </div>
-          <div className="grid gap-1">
-            <Label className="text-xs">To</Label>
-            <Input
-              type="date"
-              value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-              className="w-40"
-            />
-          </div>
-          <Button onClick={applyRange}>Apply</Button>
-          <Button variant="outline" onClick={resetRange}>
-            This month
-          </Button>
+          <DateFilter
+            value={detectPreset(fromDate, toDate, "month")}
+            from={fromDate}
+            to={toDate}
+            onApply={(_preset, f, t) => {
+              setFromDate(f);
+              setToDate(t);
+              applyRange(f, t);
+            }}
+          />
           <span className="ml-auto self-center text-sm text-muted-foreground">
             Showing {rangeLabel}
           </span>

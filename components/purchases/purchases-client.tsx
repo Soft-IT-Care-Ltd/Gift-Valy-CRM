@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -130,6 +130,35 @@ export function PurchasesClient({
     () => new Map(products.map((p) => [String(p.id), p])),
     [products]
   );
+
+  // CORRECTIONS Stock/Purchase §1 — the Requirement Planner's "Pre-fill purchase
+  // entry" hands a requisition over via sessionStorage: open the New Purchase
+  // dialog pre-filled with the short products (qty = shortage, cost = estimate).
+  // Consume it once so a later manual visit starts blank.
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem("gv_purchase_prefill");
+      if (!raw) return;
+      sessionStorage.removeItem("gv_purchase_prefill");
+      const data = JSON.parse(raw) as {
+        lines?: { productId: number; qty: number; unitCost: number }[];
+        notes?: string;
+      };
+      if (!data.lines?.length) return;
+      setLines(
+        data.lines.map((l) => ({
+          productId: String(l.productId),
+          qty: String(l.qty),
+          unitCost: String(l.unitCost),
+        }))
+      );
+      if (data.notes) setNotes(data.notes);
+      setOpen(true);
+      toast.info("Pre-filled from the Requirement Planner — review and save.");
+    } catch {
+      /* malformed prefill — ignore */
+    }
+  }, []);
 
   const total = lines.reduce((s, l) => {
     const q = Number(l.qty);
