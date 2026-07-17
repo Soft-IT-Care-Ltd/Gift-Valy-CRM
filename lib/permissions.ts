@@ -60,9 +60,9 @@ export const PERMISSION_DEFS: PermissionDef[] = [
   // Stock
   { key: "stock.view", label: "View stock (read)", group: "Stock" },
   { key: "stock.adjust", label: "Adjust stock", group: "Stock" },
-  // Courier
+  // Courier — return approval was removed in C6: the Packaging team's
+  // receive-time inspection (orders.pack) IS the approval (CORRECTIONS §6n).
   { key: "courier.manage", label: "Manage courier & shipments", group: "Courier" },
-  { key: "courier.approve_return", label: "Approve returns (stock restore)", group: "Courier" },
   // Reports
   { key: "reports.own", label: "Own reports", group: "Reports" },
   { key: "reports.team", label: "Team reports", group: "Reports" },
@@ -101,7 +101,7 @@ export const ROLE_MATRIX: Record<RoleName, string[]> = {
     "expenses.create", "purchases.create",
     "catalog.view", "catalog.manage",
     "stock.view", "stock.adjust",
-    "courier.manage", "courier.approve_return",
+    "courier.manage",
     "reports.own", "reports.team", "reports.all",
     "targets.view_own", "targets.view_team", "targets.manage",
     "attendance.own", "attendance.view_all",

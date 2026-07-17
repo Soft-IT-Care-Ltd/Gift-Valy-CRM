@@ -7,11 +7,13 @@ import {
   DELIVERY_CHARGE_KEY,
   WEIGHT_KEY,
   findNumericField,
+  findRiderInfo,
   mapSteadfastStatus,
   trackingUrlFromCode,
   STEADFAST_COURIER_NAME,
   type MappedSteadfastStatus,
 } from "./steadfast-constants";
+import type { CourierStatusValue } from "./courier-constants";
 import { requireEnabledSteadfast } from "./steadfast-integration";
 import { statusByCid, statusByInvoice } from "./steadfast";
 import { fetchPublicTracking } from "./steadfast-track";
@@ -35,6 +37,7 @@ export type Source = "WEBHOOK" | "POLL";
 export interface ShipmentForSync {
   id: number;
   status: "HANDED_TO_COURIER" | "IN_TRANSIT" | "DELIVERED" | "RETURNED";
+  courierStatus: CourierStatusValue | null; // §6m sub-state (never downgraded)
   order: { id: number; status: string; cancelReason: string | null };
 }
 
@@ -127,6 +130,19 @@ export async function ingestDeliveryStatus(
   const deliveryCharge =
     args.deliveryCharge ?? findNumericField(rawPayload, DELIVERY_CHARGE_KEY);
   const weightKg = args.weightKg ?? findNumericField(rawPayload, WEIGHT_KEY);
+  // §6m — rider info from ANY payload that carries it (preferred over the
+  // tracking-page scrape). A named rider means the parcel is ASSIGNED.
+  const rider = findRiderInfo(rawPayload);
+
+  // §6m sub-state: what the raw status implies, upgraded to ASSIGNED when a
+  // rider is known. A late/duplicate "pending" never downgrades ASSIGNED.
+  let courierStatus = mapped.courierStatus;
+  if (
+    courierStatus === "PENDING" &&
+    (rider != null || shipment.courierStatus === "ASSIGNED")
+  ) {
+    courierStatus = "ASSIGNED";
+  }
 
   const data: Prisma.ShipmentUpdateInput = {
     steadfastStatus: mapped.normalized,
@@ -134,6 +150,11 @@ export async function ingestDeliveryStatus(
     needsAttention: mapped.needsAttention || flagUnexpected,
     updatedBy: systemUserId,
   };
+  if (courierStatus != null) data.courierStatus = courierStatus;
+  if (rider != null) {
+    data.riderName = rider.name;
+    if (rider.phone) data.riderPhone = rider.phone;
+  }
   if (source === "POLL") data.lastPolledAt = new Date();
   if (deliveryCharge != null && deliveryCharge > 0) {
     data.courierCostActual = Math.round(deliveryCharge * 100) / 100;
@@ -177,10 +198,12 @@ export interface PollSummary {
   errors: { shipmentId: number; error: string }[];
 }
 
-// The public tracking page is only consulted for shipments still missing the
-// Steadfast weight, at most this often per shipment and this many per run —
-// the "gentle" rule of CORRECTIONS Orders §6l.
+// The public tracking page is only consulted for shipments still missing data
+// (the Steadfast weight, §6l — or the rider while In Transit, §6m), at most
+// this often per shipment and this many per run — the "gentle" rule. Rider
+// assignment moves within a delivery day, so its recheck window is shorter.
 const TRACKING_CHECK_MIN_GAP_MS = 6 * 60 * 60 * 1000;
+const RIDER_CHECK_MIN_GAP_MS = 2 * 60 * 60 * 1000;
 const TRACKING_CHECKS_PER_RUN = 10;
 
 // Reconcile non-final Steadfast shipments via the status API. Runs one network
@@ -232,8 +255,6 @@ export async function runSteadfastPoll(opts?: {
       consignmentId: true,
       trackingNo: true,
       trackingUrl: true,
-      steadfastWeightKg: true,
-      trackingPageCheckedAt: true,
       order: { select: { orderNo: true } },
     },
   });
@@ -277,21 +298,49 @@ export async function runSteadfastPoll(opts?: {
       });
       if (changed) summary.changed += 1;
 
-      // §6l — Steadfast weight fallback from the PUBLIC tracking page, only for
-      // shipments still missing it, cached and capped so it stays gentle. A
-      // per-shipment refresh (opts.shipmentId) bypasses the cache window.
-      const trackingUrl = s.trackingUrl ?? trackingUrlFromCode(s.trackingNo);
-      const cacheFresh =
-        s.trackingPageCheckedAt != null &&
-        Date.now() - s.trackingPageCheckedAt.getTime() < TRACKING_CHECK_MIN_GAP_MS;
+      // §6l/§6m — PUBLIC tracking-page fallback for data the API doesn't carry:
+      // the Steadfast weight, and the rider ("Assigned To") while the parcel is
+      // In Transit without one. Post-ingest state decides, so a "pending" that
+      // just moved the order in transit can pick its rider up on the same run.
+      // Cached and capped so it stays gentle; a per-shipment refresh
+      // (opts.shipmentId) bypasses the cache window.
+      const fresh = await prisma.shipment.findUnique({
+        where: { id: s.id },
+        select: {
+          steadfastWeightKg: true,
+          riderName: true,
+          courierStatus: true,
+          trackingPageCheckedAt: true,
+          trackingUrl: true,
+          order: { select: { status: true } },
+        },
+      });
+      if (!fresh) continue;
+      const trackingUrl =
+        fresh.trackingUrl ?? s.trackingUrl ?? trackingUrlFromCode(s.trackingNo);
+      const sinceCheck =
+        fresh.trackingPageCheckedAt == null
+          ? Infinity
+          : Date.now() - fresh.trackingPageCheckedAt.getTime();
+      const wantsWeight =
+        fresh.steadfastWeightKg == null && sinceCheck >= TRACKING_CHECK_MIN_GAP_MS;
+      // Rider hunting only makes sense while the parcel is In Transit and no
+      // rider is known yet (PENDING / legacy-null sub-state, §6m).
+      const wantsRider =
+        fresh.order.status === "IN_TRANSIT" &&
+        fresh.riderName == null &&
+        (fresh.courierStatus == null || fresh.courierStatus === "PENDING") &&
+        sinceCheck >= RIDER_CHECK_MIN_GAP_MS;
       if (
         trackingUrl &&
-        s.steadfastWeightKg == null &&
         summary.trackingChecked < TRACKING_CHECKS_PER_RUN &&
-        (opts?.shipmentId ? true : !cacheFresh)
+        (opts?.shipmentId ? true : wantsWeight || wantsRider)
       ) {
         summary.trackingChecked += 1;
         const info = await fetchPublicTracking(trackingUrl);
+        // §6m — a rider on the page flips PENDING → ASSIGNED. Never overwrite
+        // rider info a webhook/API payload already provided.
+        const foundRider = info?.riderName != null && fresh.riderName == null;
         await prisma.shipment.update({
           where: { id: s.id },
           data: {
@@ -301,6 +350,16 @@ export async function runSteadfastPoll(opts?: {
             trackingUrl: info?.publicTrackingLink ?? trackingUrl,
             ...(info?.weightKg != null && info.weightKg > 0
               ? { steadfastWeightKg: info.weightKg }
+              : {}),
+            ...(foundRider
+              ? {
+                  riderName: info!.riderName,
+                  riderPhone: info!.riderPhone,
+                  ...(fresh.courierStatus == null ||
+                  fresh.courierStatus === "PENDING"
+                    ? { courierStatus: "ASSIGNED" as const }
+                    : {}),
+                }
               : {}),
           },
         });

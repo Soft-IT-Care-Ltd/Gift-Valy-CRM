@@ -44,6 +44,7 @@ model User {
   rewards            Reward[]                 @relation("UserRewards")
   attendance         Attendance[]             @relation("UserAttendance")
   leaveRequests      LeaveRequest[]           @relation("UserLeaves")
+  damageInspections  DamageLog[]              @relation("DamageInspections")
 
   @@map("users")
 }
@@ -282,6 +283,7 @@ model Product {
   components     ProductComponent[]  @relation("ProductComponents")
   // …and the reverse: which products consume THIS one as a component.
   componentOf    ProductComponent[]  @relation("ComponentUsage")
+  damageLogs     DamageLog[]
 
   @@map("products")
 }
@@ -668,6 +670,7 @@ model Order {
   invoices         Invoice[]
   shipment         Shipment?
   whatsappMessages WhatsAppMessage[]
+  damageLogs       DamageLog[]
 
   // List queries filter by scope/status/window and sort by created_at desc —
   // composite indexes keep them fast as data accumulates (SPEC-scale: years).
@@ -958,6 +961,19 @@ enum ShipmentStatus {
   RETURNED
 }
 
+// CORRECTIONS Orders §6m — the courier-side sub-state WHILE the order sits in
+// In Transit. PENDING = received at the Steadfast warehouse; ASSIGNED = a rider
+// took it (parsed from the public tracking page — not in the documented API);
+// *_APPROVAL_PENDING = the rider delivered/returned but the hub manager hasn't
+// approved yet (COD not yet in our Steadfast balance). Final approval moves the
+// ORDER status (delivered → DELIVERED tab, cancelled → RETURNED tab).
+enum CourierStatus {
+  PENDING
+  ASSIGNED
+  DELIVERY_APPROVAL_PENDING
+  RETURN_APPROVAL_PENDING
+}
+
 // One shipment per order (SPEC §7). Created at courier handover (moves the order
 // PACKED → HANDED_TO_COURIER); status updates sync the order status. COD flags
 // track reconciliation (§7); return flags track the Admin-approved stock restore
@@ -979,10 +995,15 @@ model Shipment {
   codReceived           Boolean        @default(false) @map("cod_received")
   codReceivedAt         DateTime?      @map("cod_received_at")
   codFeeExpenseId       Int?           @map("cod_fee_expense_id")
-  // Return flow (§1.3): Admin approval gates the stock restore + return charge.
+  // Return flow (CORRECTIONS Orders §6n): the Packaging team's receive-time
+  // inspection IS the approval — return_received_at/by stamp the physical
+  // receipt (Pending → Received sub-tab). The legacy return_approved columns
+  // are kept in sync by applyReturnReceive so older report queries stay true.
   returnApproved        Boolean        @default(false) @map("return_approved")
   returnApprovedAt      DateTime?      @map("return_approved_at")
   returnApprovedBy      Int?           @map("return_approved_by")
+  returnReceivedAt      DateTime?      @map("return_received_at")
+  returnReceivedBy      Int?           @map("return_received_by")
   returnCharge          Decimal?       @map("return_charge") @db.Decimal(12, 2)
   returnChargeExpenseId Int?           @map("return_charge_expense_id")
   // Steadfast API integration (STEADFAST_INTEGRATION.md §4). All nullable/default
@@ -1010,6 +1031,12 @@ model Shipment {
   steadfastWeightKg     Decimal?       @map("steadfast_weight_kg") @db.Decimal(8, 3)
   trackingUrl           String?        @map("tracking_url")
   trackingPageCheckedAt DateTime?      @map("tracking_page_checked_at")
+  // CORRECTIONS Orders §6m — In Transit sub-state + rider. courier_status is
+  // set from the webhook/poll statuses; ASSIGNED + the rider fields come from
+  // the public tracking page ("Assigned To"), or any API payload carrying them.
+  courierStatus         CourierStatus? @map("courier_status")
+  riderName             String?        @map("rider_name")
+  riderPhone            String?        @map("rider_phone")
   createdAt             DateTime       @default(now()) @map("created_at")
   updatedAt             DateTime       @updatedAt @map("updated_at")
   createdBy             Int?           @map("created_by")
@@ -1019,6 +1046,7 @@ model Shipment {
   courier        Courier                 @relation(fields: [courierId], references: [id])
   statusLogs     ShipmentStatusLog[]
   trackingEvents ShipmentTrackingEvent[]
+  damageLogs     DamageLog[]
 
   @@index([status])
   @@index([courierId])
@@ -1069,6 +1097,33 @@ model ShipmentTrackingEvent {
 
   @@index([shipmentId])
   @@map("shipment_tracking_events")
+}
+
+// CORRECTIONS Orders §6n — the damage log. One row per (product, receive
+// inspection): items the Packaging team marked Damaged when a returned parcel
+// came back. Damaged units are NEVER added back to sellable stock; unit_cost
+// freezes the product's avg cost at inspection so the P&L loss (posted as a
+// "Damaged Stock" expense, ref = the shipment) and the damaged-stock report
+// stay stable even as later purchases move the average.
+model DamageLog {
+  id          Int      @id @default(autoincrement())
+  productId   Int      @map("product_id")
+  qty         Int
+  unitCost    Decimal  @map("unit_cost") @db.Decimal(12, 2)
+  orderId     Int?     @map("order_id")
+  shipmentId  Int?     @map("shipment_id")
+  note        String?
+  inspectedBy Int      @map("inspected_by")
+  inspectedAt DateTime @default(now()) @map("inspected_at")
+
+  product   Product   @relation(fields: [productId], references: [id])
+  order     Order?    @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  shipment  Shipment? @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+  inspector User      @relation("DamageInspections", fields: [inspectedBy], references: [id])
+
+  @@index([inspectedAt])
+  @@index([productId])
+  @@map("damage_logs")
 }
 
 // One integration currently: Steadfast. Keys are encrypted at rest (lib/crypto.ts)

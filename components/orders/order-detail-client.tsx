@@ -59,6 +59,7 @@ import {
   type PaymentTypeValue,
 } from "@/lib/order-constants";
 import {
+  COURIER_STATUS_LABELS,
   SHIPMENT_STATUS_LABELS,
   type ShipmentStatusValue,
 } from "@/lib/courier-constants";
@@ -168,8 +169,18 @@ export interface OrderDetail {
     deliveredAt: string | null;
     returnedAt: string | null;
     returnApproved: boolean;
+    returnReceivedAt: string | null; // §6n — receive-time inspection stamp
     consignmentId: number | null;
     steadfastStatus: string | null;
+    // §6m — In Transit sub-state + rider info
+    courierStatus:
+      | "PENDING"
+      | "ASSIGNED"
+      | "DELIVERY_APPROVAL_PENDING"
+      | "RETURN_APPROVAL_PENDING"
+      | null;
+    riderName: string | null;
+    riderPhone: string | null;
     onHold: boolean;
     needsAttention: boolean;
     trackingEvents: {
@@ -626,14 +637,45 @@ export function OrderDetailClient({
                     <div>{formatDateTime(order.shipment.deliveredAt)}</div>
                   </div>
                 )}
+                {/* §6m — In Transit sub-state + rider (courier-side journey) */}
+                {order.shipment.status === "IN_TRANSIT" && (
+                  <div>
+                    <div className="text-muted-foreground">Courier status</div>
+                    <Badge variant="outline">
+                      {COURIER_STATUS_LABELS[order.shipment.courierStatus ?? "PENDING"]}
+                    </Badge>
+                  </div>
+                )}
+                {order.shipment.status === "IN_TRANSIT" && (
+                  <div>
+                    <div className="text-muted-foreground">Rider</div>
+                    {order.shipment.riderName ? (
+                      <div>
+                        {order.shipment.riderName}
+                        {order.shipment.riderPhone && (
+                          <span className="ml-1 font-mono text-xs text-muted-foreground">
+                            {order.shipment.riderPhone}
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-muted-foreground">Unassigned</div>
+                    )}
+                  </div>
+                )}
                 {order.shipment.returnedAt && (
                   <div>
                     <div className="text-muted-foreground">Returned</div>
                     <div>
                       {formatDateTime(order.shipment.returnedAt)}
-                      {!order.shipment.returnApproved && (
-                        <Badge variant="outline" className="ml-1">
-                          Approval pending
+                      {/* §6n — the Packaging team's receive-inspection state */}
+                      {order.shipment.returnReceivedAt ? (
+                        <Badge variant="outline" className="ml-1 bg-green-100 text-green-800">
+                          Received {formatDate(order.shipment.returnReceivedAt)}
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="ml-1 bg-orange-100 text-orange-800">
+                          Awaiting warehouse receive
                         </Badge>
                       )}
                     </div>

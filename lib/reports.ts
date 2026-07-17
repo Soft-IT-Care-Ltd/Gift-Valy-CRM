@@ -117,6 +117,80 @@ export async function buildStockReport(showCosts: boolean): Promise<StockReport>
   return { rows, totalStockValue, lowStockCount };
 }
 
+// ============ Damaged stock report (CORRECTIONS Orders §6n) ============
+
+export interface DamagedStockRow {
+  id: number;
+  inspectedAt: string;
+  sku: string;
+  productName: string;
+  qty: number;
+  orderNo: string | null;
+  inspector: string;
+  note: string | null;
+  unitCost?: number; // frozen at inspection — cost-visible roles only
+  lossValue?: number; // qty × unitCost — cost-visible roles only
+}
+
+export interface DamagedStockReport {
+  rows: DamagedStockRow[];
+  totalQty: number;
+  totalLoss: number | null; // Σ lossValue; null when cost-blind
+}
+
+// Every unit the receive-time inspection marked Damaged (§6n): never restocked,
+// its at-cost value posted as a "Damaged Stock" expense. This report is the
+// audit view over damage_logs; cost columns are stripped for cost-blind roles.
+export async function buildDamagedStockReport(opts: {
+  showCosts: boolean;
+  from?: Date;
+  to?: Date;
+}): Promise<DamagedStockReport> {
+  const logs = await prisma.damageLog.findMany({
+    where: {
+      ...(opts.from || opts.to
+        ? {
+            inspectedAt: {
+              ...(opts.from ? { gte: opts.from } : {}),
+              ...(opts.to ? { lte: opts.to } : {}),
+            },
+          }
+        : {}),
+    },
+    orderBy: { inspectedAt: "desc" },
+    include: {
+      product: { select: { name: true, sku: true } },
+      order: { select: { orderNo: true } },
+      inspector: { select: { name: true } },
+    },
+  });
+
+  const rows: DamagedStockRow[] = logs.map((l) => ({
+    id: l.id,
+    inspectedAt: l.inspectedAt.toISOString(),
+    sku: l.product.sku,
+    productName: l.product.name,
+    qty: l.qty,
+    orderNo: l.order?.orderNo ?? null,
+    inspector: l.inspector.name,
+    note: l.note,
+    ...(opts.showCosts
+      ? {
+          unitCost: Number(l.unitCost),
+          lossValue: round2(l.qty * Number(l.unitCost)),
+        }
+      : {}),
+  }));
+
+  return {
+    rows,
+    totalQty: rows.reduce((s, r) => s + r.qty, 0),
+    totalLoss: opts.showCosts
+      ? round2(rows.reduce((s, r) => s + (r.lossValue ?? 0), 0))
+      : null,
+  };
+}
+
 // ============ R5 — Package availability (SPEC §6.2) ============
 
 export interface PackageComponentRow {

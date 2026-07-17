@@ -139,11 +139,14 @@ export default async function DashboardLayout({
     reportItems.push({ href: "/leads/report", label: "Lead Report" });
   }
   // R4/R5 are inventory reports gated on stock.view — the same read scope as
-  // the Stock screen (Admin, Manager, Accounts, Packing).
+  // the Stock screen (Admin, Manager, Accounts, Packing). Damaged Stock
+  // (CORRECTIONS Orders §6n) shares the scope; its cost columns are stripped
+  // per-role inside the report itself.
   if (permissions.includes("stock.view")) {
     reportItems.push(
       { href: "/reports/stock", label: "Stock Report" },
-      { href: "/reports/packages", label: "Package Availability" }
+      { href: "/reports/packages", label: "Package Availability" },
+      { href: "/reports/damaged", label: "Damaged Stock" }
     );
   }
   // R6 — Courier report (SPEC §7 / §12), for courier.manage roles.

@@ -26,8 +26,15 @@ import {
   applyHandover,
   applyShipmentStatus,
   applyCodReceived,
-  applyReturnApproval,
+  applyReturnReceive,
+  buildReturnInspection,
 } from "../lib/courier";
+import {
+  ingestDeliveryStatus,
+  shipmentForSyncInclude,
+  type ShipmentForSync,
+} from "../lib/steadfast-sync";
+import { DAMAGED_STOCK_EXPENSE_CATEGORY } from "../lib/courier-constants";
 import type { OrderStatusValue } from "../lib/order-constants";
 
 const prisma = new PrismaClient();
@@ -476,9 +483,11 @@ async function main() {
         console.log("");
 
         // =====================================================================
-        // 8. RETURN FLOW — separate order, returned + approved restores stock
+        // 8. RETURN FLOW (CORRECTIONS §6m/§6n) — courier sub-states while In
+        //    Transit, auto-move to Returned on final approval, then the
+        //    Packaging team's receive-time damage inspection (2 OK + 1 damaged)
         // =====================================================================
-        console.log("8. RETURN — pack → courier → RETURNED → approve restores stock");
+        console.log("8. RETURN — §6m courier statuses → §6n receive + inspection");
         const onHandBeforeReturnOrder = await onHandMap(tx, [teddy.id]);
         const teddyBeforeReturn = onHandBeforeReturnOrder.get(teddy.id)!;
 
@@ -556,63 +565,183 @@ async function main() {
           },
           admin.id
         );
-        // courier reports RETURNED — stock restore waits for Admin approval (§1.3)
-        await applyShipmentStatus(
-          tx,
-          rShipment.id,
-          { to: "RETURNED", note: "customer refused", courierCostActual: null },
-          admin.id
+
+        // §6m — the courier-side journey via the SAME ingest path the webhook
+        // and poller use. Warehouse receive ("pending") auto-enters In Transit.
+        const loadSync = async () =>
+          (await tx.shipment.findUniqueOrThrow({
+            where: { id: rShipment.id },
+            include: shipmentForSyncInclude,
+          })) as unknown as ShipmentForSync;
+        const rShip = async () =>
+          tx.shipment.findUniqueOrThrow({ where: { id: rShipment.id } });
+
+        await ingestDeliveryStatus(tx, {
+          shipment: await loadSync(),
+          rawStatus: "pending",
+          source: "WEBHOOK",
+          rawPayload: { status: "pending" },
+        });
+        check(
+          "warehouse receive ('pending') auto-enters IN_TRANSIT (§6m)",
+          (await dueOf(tx, rOrder.id)).status === "IN_TRANSIT"
         );
+        check(
+          "courier status = PENDING, rider unassigned",
+          (await rShip()).courierStatus === "PENDING" &&
+            (await rShip()).riderName === null
+        );
+
+        // Rider info in a payload → PENDING flips to ASSIGNED (§6m).
+        await ingestDeliveryStatus(tx, {
+          shipment: await loadSync(),
+          rawStatus: "pending",
+          source: "POLL",
+          rawPayload: {
+            status: "pending",
+            rider: { name: "Verify Rider", phone: "01911111111" },
+          },
+        });
+        const assigned = await rShip();
+        check(
+          "rider payload → courier status ASSIGNED + rider stored",
+          assigned.courierStatus === "ASSIGNED" &&
+            assigned.riderName === "Verify Rider" &&
+            assigned.riderPhone === "01911111111"
+        );
+
+        // Return approval-wait: order STAYS In Transit under the sub-tab (§6m).
+        await ingestDeliveryStatus(tx, {
+          shipment: await loadSync(),
+          rawStatus: "cancelled_approval_pending",
+          source: "WEBHOOK",
+          rawPayload: { status: "cancelled_approval_pending" },
+        });
+        check(
+          "'cancelled_approval_pending' keeps the order IN_TRANSIT (§6m)",
+          (await dueOf(tx, rOrder.id)).status === "IN_TRANSIT"
+        );
+        check(
+          "courier status = RETURN_APPROVAL_PENDING",
+          (await rShip()).courierStatus === "RETURN_APPROVAL_PENDING"
+        );
+
+        // Final approval → auto-move to the Returned tab, Pending sub-tab (§6n).
+        await ingestDeliveryStatus(tx, {
+          shipment: await loadSync(),
+          rawStatus: "cancelled",
+          source: "WEBHOOK",
+          rawPayload: { status: "cancelled" },
+        });
         const teddyAfterReturnedStatus = (
           await tx.product.findUniqueOrThrow({ where: { id: teddy.id } })
         ).stockQty;
         check(
-          "RETURNED status alone does NOT restore stock (waits for approval)",
-          teddyAfterReturnedStatus === teddyAfterRPack
+          "final 'cancelled' → order RETURNED (Pending sub-tab)",
+          (await dueOf(tx, rOrder.id)).status === "RETURNED" &&
+            (await rShip()).returnReceivedAt === null
         );
         check(
-          "order now RETURNED",
-          (await dueOf(tx, rOrder.id)).status === "RETURNED"
+          "RETURNED alone does NOT restore stock (§6n: waits for receive)",
+          teddyAfterReturnedStatus === teddyAfterRPack
         );
 
-        // Admin approves the return with a ৳60 return courier charge
+        // §6n — the Packaging team receives the parcel: BOM-exploded inspection
+        // sheet, then 2 Teddy OK + 1 damaged.
+        const inspection = await buildReturnInspection(tx, rOrder.id);
+        const teddyLine = inspection.find((i) => i.productId === teddy.id);
+        check(
+          `inspection sheet lists 3 Teddy to come back (got ${teddyLine?.qty ?? 0})`,
+          teddyLine?.qty === 3
+        );
+
         const RETURN_CHARGE = 60;
-        await applyReturnApproval(
+        const teddyAvgAtReceive = Number(
+          (
+            await tx.product.findUniqueOrThrow({
+              where: { id: teddy.id },
+              select: { avgCost: true },
+            })
+          ).avgCost
+        );
+        const receive = await applyReturnReceive(
           tx,
           rShipment.id,
-          { returnCharge: RETURN_CHARGE, note: "approved" },
+          {
+            items: [{ productId: teddy.id, damagedQty: 1 }],
+            note: "box crushed",
+            returnCharge: RETURN_CHARGE,
+          },
           admin.id
         );
-        const teddyAfterApproval = (
+        check(
+          `receive restored 2 and logged 1 damaged (got ${receive.restoredQty}/${receive.damagedQty})`,
+          receive.restoredQty === 2 && receive.damagedQty === 1
+        );
+        const teddyAfterReceive = (
           await tx.product.findUniqueOrThrow({ where: { id: teddy.id } })
         ).stockQty;
         check(
-          `approval restored 3 Teddy (${teddyAfterReturnedStatus} → ${teddyAfterApproval})`,
-          teddyAfterApproval === teddyBeforeReturn
+          `OK units back in stock, damaged unit NOT (${teddyAfterReturnedStatus} → ${teddyAfterReceive})`,
+          teddyAfterReceive === teddyBeforeReturn - 1
         );
-        const rShipApproved = await tx.shipment.findUniqueOrThrow({
-          where: { id: rShipment.id },
+
+        const damageRows = await tx.damageLog.findMany({
+          where: { shipmentId: rShipment.id },
         });
-        check("return marked approved", rShipApproved.returnApproved === true);
+        check(
+          `damage log: 1 row, qty 1, cost frozen at avg (৳${teddyAvgAtReceive})`,
+          damageRows.length === 1 &&
+            damageRows[0].qty === 1 &&
+            damageRows[0].productId === teddy.id &&
+            Number(damageRows[0].unitCost) === teddyAvgAtReceive &&
+            damageRows[0].inspectedBy === admin.id
+        );
+
+        // Money: the at-cost loss ("Damaged Stock") + the return courier charge
+        // both post once, linked to the shipment.
+        const expectedLoss = round2(1 * teddyAvgAtReceive);
         const returnExp = await expenseFor(tx, "shipments", rShipment.id);
         check(
-          `return charge auto-expense posted once (৳${returnExp.total}, expected ৳${RETURN_CHARGE})`,
-          returnExp.count === 1 && returnExp.total === RETURN_CHARGE
+          `loss + return charge posted once each (৳${returnExp.total}, expected ৳${round2(expectedLoss + RETURN_CHARGE)})`,
+          returnExp.count === 2 &&
+            returnExp.total === round2(expectedLoss + RETURN_CHARGE)
         );
-        // idempotency — re-approval blocked
-        let reApprovalBlocked = false;
+        const lossExpense = await tx.expense.findFirst({
+          where: {
+            refTable: "shipments",
+            refId: rShipment.id,
+            category: { name: DAMAGED_STOCK_EXPENSE_CATEGORY },
+          },
+          include: { category: true },
+        });
+        check(
+          `damaged loss in "${DAMAGED_STOCK_EXPENSE_CATEGORY}" category (৳${Number(lossExpense?.amount ?? 0)})`,
+          lossExpense != null && Number(lossExpense.amount) === expectedLoss
+        );
+
+        const rShipReceived = await rShip();
+        check(
+          "shipment stamped received + approved (legacy compat), by Admin",
+          rShipReceived.returnReceivedAt !== null &&
+            rShipReceived.returnReceivedBy === admin.id &&
+            rShipReceived.returnApproved === true
+        );
+
+        // idempotency — a second receive is blocked (no double stock/loss)
+        let reReceiveBlocked = false;
         try {
-          await applyReturnApproval(
+          await applyReturnReceive(
             tx,
             rShipment.id,
-            { returnCharge: RETURN_CHARGE, note: "again" },
+            { items: [], note: "again" },
             admin.id
           );
         } catch {
-          reApprovalBlocked = true;
+          reReceiveBlocked = true;
         }
-        check("re-approval is blocked (no double stock/charge)", reApprovalBlocked);
-        await invariant(tx, teddy.id, "after return approval");
+        check("re-receive is blocked (no double stock/loss)", reReceiveBlocked);
+        await invariant(tx, teddy.id, "after return receive");
         console.log("");
 
         // =====================================================================

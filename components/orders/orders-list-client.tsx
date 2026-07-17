@@ -52,6 +52,7 @@ import {
   ChevronDown,
   Eye,
   NotebookPen,
+  PackageCheck,
   Pencil,
   Printer,
   Trash2,
@@ -74,20 +75,34 @@ import {
 } from "@/lib/order-constants";
 import {
   COURIER_STAGE_STATUSES,
+  COURIER_STATUSES,
+  COURIER_STATUS_LABELS,
   estimateCourierCost,
+  type CourierStatusValue,
   type ZoneRate,
 } from "@/lib/courier-constants";
+import {
+  ReturnReceiveDialog,
+  type ReceiveTarget,
+} from "@/components/orders/return-receive-dialog";
 
 // Shipment columns on the courier-stage tabs (CORRECTIONS Orders §6k/§6l).
 // steadfastDeliveryCharge / courierCostEstimated are COST fields — the server
 // omits them for cost-blind roles (they are optional here).
 export interface ShipmentInfo {
+  id: number;
   consignmentId: number | null;
   trackingNo: string | null;
   trackingUrl: string | null;
   weightKg: number | null; // our recorded weight (BOM sum, editable at handover)
   steadfastWeightKg: number | null; // what Steadfast counted
   steadfastStatus: string | null;
+  // §6m — In Transit sub-state + rider; null renders Pending / "Unassigned".
+  courierStatus: CourierStatusValue | null;
+  riderName: string | null;
+  riderPhone: string | null;
+  // §6n — set once the Packaging team received + inspected the return.
+  returnReceivedAt: string | null;
   steadfastDeliveryCharge?: number | null; // actual charge (webhook/API)
   courierCostEstimated?: number | null; // zone+weight estimate
 }
@@ -164,6 +179,28 @@ export function StatusBadge({ status }: { status: OrderStatusValue }) {
   );
 }
 
+// §6m — Courier Status badges on the In Transit tab. A shipment with no
+// sub-state yet renders as Pending (warehouse-received is the entry state).
+const COURIER_STATUS_BADGE: Record<CourierStatusValue, string> = {
+  PENDING: "bg-amber-100 text-amber-800",
+  ASSIGNED: "bg-blue-100 text-blue-800",
+  DELIVERY_APPROVAL_PENDING: "bg-violet-100 text-violet-800",
+  RETURN_APPROVAL_PENDING: "bg-orange-100 text-orange-800",
+};
+
+function CourierStatusBadge({
+  status,
+}: {
+  status: CourierStatusValue | null;
+}) {
+  const s = status ?? "PENDING";
+  return (
+    <Badge variant="outline" className={cn("whitespace-nowrap", COURIER_STATUS_BADGE[s])}>
+      {COURIER_STATUS_LABELS[s]}
+    </Badge>
+  );
+}
+
 // Tab order mirrors the §1.3 lifecycle, side states last. LEAD/FOLLOW_UP are
 // pre-order stages (Leads module) and never appear here. DRAFT leads the row —
 // the "Pending Payment (Drafts)" pipeline (CORRECTIONS Leads §10).
@@ -189,6 +226,8 @@ const STATUS_TAB_LABELS: Partial<Record<OrderStatusValue, string>> = {
 export function OrdersListClient({
   orders,
   statusCounts,
+  transitSubCounts,
+  returnedSubCounts,
   trashCount,
   total,
   page,
@@ -208,6 +247,10 @@ export function OrdersListClient({
 }: {
   orders: OrderRow[];
   statusCounts: Partial<Record<OrderStatusValue, number>>; // for current window/search/SE
+  // §6m — In Transit sub-tab counts (null off the In Transit tab)
+  transitSubCounts: Record<CourierStatusValue, number> | null;
+  // §6n — Returned sub-tab counts (null off the Returned tab)
+  returnedSubCounts: { pending: number; received: number } | null;
   trashCount: number; // trashed orders in scope (§6f)
   total: number; // active tab's count — drives pagination
   page: number;
@@ -243,6 +286,20 @@ export function OrdersListClient({
     });
   }
 
+  // Sub-tabs (§6m/§6n): In Transit filters by courier status; Returned splits
+  // Pending (parcel on its way back) / Received (inspected — default Pending).
+  const isReturnedTab = activeStatus === "RETURNED";
+  const transitSub = COURIER_STATUSES.includes(
+    params.get("sub") as CourierStatusValue
+  )
+    ? (params.get("sub") as CourierStatusValue)
+    : null;
+  const returnedSub: "pending" | "received" =
+    params.get("sub") === "received" ? "received" : "pending";
+  // §6n — Packaging receives pending returns (single or multi-select).
+  const showReceive =
+    canPackOrders && isReturnedTab && returnedSub === "pending";
+
   // ---- Selection: any specific status tab offers checkboxes when at least
   // one bulk action applies (§6g/§6h + Steadfast §2). All orders on one tab
   // share a status, so the §6g "intersection of eligible statuses" is simply
@@ -261,7 +318,8 @@ export function OrdersListClient({
     canPrintInvoices &&
     (activeStatus === "CONFIRMED" || activeStatus === "PACKED");
   const showCheckboxes =
-    !!tabStatus && (bulkTargets.length > 0 || showSend || showPrint);
+    !!tabStatus &&
+    (bulkTargets.length > 0 || showSend || showPrint || showReceive);
 
   // Courier-stage tab columns (§6k/§6l).
   const isHandedTab = activeStatus === "HANDED_TO_COURIER";
@@ -313,10 +371,11 @@ export function OrdersListClient({
   }
 
   // Selection is meaningful only within one page of one tab — reset it
-  // whenever the tab or page changes so stale ids never leak into a send. Done
-  // during render (React's "reset state on prop change" pattern) rather than in
-  // an effect, so it applies before paint without a cascading re-render.
-  const selCtx = `${activeStatus}:${page}`;
+  // whenever the tab, sub-tab or page changes so stale ids never leak into a
+  // send/receive. Done during render (React's "reset state on prop change"
+  // pattern) rather than in an effect, so it applies before paint without a
+  // cascading re-render.
+  const selCtx = `${activeStatus}:${params.get("sub") ?? ""}:${page}`;
   const [prevSelCtx, setPrevSelCtx] = useState(selCtx);
   if (prevSelCtx !== selCtx) {
     setPrevSelCtx(selCtx);
@@ -490,6 +549,26 @@ export function OrdersListClient({
     }
   }
 
+  // ---- Return receive + damage inspection (§6n) ----
+  const [receiveTargets, setReceiveTargets] = useState<ReceiveTarget[] | null>(
+    null
+  );
+
+  function openReceive(rows: OrderRow[]) {
+    const targets = rows
+      .filter((o) => o.shipment && !o.shipment.returnReceivedAt)
+      .map((o) => ({
+        orderId: o.id,
+        orderNo: o.orderNo,
+        shipmentId: o.shipment!.id,
+      }));
+    if (targets.length === 0) {
+      toast.error("No receivable returns selected (each needs a courier shipment)");
+      return;
+    }
+    setReceiveTargets(targets);
+  }
+
   // ---- Trash / restore (§6e/§6f) ----
   const [trashOrder, setTrashOrder] = useState<OrderRow | null>(null);
   const [trashBusy, setTrashBusy] = useState(false);
@@ -583,6 +662,8 @@ export function OrdersListClient({
     if (value && value !== "ALL") next.set(key, value);
     else next.delete(key);
     if (key !== "page") next.delete("page");
+    // A sub-tab (§6m/§6n) only means something within its own status tab.
+    if (key === "status") next.delete("sub");
     router.push(`/orders?${next.toString()}`);
   }
 
@@ -604,9 +685,12 @@ export function OrdersListClient({
   const colCount =
     (showCheckboxes ? 1 : 0) +
     11 +
+    (isTransitTab ? -1 : 0) + // order-status column removed on In Transit (§6m)
     (showCourierCols ? 2 : 0) + // Consignment ID + Tracking (§6k)
+    (isTransitTab ? 2 : 0) + // Courier Status + Rider Info (§6m)
     (isTransitTab ? 1 : 0) + // Steadfast Weight (§6l)
-    (showChargeCol ? 1 : 0); // Steadfast Delivery Charge — cost-visible only
+    (showChargeCol ? 1 : 0) + // Steadfast Delivery Charge — cost-visible only
+    (isReturnedTab ? 1 : 0); // Return column (§6n)
 
   return (
     <Card>
@@ -694,6 +778,72 @@ export function OrdersListClient({
             ];
           })()}
         </div>
+
+        {/* In Transit sub-tabs (§6m) — the 4 courier statuses with counts */}
+        {isTransitTab && transitSubCounts && (
+          <div className="flex flex-wrap gap-1 rounded-md bg-muted p-1">
+            {(() => {
+              const subTab = (
+                value: CourierStatusValue | null,
+                label: string,
+                count: number
+              ) => {
+                const active = transitSub === value;
+                return (
+                  <button
+                    key={value ?? "ALL"}
+                    onClick={() => setParam("sub", value ?? "ALL")}
+                    className={cn(
+                      "rounded-sm px-2.5 py-1 text-xs font-medium transition-colors",
+                      active
+                        ? "bg-background shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    {label}
+                    <span className="ml-1 text-muted-foreground/80">{count}</span>
+                  </button>
+                );
+              };
+              const all = COURIER_STATUSES.reduce(
+                (s, c) => s + transitSubCounts[c],
+                0
+              );
+              return [
+                subTab(null, "All", all),
+                ...COURIER_STATUSES.map((c) =>
+                  subTab(c, COURIER_STATUS_LABELS[c], transitSubCounts[c])
+                ),
+              ];
+            })()}
+          </div>
+        )}
+
+        {/* Returned sub-tabs (§6n) — Pending (on its way back) / Received */}
+        {isReturnedTab && returnedSubCounts && (
+          <div className="flex flex-wrap gap-1 rounded-md bg-muted p-1">
+            {(
+              [
+                ["pending", "Pending", returnedSubCounts.pending],
+                ["received", "Received", returnedSubCounts.received],
+              ] as const
+            ).map(([value, label, count]) => (
+              <button
+                key={value}
+                onClick={() => setParam("sub", value === "pending" ? "ALL" : value)}
+                className={cn(
+                  "rounded-sm px-2.5 py-1 text-xs font-medium transition-colors",
+                  returnedSub === value
+                    ? "bg-background shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {label}
+                <span className="ml-1 text-muted-foreground/80">{count}</span>
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="flex flex-wrap items-end gap-3">
           <div className="grid gap-1">
@@ -788,6 +938,16 @@ export function OrdersListClient({
           </div>
         )}
 
+        {/* Returned Pending helper — CORRECTIONS Orders §6n */}
+        {isReturnedTab && returnedSub === "pending" && (
+          <div className="rounded-md border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-800 dark:border-orange-900 dark:bg-orange-950/40 dark:text-orange-300">
+            These parcels are on their way back — no stock has changed yet. When
+            a parcel physically arrives, mark it Received: the inspection dialog
+            puts OK items straight back into sellable stock and logs damaged
+            items (with their cost counted as a loss). No separate approval step.
+          </div>
+        )}
+
         {/* Trash helper — CORRECTIONS Orders §6f */}
         {isTrashTab && (
           <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
@@ -852,6 +1012,16 @@ export function OrdersListClient({
                   Send to Steadfast{selected.size > 0 ? ` (${selected.size})` : ""}
                 </Button>
               )}
+              {showReceive && (
+                <Button
+                  size="sm"
+                  disabled={selected.size === 0}
+                  onClick={() => openReceive(selectedOrders)}
+                >
+                  <PackageCheck className="mr-1 size-3.5" />
+                  Mark received{selected.size > 0 ? ` (${selected.size})` : ""}
+                </Button>
+              )}
             </div>
           </div>
         )}
@@ -875,7 +1045,11 @@ export function OrdersListClient({
               <TableHead>Items</TableHead>
               <TableHead className="text-right">Total</TableHead>
               <TableHead className="text-right">Due</TableHead>
-              <TableHead>Status</TableHead>
+              {/* §6m: the In Transit tab swaps the order-status column for
+                  Courier Status + Rider Info */}
+              {!isTransitTab && <TableHead>Status</TableHead>}
+              {isTransitTab && <TableHead>Courier Status</TableHead>}
+              {isTransitTab && <TableHead>Rider Info</TableHead>}
               {/* Courier-stage columns (§6k/§6l) */}
               {showCourierCols && <TableHead>Consignment ID</TableHead>}
               {showCourierCols && <TableHead>Tracking</TableHead>}
@@ -885,6 +1059,8 @@ export function OrdersListClient({
               {isTransitTab && (
                 <TableHead className="text-right">Weight</TableHead>
               )}
+              {/* §6n: Returned sub-state + receive action */}
+              {isReturnedTab && <TableHead>Return</TableHead>}
               <TableHead>Note</TableHead>
               <TableHead>SE</TableHead>
               <TableHead className="text-right">Actions</TableHead>
@@ -1022,7 +1198,9 @@ export function OrdersListClient({
                   )}
                 </TableCell>
                 {/* Status (§6g): dropdown of eligible-only targets, straight
-                    from the list — same endpoint/side effects as the detail page */}
+                    from the list — same endpoint/side effects as the detail
+                    page. Hidden on the In Transit tab (§6m: courier owns it). */}
+                {!isTransitTab && (
                 <TableCell onClick={(e) => e.stopPropagation()}>
                   {rowTargets.length > 0 ? (
                     <DropdownMenu>
@@ -1054,6 +1232,32 @@ export function OrdersListClient({
                     <StatusBadge status={o.status} />
                   )}
                 </TableCell>
+                )}
+                {/* Courier Status (§6m) — the 4-value sub-state */}
+                {isTransitTab && (
+                  <TableCell>
+                    <CourierStatusBadge status={o.shipment?.courierStatus ?? null} />
+                  </TableCell>
+                )}
+                {/* Rider Info (§6m) — "Unassigned" until Steadfast assigns */}
+                {isTransitTab && (
+                  <TableCell>
+                    {o.shipment?.riderName ? (
+                      <>
+                        <div className="text-sm">{o.shipment.riderName}</div>
+                        {o.shipment.riderPhone && (
+                          <div className="font-mono text-xs text-muted-foreground">
+                            {o.shipment.riderPhone}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        Unassigned
+                      </span>
+                    )}
+                  </TableCell>
+                )}
                 {/* Consignment ID + Tracking Link (§6k) — auto-filled after the
                     Steadfast API entry; "—" for manual/unbooked shipments */}
                 {showCourierCols && (
@@ -1117,6 +1321,40 @@ export function OrdersListClient({
                       </span>
                     ) : (
                       <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                )}
+                {/* Return (§6n): receive action while pending, stamp once done */}
+                {isReturnedTab && (
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    {o.shipment?.returnReceivedAt ? (
+                      <div>
+                        <Badge variant="outline" className="bg-green-100 text-green-800">
+                          Received
+                        </Badge>
+                        <div className="mt-0.5 text-xs text-muted-foreground">
+                          {formatDate(o.shipment.returnReceivedAt)}
+                        </div>
+                      </div>
+                    ) : o.shipment ? (
+                      canPackOrders ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => openReceive([o])}
+                        >
+                          <PackageCheck className="mr-1 size-3.5" />
+                          Receive
+                        </Button>
+                      ) : (
+                        <Badge variant="outline" className="bg-orange-100 text-orange-800">
+                          Awaiting receive
+                        </Badge>
+                      )
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        No courier shipment
+                      </span>
                     )}
                   </TableCell>
                 )}
@@ -1560,6 +1798,16 @@ export function OrdersListClient({
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* Receive + damage inspection (§6n) — single & multi-select */}
+        <ReturnReceiveDialog
+          targets={receiveTargets}
+          onClose={() => setReceiveTargets(null)}
+          onDone={() => {
+            setSelected(new Set());
+            router.refresh();
+          }}
+        />
 
         {/* Note modal — 3 tabs, view & update (CORRECTIONS Orders §6d) */}
         <Dialog open={noteOrder !== null} onOpenChange={(o) => !o && setNoteOrder(null)}>

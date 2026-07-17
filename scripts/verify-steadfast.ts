@@ -60,8 +60,20 @@ function unitTests() {
   console.log("status mapper — case-insensitive (§3B):");
   check('"Delivered" (capitalized) → DELIVERED', mapSteadfastStatus("Delivered").to === "DELIVERED");
   check('"delivered" → DELIVERED', mapSteadfastStatus("delivered").to === "DELIVERED");
-  check('"delivered_approval_pending" → DELIVERED', mapSteadfastStatus("delivered_approval_pending").to === "DELIVERED");
+  // §6m — approval-pending statuses stay IN_TRANSIT under a courier sub-state;
+  // only the FINAL delivered/cancelled move the order.
+  check(
+    '"delivered_approval_pending" → stays IN_TRANSIT + sub-state (§6m)',
+    mapSteadfastStatus("delivered_approval_pending").to === "IN_TRANSIT" &&
+      mapSteadfastStatus("delivered_approval_pending").courierStatus === "DELIVERY_APPROVAL_PENDING"
+  );
+  check(
+    '"cancelled_approval_pending" → stays IN_TRANSIT + sub-state (§6m)',
+    mapSteadfastStatus("cancelled_approval_pending").to === "IN_TRANSIT" &&
+      mapSteadfastStatus("cancelled_approval_pending").courierStatus === "RETURN_APPROVAL_PENDING"
+  );
   check('"pending" → IN_TRANSIT', mapSteadfastStatus("pending").to === "IN_TRANSIT");
+  check('"pending" → sub-state PENDING (§6m)', mapSteadfastStatus("pending").courierStatus === "PENDING");
   check('"hold" → IN_TRANSIT + onHold flag', mapSteadfastStatus("hold").to === "IN_TRANSIT" && mapSteadfastStatus("hold").onHold);
   check('"in_review" → no status move', mapSteadfastStatus("in_review").to === null);
   check('"cancelled" → RETURNED', mapSteadfastStatus("cancelled").to === "RETURNED");
@@ -71,6 +83,12 @@ function unitTests() {
   check('undocumented status → unrecognized + needs_attention', !mapSteadfastStatus("zzz").recognized && mapSteadfastStatus("zzz").needsAttention);
   check("delivered is final (stop polling)", isFinalSteadfastStatus("Delivered"));
   check("pending is not final", !isFinalSteadfastStatus("pending"));
+  // §6m — the shipment still awaits the hub manager: keep polling.
+  check(
+    "approval-pending is NOT final since C6 (keep polling)",
+    !isFinalSteadfastStatus("delivered_approval_pending") &&
+      !isFinalSteadfastStatus("cancelled_approval_pending")
+  );
 
   console.log("\nphone normalization — 11-digit BD (§2, acceptance #4):");
   check('"+8801712345678" → 01712345678', normalizeBdPhone("+8801712345678") === "01712345678");
@@ -217,7 +235,7 @@ async function integrationTests() {
           rawPayload: { notification_type: "delivery_status", consignment_id: 1000002, status: "cancelled" },
         });
         check("webhook 'cancelled' → order RETURNED", (await orderStatus(o2.id)) === "RETURNED");
-        check("stock restore NOT auto-approved (waits for Admin, §1.3)", (await load(ship2.id)).returnApproved === false);
+        check("stock restore waits for the receive inspection (§6n)", (await load(ship2.id)).returnApproved === false);
         const hist2 = await tx.orderStatusHistory.count({ where: { orderId: o2.id } });
         await ingestDeliveryStatus(tx, {
           shipment: asSync(await load(ship2.id)),

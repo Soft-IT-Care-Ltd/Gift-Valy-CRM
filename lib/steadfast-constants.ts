@@ -2,7 +2,10 @@
 // Client-safe: no Prisma/server imports (used by the mapper, the API client,
 // the send flow and the UI alike).
 
-import type { ShipmentStatusValue } from "./courier-constants";
+import type {
+  CourierStatusValue,
+  ShipmentStatusValue,
+} from "./courier-constants";
 
 export const STEADFAST_COURIER_NAME = "Steadfast";
 
@@ -17,6 +20,9 @@ export interface MappedSteadfastStatus {
   raw: string; // exactly what Steadfast sent
   normalized: string; // lowercased/trimmed for matching
   to: SteadfastTargetStatus; // shipment/order status to move to (null = no move)
+  // CORRECTIONS Orders §6m — the In Transit sub-state this status implies
+  // (null = leave the shipment's current sub-state untouched).
+  courierStatus: CourierStatusValue | null;
   onHold: boolean; // set shipment.on_hold (§3B hold → ⚠ in courier report)
   needsAttention: boolean; // set shipment.needs_attention (unknown/partial/unrecognized)
   recognized: boolean; // false = status not in the documented set (still logged)
@@ -26,53 +32,63 @@ export interface MappedSteadfastStatus {
 // sends "Delivered"). Accepts BOTH the shorter webhook set and the fuller V1
 // polling set (in_review, hold, *_approval_pending) per the note in §3.
 //
+// CORRECTIONS Orders §6m — the *_approval_pending statuses do NOT move the
+// order any more: the rider has delivered/returned the parcel but the hub
+// manager hasn't approved (COD not yet in our balance), so the order stays
+// IN_TRANSIT under the matching sub-tab. Only the FINAL approval statuses
+// (delivered / cancelled) move the order to Delivered / Returned.
+//
 // PARTIAL and "unknown" have no Gift Valy order/shipment status, so they never
 // transition — they only raise needs_attention for manual review (§3B), keeping
 // the order lifecycle enum untouched.
 export function mapSteadfastStatus(raw: string): MappedSteadfastStatus {
   const normalized = (raw ?? "").trim().toLowerCase();
-  const base: Omit<MappedSteadfastStatus, "to" | "onHold" | "needsAttention" | "recognized"> = {
+  const base: Omit<
+    MappedSteadfastStatus,
+    "to" | "courierStatus" | "onHold" | "needsAttention" | "recognized"
+  > = {
     raw,
     normalized,
   };
   switch (normalized) {
     case "in_review":
-      return { ...base, to: null, onHold: false, needsAttention: false, recognized: true };
+      return { ...base, to: null, courierStatus: null, onHold: false, needsAttention: false, recognized: true };
     case "pending":
-      return { ...base, to: "IN_TRANSIT", onHold: false, needsAttention: false, recognized: true };
+      // Parcel received at the Steadfast warehouse — the §6m auto-entry moment.
+      return { ...base, to: "IN_TRANSIT", courierStatus: "PENDING", onHold: false, needsAttention: false, recognized: true };
     case "hold":
-      return { ...base, to: "IN_TRANSIT", onHold: true, needsAttention: false, recognized: true };
+      return { ...base, to: "IN_TRANSIT", courierStatus: "PENDING", onHold: true, needsAttention: false, recognized: true };
     case "delivered":
+      return { ...base, to: "DELIVERED", courierStatus: null, onHold: false, needsAttention: false, recognized: true };
     case "delivered_approval_pending":
-      return { ...base, to: "DELIVERED", onHold: false, needsAttention: false, recognized: true };
+      return { ...base, to: "IN_TRANSIT", courierStatus: "DELIVERY_APPROVAL_PENDING", onHold: false, needsAttention: false, recognized: true };
     case "partial_delivered":
-    case "partial_delivered_approval_pending":
       // No PARTIAL status in the lifecycle — flag for Accounts manual review.
-      return { ...base, to: null, onHold: false, needsAttention: true, recognized: true };
+      return { ...base, to: null, courierStatus: null, onHold: false, needsAttention: true, recognized: true };
+    case "partial_delivered_approval_pending":
+      // Approval-wait for a partial delivery — surfaces under the delivery
+      // approval sub-tab AND keeps the manual-review flag.
+      return { ...base, to: "IN_TRANSIT", courierStatus: "DELIVERY_APPROVAL_PENDING", onHold: false, needsAttention: true, recognized: true };
     case "cancelled":
+      return { ...base, to: "RETURNED", courierStatus: null, onHold: false, needsAttention: false, recognized: true };
     case "cancelled_approval_pending":
-      return { ...base, to: "RETURNED", onHold: false, needsAttention: false, recognized: true };
+      return { ...base, to: "IN_TRANSIT", courierStatus: "RETURN_APPROVAL_PENDING", onHold: false, needsAttention: false, recognized: true };
     case "unknown":
     case "unknown_approval_pending":
-      return { ...base, to: null, onHold: false, needsAttention: true, recognized: true };
+      return { ...base, to: null, courierStatus: null, onHold: false, needsAttention: true, recognized: true };
     default:
       // Anything undocumented is never acted on, but is logged and flagged.
-      return { ...base, to: null, onHold: false, needsAttention: true, recognized: false };
+      return { ...base, to: null, courierStatus: null, onHold: false, needsAttention: true, recognized: false };
   }
 }
 
 // A Steadfast status is "final" once the shipment can no longer change — stop
-// polling it (§3B). delivered / cancelled(→returned) / partial are terminal.
+// polling it (§3B). Since C6, *_approval_pending is NOT final: the shipment
+// still awaits the hub manager, so polling continues until the true terminal
+// status (delivered / cancelled / partial_delivered) lands.
 export function isFinalSteadfastStatus(normalized: string): boolean {
   const n = normalized.trim().toLowerCase();
-  return (
-    n === "delivered" ||
-    n === "delivered_approval_pending" ||
-    n === "cancelled" ||
-    n === "cancelled_approval_pending" ||
-    n === "partial_delivered" ||
-    n === "partial_delivered_approval_pending"
-  );
+  return n === "delivered" || n === "cancelled" || n === "partial_delivered";
 }
 
 // Normalize a phone to an 11-digit Bangladesh number 01XXXXXXXXX (§2 mapping
@@ -177,3 +193,61 @@ export function findNumericField(
 
 export const DELIVERY_CHARGE_KEY = /^(delivery_charge|deliveryCharge|charge)$/;
 export const WEIGHT_KEY = /^(weight|parcel_weight|weight_kg)$/i;
+
+// CORRECTIONS Orders §6m — rider name/contact are NOT in the documented API,
+// but "if a webhook/API response turns out to carry rider info, prefer that":
+// every raw payload is scanned for a rider-shaped object ({ rider: { name,
+// phone } } — the shape the public tracking JSON uses) or flat rider_name /
+// rider_phone-style keys, a few levels deep.
+export interface RiderInfo {
+  name: string;
+  phone: string | null;
+}
+
+const RIDER_OBJECT_KEY = /^(rider|delivery_man|deliveryman|assigned_to)$/i;
+const RIDER_NAME_KEY = /^(rider|delivery_man|deliveryman)_?name$/i;
+const RIDER_PHONE_KEY = /^(rider|delivery_man|deliveryman)_?(phone|contact|mobile|number)$/i;
+
+export function findRiderInfo(raw: unknown): RiderInfo | null {
+  const seen = new Set<object>();
+  function scan(node: unknown, depth: number): RiderInfo | null {
+    if (node == null || typeof node !== "object" || depth > 4) return null;
+    if (seen.has(node as object)) return null;
+    seen.add(node as object);
+    const entries = Array.isArray(node)
+      ? node.map((v, i) => [String(i), v] as const)
+      : Object.entries(node as Record<string, unknown>);
+    // Pass 1: a nested rider object with name/phone fields.
+    for (const [key, value] of entries) {
+      if (!RIDER_OBJECT_KEY.test(key) || value == null || typeof value !== "object") continue;
+      const o = value as Record<string, unknown>;
+      const name = typeof o.name === "string" && o.name.trim() ? o.name.trim() : null;
+      if (!name) continue;
+      const phone =
+        typeof o.phone === "string" && o.phone.trim()
+          ? o.phone.trim()
+          : typeof o.contact === "string" && o.contact.trim()
+            ? o.contact.trim()
+            : typeof o.mobile === "string" && o.mobile.trim()
+              ? o.mobile.trim()
+              : null;
+      return { name, phone };
+    }
+    // Pass 2: flat rider_name / rider_phone keys on the same level.
+    let name: string | null = null;
+    let phone: string | null = null;
+    for (const [key, value] of entries) {
+      if (typeof value !== "string" || !value.trim()) continue;
+      if (RIDER_NAME_KEY.test(key)) name = value.trim();
+      else if (RIDER_PHONE_KEY.test(key)) phone = value.trim();
+    }
+    if (name) return { name, phone };
+    // Pass 3: recurse.
+    for (const [, value] of entries) {
+      const found = scan(value, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  return scan(raw, 0);
+}

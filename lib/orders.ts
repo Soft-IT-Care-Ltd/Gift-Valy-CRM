@@ -928,6 +928,14 @@ export function serializeOrderDetail(o: OrderWithRelations, showCosts: boolean) 
             ? o.shipment.returnedAt.toISOString()
             : null,
           returnApproved: o.shipment.returnApproved,
+          // §6n — receive-time inspection stamp (replaces the approval step).
+          returnReceivedAt: o.shipment.returnReceivedAt
+            ? o.shipment.returnReceivedAt.toISOString()
+            : null,
+          // §6m — In Transit sub-state + rider info.
+          courierStatus: o.shipment.courierStatus,
+          riderName: o.shipment.riderName,
+          riderPhone: o.shipment.riderPhone,
           // Steadfast integration (STEADFAST_INTEGRATION.md §3): raw courier
           // status, operator flags, and the tracking-event timeline (§3A payload 2).
           consignmentId:
@@ -972,6 +980,7 @@ export const orderListInclude = {
   },
   shipment: {
     select: {
+      id: true,
       consignmentId: true,
       trackingNo: true,
       trackingUrl: true,
@@ -980,6 +989,11 @@ export const orderListInclude = {
       steadfastStatus: true,
       courierCostActual: true,
       courierCostEstimated: true,
+      // §6m — Courier Status + Rider Info columns; §6n — Returned sub-tabs.
+      courierStatus: true,
+      riderName: true,
+      riderPhone: true,
+      returnReceivedAt: true,
     },
   },
 } satisfies Prisma.OrderInclude;
@@ -1050,6 +1064,7 @@ export function serializeOrderListRow(
     // cost data.
     shipment: o.shipment
       ? {
+          id: o.shipment.id,
           consignmentId:
             o.shipment.consignmentId != null
               ? Number(o.shipment.consignmentId)
@@ -1063,6 +1078,14 @@ export function serializeOrderListRow(
               ? Number(o.shipment.steadfastWeightKg)
               : null,
           steadfastStatus: o.shipment.steadfastStatus,
+          // In Transit sub-state + rider (§6m) — null renders as "Pending" /
+          // "Unassigned". Returned receive stamp (§6n) drives the sub-tabs.
+          courierStatus: o.shipment.courierStatus,
+          riderName: o.shipment.riderName,
+          riderPhone: o.shipment.riderPhone,
+          returnReceivedAt: o.shipment.returnReceivedAt
+            ? o.shipment.returnReceivedAt.toISOString()
+            : null,
           ...(opts.showCosts
             ? {
                 steadfastDeliveryCharge:
