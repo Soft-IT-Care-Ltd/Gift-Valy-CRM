@@ -118,7 +118,7 @@ export function PerOrderProfitClient({
       r.adCost,
       r.profit,
       r.marginPct,
-      r.hasCostSnapshot && r.hasCourierActual ? "yes" : "no",
+      r.hasCostSnapshot && r.hasCourierCost ? "yes" : "no",
     ]);
     downloadCsv(`per-order-profit-${csvDateStamp()}.csv`, toCsv(headers, body));
   }
@@ -183,13 +183,17 @@ export function PerOrderProfitClient({
           ],
           aligns: ["l", "l", "l", "l", "r", "r", "r", "r", "r", "r", "r"],
           rows: filtered.map((r) => [
-            `${r.orderNo}${!r.hasCostSnapshot || !r.hasCourierActual ? " *" : ""}`,
+            `${r.orderNo}${!r.hasCostSnapshot || !r.hasCourierCost ? " *" : ""}`,
             formatDate(r.createdAt),
             r.salesExecutive,
             ORDER_STATUS_LABELS[r.status],
             money(r.sellValue),
             r.hasCostSnapshot ? money(r.productCost) : "—",
-            r.hasCourierActual ? money(r.courierCost) : "—",
+            r.hasCourierActual
+              ? money(r.courierCost)
+              : r.hasCourierCost
+                ? `${money(r.courierCost)} (est.)`
+                : "—",
             money(r.packagingCost),
             money(r.adCost),
             money(r.profit),
@@ -398,7 +402,7 @@ export function PerOrderProfitClient({
 }
 
 function ProfitRow({ r }: { r: OrderProfitRow }) {
-  const incomplete = !r.hasCostSnapshot || !r.hasCourierActual;
+  const incomplete = !r.hasCostSnapshot || !r.hasCourierCost;
   return (
     <TableRow>
       <TableCell className="whitespace-nowrap font-mono text-xs">
@@ -424,7 +428,17 @@ function ProfitRow({ r }: { r: OrderProfitRow }) {
         {r.hasCostSnapshot ? money(r.productCost) : "—"}
       </TableCell>
       <TableCell className="text-right text-muted-foreground">
-        {r.hasCourierActual ? money(r.courierCost) : "—"}
+        {/* Actual courier cost when the webhook delivered it; the zone+weight
+            estimate stands in until then (CORRECTIONS Courier §1). */}
+        {r.hasCourierActual ? (
+          money(r.courierCost)
+        ) : r.hasCourierCost ? (
+          <span title="Zone + weight estimate — actual not received yet">
+            {money(r.courierCost)} <span className="text-[10px]">est.</span>
+          </span>
+        ) : (
+          "—"
+        )}
       </TableCell>
       <TableCell className="text-right text-muted-foreground">
         {money(r.packagingCost)}

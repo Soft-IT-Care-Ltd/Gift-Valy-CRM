@@ -88,18 +88,17 @@ export default async function DashboardLayout({
   }
   addGroup("Inventory", "inventory", inventoryItems);
 
-  // Courier & delivery (SPEC §7). courier.manage covers companies, handover,
-  // shipment status and COD reconciliation; return approval is a step above.
+  // Courier (SPEC §7, simplified per CORRECTIONS Courier §2): Steadfast only.
+  // The Courier page IS the Steadfast integration + zone rate config; COD
+  // reconciliation keeps its own screen. The old Courier Companies / Shipments /
+  // Returns submenus are gone — shipment info lives in the order tabs' columns,
+  // returns move to the Orders → Returned tab (C6).
   const courierItems: NavLeaf[] = [];
   if (permissions.includes("courier.manage")) {
     courierItems.push(
-      { href: "/courier/companies", label: "Courier Companies" },
-      { href: "/courier/shipments", label: "Shipments" },
+      { href: "/courier", label: "Steadfast" },
       { href: "/courier/cod", label: "COD Reconciliation" }
     );
-  }
-  if (permissions.includes("courier.approve_return")) {
-    courierItems.push({ href: "/courier/returns", label: "Returns" });
   }
   addGroup("Courier", "courier", courierItems);
 
@@ -209,14 +208,13 @@ export default async function DashboardLayout({
   }
   addGroup("Admin", "admin", adminItems);
 
-  // Settings (SPEC §11 attendance office hours; STEADFAST_INTEGRATION.md §1) —
-  // admin-only (settings.manage).
+  // Settings (SPEC §11 attendance office hours) — admin-only (settings.manage).
+  // The Steadfast integration moved to the Courier page (CORRECTIONS Courier §2).
   const settingsItems: NavLeaf[] = [];
   if (permissions.includes("settings.manage")) {
     settingsItems.push(
       { href: "/settings/pnl", label: "P&L Settings" },
       { href: "/settings/attendance", label: "Attendance Settings" },
-      { href: "/settings/steadfast", label: "Steadfast Integration" },
       { href: "/settings/whatsapp", label: "WhatsApp Invoice" },
       { href: "/settings/currencies", label: "Currency Rates" }
     );

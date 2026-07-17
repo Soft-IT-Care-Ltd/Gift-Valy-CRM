@@ -47,6 +47,27 @@ export const SHIPMENT_NEXT_STATUSES: Record<
 // the return courier charge both post here (SPEC §7 / §9.1, "Courier Charge").
 export const COURIER_EXPENSE_CATEGORY = "Courier Charge";
 
+// CORRECTIONS Courier §1 — one zone's rate row (base + per-kg) of the 3-zone
+// table. Shared by the config UI, the estimate API and applyHandover.
+export interface ZoneRate {
+  zone: "INSIDE_DHAKA" | "SUB_DHAKA" | "OUTSIDE_DHAKA";
+  baseRate: number;
+  perKgRate: number;
+}
+
+// The courier cost ESTIMATE: base + per-kg × weight, rounded to paisa. Null when
+// the zone has no configured rate (nothing to estimate from) — a missing weight
+// just means the base rate. The webhook's actual delivery_charge later overrides
+// this as courier_cost_actual; P&L prefers actual.
+export function estimateCourierCost(
+  rate: { baseRate: number; perKgRate: number } | null | undefined,
+  weightKg: number | null | undefined
+): number | null {
+  if (!rate) return null;
+  const cost = rate.baseRate + rate.perKgRate * Math.max(weightKg ?? 0, 0);
+  return Math.round(cost * 100) / 100;
+}
+
 // Seed/reference list of couriers Gift Valy uses (SPEC §7). Free to edit in the UI.
 export const COURIER_PRESETS = [
   "Steadfast",

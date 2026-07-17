@@ -24,7 +24,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { RefreshCw } from "lucide-react";
 import { money, formatDateTime } from "@/lib/format";
+import {
+  DELIVERY_ZONE_LABELS,
+  DELIVERY_ZONES,
+  type DeliveryZoneValue,
+} from "@/lib/order-constants";
 
 export interface SteadfastSettings {
   configured: boolean;
@@ -48,6 +54,12 @@ export interface StatusLogRow {
   orderNo: string | null;
 }
 
+export interface ZoneRateRow {
+  zone: DeliveryZoneValue;
+  baseRate: number;
+  perKgRate: number;
+}
+
 async function copy(text: string, label: string) {
   try {
     await navigator.clipboard.writeText(text);
@@ -57,12 +69,20 @@ async function copy(text: string, label: string) {
   }
 }
 
-export function SteadfastSettingsClient({
+// The Courier page (CORRECTIONS Courier §2): the Steadfast integration —
+// connection, webhook, Sync Now, recent status log — plus the 3-zone courier
+// cost rate config (§1). API keys / webhook token stay Admin-only
+// (settings.manage); courier.manage roles see status and manage zone rates.
+export function SteadfastCourierClient({
   initial,
   logs,
+  zoneRates,
+  canManageKeys,
 }: {
   initial: SteadfastSettings;
   logs: StatusLogRow[];
+  zoneRates: ZoneRateRow[];
+  canManageKeys: boolean;
 }) {
   const router = useRouter();
   const [s, setS] = useState(initial);
@@ -75,8 +95,22 @@ export function SteadfastSettingsClient({
 
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
   const [tokenPlain, setTokenPlain] = useState<string | null>(null);
+
+  // Zone rate table (CORRECTIONS Courier §1) — kept as strings while editing.
+  const [rates, setRates] = useState(() =>
+    DELIVERY_ZONES.map((zone) => {
+      const row = zoneRates.find((r) => r.zone === zone);
+      return {
+        zone,
+        baseRate: String(row?.baseRate ?? 0),
+        perKgRate: String(row?.perKgRate ?? 0),
+      };
+    })
+  );
+  const [savingRates, setSavingRates] = useState(false);
 
   async function save() {
     setSaving(true);
@@ -128,6 +162,25 @@ export function SteadfastSettingsClient({
     else toast.error(data?.error ?? "Failed to fetch balance");
   }
 
+  async function syncNow() {
+    setSyncing(true);
+    const res = await fetch("/api/couriers/steadfast/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    setSyncing(false);
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      toast.error(data?.error ?? "Sync failed");
+      return;
+    }
+    toast.success(
+      `Synced — ${data.polled} shipment${data.polled === 1 ? "" : "s"} polled, ${data.changed} updated`
+    );
+    router.refresh();
+  }
+
   async function regenerateToken() {
     if (
       s.hasWebhookToken &&
@@ -151,13 +204,37 @@ export function SteadfastSettingsClient({
     router.refresh();
   }
 
+  async function saveRates() {
+    setSavingRates(true);
+    const res = await fetch("/api/couriers/steadfast/zone-rates", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        rates: rates.map((r) => ({
+          zone: r.zone,
+          baseRate: Math.max(Number(r.baseRate) || 0, 0),
+          perKgRate: Math.max(Number(r.perKgRate) || 0, 0),
+        })),
+      }),
+    });
+    setSavingRates(false);
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      toast.error(data?.error ?? "Failed to save zone rates");
+      return;
+    }
+    toast.success("Zone rates saved");
+    router.refresh();
+  }
+
   return (
     <div className="mx-auto grid max-w-3xl gap-4">
       <div>
-        <h1 className="text-2xl font-semibold">Steadfast Integration</h1>
+        <h1 className="text-2xl font-semibold">Courier — Steadfast</h1>
         <p className="text-sm text-muted-foreground">
-          Connect the Steadfast courier API — send packed orders, and sync
-          delivery status via webhook (live) with polling as a fallback.
+          The Steadfast courier integration: connection, live webhook status,
+          manual sync, and the zone + weight cost rates used for courier cost
+          estimates.
         </p>
       </div>
 
@@ -180,60 +257,75 @@ export function SteadfastSettingsClient({
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">
-          <div className="grid gap-2 sm:grid-cols-2">
-            <div className="grid gap-1.5">
-              <Label>API Key</Label>
-              <Input
-                placeholder={s.apiKeyMasked ?? "Enter API Key"}
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                autoComplete="off"
-              />
-            </div>
-            <div className="grid gap-1.5">
-              <Label>Secret Key</Label>
-              <Input
-                type="password"
-                placeholder={s.secretKeyMasked ?? "Enter Secret Key"}
-                value={secretKey}
-                onChange={(e) => setSecretKey(e.target.value)}
-                autoComplete="off"
-              />
-            </div>
-          </div>
-          {s.configured && (
-            <p className="text-xs text-muted-foreground">
-              Keys are saved. Leave the fields blank to keep them; type to replace.
-            </p>
+          {canManageKeys && (
+            <>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="grid gap-1.5">
+                  <Label>API Key</Label>
+                  <Input
+                    placeholder={s.apiKeyMasked ?? "Enter API Key"}
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    autoComplete="off"
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label>Secret Key</Label>
+                  <Input
+                    type="password"
+                    placeholder={s.secretKeyMasked ?? "Enter Secret Key"}
+                    value={secretKey}
+                    onChange={(e) => setSecretKey(e.target.value)}
+                    autoComplete="off"
+                  />
+                </div>
+              </div>
+              {s.configured && (
+                <p className="text-xs text-muted-foreground">
+                  Keys are saved. Leave the fields blank to keep them; type to replace.
+                </p>
+              )}
+
+              <div className="flex flex-wrap items-center gap-6">
+                <label className="flex items-center gap-2">
+                  <Switch checked={enabled} onCheckedChange={setEnabled} />
+                  <span className="text-sm font-medium">Integration enabled</span>
+                </label>
+                <div className="flex items-center gap-2">
+                  <Label className="text-sm">Polling interval (min)</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    className="w-24"
+                    value={polling}
+                    onChange={(e) => setPolling(e.target.value)}
+                  />
+                </div>
+              </div>
+            </>
           )}
 
-          <div className="flex flex-wrap items-center gap-6">
-            <label className="flex items-center gap-2">
-              <Switch checked={enabled} onCheckedChange={setEnabled} />
-              <span className="text-sm font-medium">Integration enabled</span>
-            </label>
-            <div className="flex items-center gap-2">
-              <Label className="text-sm">Polling interval (min)</Label>
-              <Input
-                type="number"
-                min={1}
-                className="w-24"
-                value={polling}
-                onChange={(e) => setPolling(e.target.value)}
-              />
-            </div>
-          </div>
-
           <div className="flex flex-wrap items-center gap-2">
-            <Button onClick={save} disabled={saving}>
-              {saving ? "Saving…" : "Save settings"}
-            </Button>
+            {canManageKeys && (
+              <Button onClick={save} disabled={saving}>
+                {saving ? "Saving…" : "Save settings"}
+              </Button>
+            )}
             <Button
               variant="outline"
               onClick={testConnection}
               disabled={testing || !s.configured}
             >
               {testing ? "Testing…" : "Test connection"}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={syncNow}
+              disabled={syncing || !s.isEnabled}
+              title="Poll Steadfast for status updates on all live consignments"
+            >
+              <RefreshCw className={`mr-1 size-3.5 ${syncing ? "animate-spin" : ""}`} />
+              {syncing ? "Syncing…" : "Sync now"}
             </Button>
             {balance !== null && (
               <span className="flex items-center gap-2 text-sm">
@@ -250,7 +342,81 @@ export function SteadfastSettingsClient({
         </CardContent>
       </Card>
 
-      {/* Webhook */}
+      {/* Zone + weight cost rates (CORRECTIONS Courier §1) */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Courier cost rates (zone + weight)</CardTitle>
+          <CardDescription>
+            What Gift Valy pays Steadfast per parcel: base rate + per-kg rate
+            for each zone. Handover uses these for the expected courier cost;
+            the actual charge from the Steadfast webhook overrides the estimate
+            in P&amp;L when it arrives.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Zone</TableHead>
+                <TableHead className="text-right">Base rate (৳)</TableHead>
+                <TableHead className="text-right">Per kg (৳)</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rates.map((r, i) => (
+                <TableRow key={r.zone}>
+                  <TableCell className="font-medium">
+                    {DELIVERY_ZONE_LABELS[r.zone]}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      className="ml-auto w-28 text-right"
+                      value={r.baseRate}
+                      onChange={(e) =>
+                        setRates((prev) =>
+                          prev.map((row, j) =>
+                            j === i ? { ...row, baseRate: e.target.value } : row
+                          )
+                        )
+                      }
+                    />
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      className="ml-auto w-28 text-right"
+                      value={r.perKgRate}
+                      onChange={(e) =>
+                        setRates((prev) =>
+                          prev.map((row, j) =>
+                            j === i ? { ...row, perKgRate: e.target.value } : row
+                          )
+                        )
+                      }
+                    />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs text-muted-foreground">
+              Estimate = base + per-kg × parcel weight (BOM item sum, editable
+              at send time).
+            </p>
+            <Button onClick={saveRates} disabled={savingRates}>
+              {savingRates ? "Saving…" : "Save rates"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Webhook — token management is Admin-only */}
       <Card>
         <CardHeader>
           <CardTitle>Webhook (live status)</CardTitle>
@@ -297,9 +463,11 @@ export function SteadfastSettingsClient({
                 <span className="font-mono text-sm text-muted-foreground">
                   {s.hasWebhookToken ? (s.webhookTokenMasked ?? "••••") : "Not generated"}
                 </span>
-                <Button type="button" variant="outline" onClick={regenerateToken}>
-                  {s.hasWebhookToken ? "Regenerate" : "Generate"}
-                </Button>
+                {canManageKeys && (
+                  <Button type="button" variant="outline" onClick={regenerateToken}>
+                    {s.hasWebhookToken ? "Regenerate" : "Generate"}
+                  </Button>
+                )}
               </div>
             )}
           </div>
@@ -326,7 +494,8 @@ export function SteadfastSettingsClient({
         <CardHeader>
           <CardTitle>Recent status updates</CardTitle>
           <CardDescription>
-            The last raw status payloads received from Steadfast (webhook + poll).
+            The last raw payloads received from Steadfast (webhook + poll) and
+            logged API responses.
           </CardDescription>
         </CardHeader>
         <CardContent>

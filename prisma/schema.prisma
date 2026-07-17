@@ -912,8 +912,8 @@ model CurrencyRate {
 
 // A courier company (Steadfast, Pathao, RedX, Sundarban…). cod_fee_percent is
 // the % the courier deducts when it remits collected COD — auto-recorded as an
-// expense at reconciliation (SPEC §7 / §9.1). Per-district charges live in
-// courier_zone_charges (drives the district-based courier charge on orders, §4.1 B).
+// expense at reconciliation (SPEC §7 / §9.1). The schema stays multi-courier
+// (CORRECTIONS Courier §2) even though the UI only exposes Steadfast for now.
 model Courier {
   id            Int      @id @default(autoincrement())
   name          String   @unique
@@ -926,24 +926,27 @@ model Courier {
   createdBy     Int?     @map("created_by")
   updatedBy     Int?     @map("updated_by")
 
-  zoneCharges CourierZoneCharge[]
-  shipments   Shipment[]
+  zoneRates CourierZoneRate[]
+  shipments Shipment[]
 
   @@map("couriers")
 }
 
-// Per-district delivery charge for a courier (SPEC §7 / §14). Replaced as a set
-// when a courier's zones are edited (like package BOM items).
-model CourierZoneCharge {
-  id        Int     @id @default(autoincrement())
-  courierId Int     @map("courier_id")
-  district  String
-  charge    Decimal @db.Decimal(12, 2)
+// CORRECTIONS Courier §1 — what WE pay the courier, by recipient zone: a base
+// rate + a per-kg rate for each of the 3 delivery zones. Replaced the old
+// per-district charge table. Drives the courier cost ESTIMATE at handover
+// (base + per_kg × weight); the webhook's actual delivery_charge overrides it.
+model CourierZoneRate {
+  id        Int          @id @default(autoincrement())
+  courierId Int          @map("courier_id")
+  zone      DeliveryZone
+  baseRate  Decimal      @default(0) @map("base_rate") @db.Decimal(12, 2)
+  perKgRate Decimal      @default(0) @map("per_kg_rate") @db.Decimal(12, 2)
 
   courier Courier @relation(fields: [courierId], references: [id], onDelete: Cascade)
 
-  @@unique([courierId, district])
-  @@map("courier_zone_charges")
+  @@unique([courierId, zone])
+  @@map("courier_zone_rates")
 }
 
 // SPEC §7 — the courier-stage statuses, mirroring the OrderStatus courier
@@ -993,6 +996,20 @@ model Shipment {
   onHold                Boolean        @default(false) @map("on_hold")
   needsAttention        Boolean        @default(false) @map("needs_attention")
   lastPolledAt          DateTime?      @map("last_polled_at")
+  // CORRECTIONS Courier §1 + Orders §6l — zone + weight courier costing and the
+  // Steadfast-reported figures. delivery_zone/weight_kg are OUR handover inputs
+  // (weight pre-filled from the BOM item sum, editable); courier_cost_estimated
+  // = zone base + per-kg × weight. steadfast_weight_kg / courier_cost_actual are
+  // what Steadfast reports (webhook/API/tracking page) — P&L uses actual when
+  // present, else the estimate. tracking_url is the public tracking link
+  // (discovered from the raw create response, else built from tracking_code);
+  // tracking_page_checked_at caches the gentle tracking-page fetch.
+  deliveryZone          DeliveryZone?  @map("delivery_zone")
+  weightKg              Decimal?       @map("weight_kg") @db.Decimal(8, 3)
+  courierCostEstimated  Decimal?       @map("courier_cost_estimated") @db.Decimal(12, 2)
+  steadfastWeightKg     Decimal?       @map("steadfast_weight_kg") @db.Decimal(8, 3)
+  trackingUrl           String?        @map("tracking_url")
+  trackingPageCheckedAt DateTime?      @map("tracking_page_checked_at")
   createdAt             DateTime       @default(now()) @map("created_at")
   updatedAt             DateTime       @updatedAt @map("updated_at")
   createdBy             Int?           @map("created_by")
@@ -1010,11 +1027,15 @@ model Shipment {
 
 // ============ STEADFAST COURIER INTEGRATION (STEADFAST_INTEGRATION.md §4) ============
 
-// Where a raw status update came from: the real-time webhook (primary) or the
-// polling fallback (§3A / §3B). Both go through the SAME status-update code path.
+// Where a raw status update came from: the real-time webhook (primary), the
+// polling fallback (§3A / §3B), or a direct API response we made ourselves
+// (consignment creation — logged in full so tracking-link/charge/weight fields
+// can be discovered, CORRECTIONS Orders §6l). Webhook/poll go through the SAME
+// status-update code path.
 enum StatusLogSource {
   WEBHOOK
   POLL
+  API
 }
 
 // Immutable audit trail of every raw status payload Steadfast sends us, via

@@ -244,9 +244,9 @@ export function ShipmentsBoardClient({
 
       {noCouriers && (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
-          No active couriers yet — add one under{" "}
-          <Link href="/courier/companies" className="underline">
-            Courier Companies
+          No active couriers yet — configure Steadfast on the{" "}
+          <Link href="/courier" className="underline">
+            Courier page
           </Link>{" "}
           before handing orders over.
         </div>

@@ -1,9 +1,22 @@
-import type { Prisma } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "./db";
 import { AuthzError } from "./authz";
 import { applyStatusTransition, dhakaDateBound, recomputeDue } from "./orders";
 import { releaseOrderStock } from "./stock";
-import { COURIER_EXPENSE_CATEGORY } from "./courier-constants";
+import {
+  COURIER_EXPENSE_CATEGORY,
+  estimateCourierCost,
+  type ZoneRate,
+} from "./courier-constants";
+import type { DeliveryZoneValue } from "./order-constants";
+import {
+  BomError,
+  packageWeightKg,
+  productWeightKg,
+  selectionsFromJson,
+  type BomCatalog,
+} from "./bom";
+import { loadBomCatalog } from "./bom-db";
 
 // ============ SPEC §7 — the courier & delivery engine ============
 //
@@ -17,6 +30,8 @@ import { COURIER_EXPENSE_CATEGORY } from "./courier-constants";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+type Tx = Prisma.TransactionClient | PrismaClient;
+
 // Shared "Courier Charge" expense category (VARIABLE), created on demand like
 // the purchase category in lib/stock.ts.
 async function courierExpenseCategoryId(tx: Prisma.TransactionClient): Promise<number> {
@@ -26,6 +41,100 @@ async function courierExpenseCategoryId(tx: Prisma.TransactionClient): Promise<n
     create: { name: COURIER_EXPENSE_CATEGORY, costType: "VARIABLE" },
   });
   return category.id;
+}
+
+// ---------- order weight (CORRECTIONS Courier §1) ----------
+
+// Σ item weight via the full BOM explosion — packages include their components
+// and the SE's chosen variants; custom lines contribute nothing. Null when the
+// order has no items or the BOM is broken (weight is optional everywhere).
+export interface WeighableItem {
+  itemType: "PRODUCT" | "PACKAGE";
+  productId: number | null;
+  packageId: number | null;
+  qty: number;
+  choiceSelections: unknown;
+}
+
+export function itemsWeightKg(
+  catalog: BomCatalog,
+  items: WeighableItem[]
+): number | null {
+  if (items.length === 0) return null;
+  try {
+    let kg = 0;
+    for (const it of items) {
+      if (it.itemType === "PRODUCT" && it.productId != null) {
+        kg += it.qty * productWeightKg(catalog, it.productId);
+      } else if (it.itemType === "PACKAGE" && it.packageId != null) {
+        kg +=
+          it.qty *
+          packageWeightKg(catalog, it.packageId, selectionsFromJson(it.choiceSelections));
+      }
+    }
+    return Math.round(kg * 1000) / 1000;
+  } catch (e) {
+    if (e instanceof BomError) return null;
+    throw e;
+  }
+}
+
+export async function orderWeightKg(
+  tx: Tx,
+  orderId: number,
+  catalog?: BomCatalog // pass when weighing many orders — one load, not N
+): Promise<number | null> {
+  const items = await tx.orderItem.findMany({
+    where: { orderId },
+    select: {
+      itemType: true,
+      productId: true,
+      packageId: true,
+      qty: true,
+      choiceSelections: true,
+    },
+  });
+  if (items.length === 0) return null;
+  return itemsWeightKg(catalog ?? (await loadBomCatalog(tx)), items);
+}
+
+// The courier's configured rate for a zone (CORRECTIONS Courier §1) — null when
+// unconfigured, which simply disables the estimate.
+export async function courierZoneRate(
+  tx: Tx,
+  courierId: number,
+  zone: DeliveryZoneValue | null | undefined
+): Promise<ZoneRate | null> {
+  if (!zone) return null;
+  const rate = await tx.courierZoneRate.findUnique({
+    where: { courierId_zone: { courierId, zone } },
+  });
+  return rate
+    ? {
+        zone,
+        baseRate: Number(rate.baseRate),
+        perKgRate: Number(rate.perKgRate),
+      }
+    : null;
+}
+
+// CORRECTIONS Orders §6j — the PACKED transition an order implicitly passes
+// through when it is sent to the courier straight from CONFIRMED: BOM stock
+// deduction, cost snapshots and the history entry all fire exactly as a manual
+// pack does (applyStatusTransition → syncStockForStatus). Throws (e.g. short
+// stock) before anything is at the courier's side.
+export async function autoPackForHandover(
+  tx: Prisma.TransactionClient,
+  order: { id: number; status: string; cancelReason: string | null },
+  userId: number
+) {
+  await applyStatusTransition(
+    tx,
+    order as { id: number; status: "CONFIRMED"; cancelReason: string | null },
+    "PACKED",
+    userId,
+    "Auto-packed — sent to courier from Confirmed"
+  );
 }
 
 // ---------- handover: create shipment + move order to HANDED_TO_COURIER ----------
@@ -38,6 +147,10 @@ export interface HandoverInput {
   codAmount: number;
   expectedDelivery: Date | null;
   note: string | null;
+  // CORRECTIONS Courier §1 — zone + weight for the cost estimate. Omitted →
+  // zone falls back to the order's delivery zone, weight to the BOM item sum.
+  deliveryZone?: DeliveryZoneValue | null;
+  weightKg?: number | null;
 }
 
 export async function applyHandover(
@@ -47,16 +160,29 @@ export async function applyHandover(
 ) {
   const order = await tx.order.findUnique({
     where: { id: input.orderId },
-    select: { id: true, status: true, cancelReason: true, shipment: { select: { id: true } } },
+    select: {
+      id: true,
+      status: true,
+      cancelReason: true,
+      deliveryZone: true,
+      shipment: { select: { id: true } },
+    },
   });
   if (!order) throw new AuthzError(404, "Order not found");
   if (order.shipment) {
     throw new AuthzError(400, "This order already has a shipment");
   }
-  if (order.status !== "PACKED") {
+  // CORRECTIONS Orders §6j — a CONFIRMED order handed straight to the courier
+  // implicitly passes through PACKED so the stock math stays identical.
+  let status = order.status;
+  if (status === "CONFIRMED") {
+    await autoPackForHandover(tx, order, userId);
+    status = "PACKED";
+  }
+  if (status !== "PACKED") {
     throw new AuthzError(
       400,
-      `Only PACKED orders can be handed over — this order is ${order.status}`
+      `Only CONFIRMED or PACKED orders can be handed over — this order is ${order.status}`
     );
   }
   const courier = await tx.courier.findUnique({
@@ -65,6 +191,16 @@ export async function applyHandover(
   });
   if (!courier) throw new AuthzError(400, "Courier not found");
   if (!courier.isActive) throw new AuthzError(400, "Courier is inactive");
+
+  // Courier cost estimate (CORRECTIONS Courier §1): zone rate base + per-kg ×
+  // weight. The webhook's actual delivery_charge later overrides it in P&L.
+  const zone = input.deliveryZone ?? order.deliveryZone ?? null;
+  const weightKg =
+    input.weightKg != null
+      ? Math.round(Math.max(input.weightKg, 0) * 1000) / 1000
+      : await orderWeightKg(tx, input.orderId);
+  const rate = await courierZoneRate(tx, input.courierId, zone);
+  const estimated = estimateCourierCost(rate, weightKg);
 
   const shipment = await tx.shipment.create({
     data: {
@@ -75,13 +211,16 @@ export async function applyHandover(
       codAmount: round2(input.codAmount),
       expectedDelivery: input.expectedDelivery,
       status: "HANDED_TO_COURIER",
+      deliveryZone: zone,
+      weightKg,
+      courierCostEstimated: estimated,
       createdBy: userId,
       updatedBy: userId,
     },
   });
   await applyStatusTransition(
     tx,
-    { id: order.id, status: order.status, cancelReason: order.cancelReason },
+    { id: order.id, status, cancelReason: order.cancelReason },
     "HANDED_TO_COURIER",
     userId,
     input.note
@@ -319,26 +458,6 @@ export async function applyReturnApproval(
 }
 
 // ---------- serialization ----------
-
-export type CourierWithZones = Prisma.CourierGetPayload<{
-  include: { zoneCharges: true; _count: { select: { shipments: true } } };
-}>;
-
-export function serializeCourier(c: CourierWithZones) {
-  return {
-    id: c.id,
-    name: c.name,
-    contact: c.contact,
-    codFeePercent: Number(c.codFeePercent),
-    notes: c.notes,
-    isActive: c.isActive,
-    shipmentCount: c._count.shipments,
-    zoneCharges: c.zoneCharges
-      .slice()
-      .sort((a, b) => a.district.localeCompare(b.district))
-      .map((z) => ({ district: z.district, charge: Number(z.charge) })),
-  };
-}
 
 export type CourierOption = { id: number; name: string; codFeePercent: number };
 

@@ -129,16 +129,21 @@ export interface OrderProfitParts {
   profit: number;
   marginPct: number; // profit ÷ sell value
   hasCostSnapshot: boolean; // every item carries a frozen cost (order was PACKED)
-  hasCourierActual: boolean; // a shipment exists with an actual courier cost
+  hasCourierActual: boolean; // the shipment carries the ACTUAL courier cost
+  hasCourierCost: boolean; // actual OR zone+weight estimate present
 }
 
 // Pure calculation — shared by the report builder and the verify script so the
 // formula lives in exactly one place. `allocatedAd` is the ad cost already
 // resolved for this order (per the active allocation method).
+// Courier cost (CORRECTIONS Courier §1): the ACTUAL delivery_charge from the
+// Steadfast webhook always wins; until it arrives, the zone+weight estimate
+// stands in.
 export function computeOrderProfit(input: {
   sellValue: number;
   items: { qty: number; unitCostSnapshot: number | null }[];
   courierCostActual: number | null;
+  courierCostEstimated?: number | null;
   hasShipment: boolean;
   packagingCost: number;
   allocatedAd: number;
@@ -149,7 +154,10 @@ export function computeOrderProfit(input: {
     input.items.reduce((s, it) => s + Number(it.unitCostSnapshot ?? 0) * it.qty, 0)
   );
   const hasCourierActual = input.hasShipment && input.courierCostActual != null;
-  const courierCost = round2(Number(input.courierCostActual ?? 0));
+  const resolvedCourier =
+    input.courierCostActual ?? input.courierCostEstimated ?? null;
+  const hasCourierCost = input.hasShipment && resolvedCourier != null;
+  const courierCost = round2(Number(resolvedCourier ?? 0));
   const packagingCost = round2(input.packagingCost);
   const adCost = round2(input.allocatedAd);
   const profit = round2(
@@ -165,6 +173,7 @@ export function computeOrderProfit(input: {
     marginPct: pct(profit, input.sellValue),
     hasCostSnapshot,
     hasCourierActual,
+    hasCourierCost,
   };
 }
 
@@ -270,7 +279,9 @@ export async function buildPerOrderProfitReport(
         customer: { select: { name: true } },
         salesExecutive: { select: { name: true } },
         items: { select: { qty: true, unitCostSnapshot: true } },
-        shipment: { select: { courierCostActual: true } },
+        shipment: {
+          select: { courierCostActual: true, courierCostEstimated: true },
+        },
       },
     }),
     settings.adAllocationMethod === "daily_average"
@@ -294,6 +305,10 @@ export async function buildPerOrderProfitReport(
       courierCostActual:
         o.shipment?.courierCostActual != null
           ? Number(o.shipment.courierCostActual)
+          : null,
+      courierCostEstimated:
+        o.shipment?.courierCostEstimated != null
+          ? Number(o.shipment.courierCostEstimated)
           : null,
       hasShipment: o.shipment != null,
       packagingCost: settings.packagingCostPerOrder,
@@ -319,8 +334,10 @@ export async function buildPerOrderProfitReport(
     round2(saleRows.reduce((s, r) => s + f(r), 0));
   const sellValue = sum((r) => r.sellValue);
   const profit = sum((r) => r.profit);
+  // A row is cost-incomplete when it lacks a snapshot or ANY courier figure —
+  // the zone+weight estimate counts as a valid stand-in until the actual lands.
   const incompleteCostCount = saleRows.filter(
-    (r) => !r.hasCostSnapshot || !r.hasCourierActual
+    (r) => !r.hasCostSnapshot || !r.hasCourierCost
   ).length;
 
   return {

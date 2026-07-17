@@ -12,9 +12,11 @@ import {
 // the stored keys. Success → show balance + stamp connected_at. Failure → return
 // the error (the client keeps the integration disabled). Never throws to a 500
 // on a courier-side error — a bad key is a 400 with a readable message (§5).
+// courier.manage: the button lives on the Courier page (CORRECTIONS Courier §2)
+// and reveals only the balance — never the keys.
 export async function POST() {
   try {
-    const session = await requirePermission("settings.manage");
+    const session = await requirePermission("courier.manage");
     const integration = await getSteadfastIntegration();
     const creds = credsFromIntegration(integration); // 400 if keys missing
 

@@ -4,7 +4,7 @@
 // inventory purchases excluded), and the cost-blind RBAC (Sales/TL/Packing must
 // never be able to reach the P&L). The manual-% allocation path is exercised
 // inside a rolled-back transaction so the demo settings are left untouched.
-import { PrismaClient, type Prisma } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 import {
   computeOrderProfit,
   buildPerOrderProfitReport,
@@ -19,7 +19,11 @@ import { round2 } from "../lib/pnl-constants";
 import { dhakaDateBound } from "../lib/orders";
 import { canSeeCosts } from "../lib/catalog";
 import { getEffectivePermissions } from "../lib/rbac";
-import { NON_SALE_STATUSES, type OrderStatusValue } from "../lib/order-constants";
+import {
+  EXCLUDED_SALE_STATUSES,
+  NON_SALE_STATUSES,
+  type OrderStatusValue,
+} from "../lib/order-constants";
 import { PURCHASE_EXPENSE_CATEGORY } from "../lib/stock";
 import { AD_COST_CATEGORY } from "../lib/expense-constants";
 
@@ -258,8 +262,10 @@ async function main() {
   check("inventory purchased tracked separately (excluded)", money(cur.inventoryPurchased, expInv), `${cur.inventoryPurchased} vs ${expInv}`);
 
   // Revenue + COGS reconcile with the confirmed-basis orders directly.
+  // EXCLUDED_SALE_STATUSES: lib/pnl.ts drops DRAFT (committed-but-unpaid,
+  // CORRECTIONS Leads §10) as well as the lost trio.
   const monthOrders = await prisma.order.findMany({
-    where: { createdAt: { gte: start, lt: next }, status: { notIn: NON_SALE_STATUSES } },
+    where: { createdAt: { gte: start, lt: next }, status: { notIn: EXCLUDED_SALE_STATUSES } },
     select: { totalAmount: true, items: { select: { qty: true, unitCostSnapshot: true } } },
   });
   const expRevenue = round2(monthOrders.reduce((s, o) => s + Number(o.totalAmount), 0));

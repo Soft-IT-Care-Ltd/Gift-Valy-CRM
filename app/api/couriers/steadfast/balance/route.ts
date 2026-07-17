@@ -6,10 +6,12 @@ import {
   credsFromIntegration,
 } from "@/lib/steadfast-integration";
 
-// Balance widget on the Settings page (STEADFAST_INTEGRATION.md §1) — refresh button.
+// Balance widget on the Courier page (STEADFAST_INTEGRATION.md §1, moved per
+// CORRECTIONS Courier §2) — refresh button. courier.manage: balance only,
+// never the keys.
 export async function GET() {
   try {
-    await requirePermission("settings.manage");
+    await requirePermission("courier.manage");
     const integration = await getSteadfastIntegration();
     const creds = credsFromIntegration(integration);
     try {

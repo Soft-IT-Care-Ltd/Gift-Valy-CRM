@@ -247,12 +247,14 @@ async function main() {
     }
   }
 
-  // 4c. Couriers (SPEC §7) — COD fee % + a few per-district zone charges.
+  // 4c. Couriers (SPEC §7) — COD fee % + the 3-zone cost rate table (base +
+  // per-kg per zone, CORRECTIONS Courier §1). Schema stays multi-courier; the
+  // UI only exposes Steadfast (CORRECTIONS Courier §2).
   const demoCouriers = [
-    { name: "Steadfast", contact: "16460", codFeePercent: 1.0, zones: [["Dhaka", 60], ["Chattogram", 100], ["Sylhet", 120], ["Rangpur", 130]] },
-    { name: "Pathao", contact: "09678100800", codFeePercent: 1.0, zones: [["Dhaka", 70], ["Gazipur", 80], ["Cumilla", 110]] },
-    { name: "RedX", contact: "09610990880", codFeePercent: 0.8, zones: [["Dhaka", 65], ["Khulna", 120], ["Barishal", 130]] },
-    { name: "Sundarban", contact: "09610002000", codFeePercent: 0.5, zones: [["Dhaka", 60], ["Rajshahi", 120]] },
+    { name: "Steadfast", contact: "16460", codFeePercent: 1.0, rates: [["INSIDE_DHAKA", 60, 15], ["SUB_DHAKA", 90, 15], ["OUTSIDE_DHAKA", 120, 20]] },
+    { name: "Pathao", contact: "09678100800", codFeePercent: 1.0, rates: [["INSIDE_DHAKA", 70, 15], ["SUB_DHAKA", 100, 20], ["OUTSIDE_DHAKA", 130, 25]] },
+    { name: "RedX", contact: "09610990880", codFeePercent: 0.8, rates: [["INSIDE_DHAKA", 65, 15], ["SUB_DHAKA", 95, 20], ["OUTSIDE_DHAKA", 125, 20]] },
+    { name: "Sundarban", contact: "09610002000", codFeePercent: 0.5, rates: [["INSIDE_DHAKA", 60, 10], ["SUB_DHAKA", 90, 15], ["OUTSIDE_DHAKA", 120, 20]] },
   ] as const;
   const courierIdByName = new Map<string, number>();
   const courierFeeByName = new Map<string, number>();
@@ -264,14 +266,13 @@ async function main() {
     });
     courierIdByName.set(c.name, saved.id);
     courierFeeByName.set(c.name, c.codFeePercent);
-    await prisma.courierZoneCharge.deleteMany({ where: { courierId: saved.id } });
-    await prisma.courierZoneCharge.createMany({
-      data: c.zones.map(([district, charge]) => ({
-        courierId: saved.id,
-        district: district as string,
-        charge: charge as number,
-      })),
-    });
+    for (const [zone, baseRate, perKgRate] of c.rates) {
+      await prisma.courierZoneRate.upsert({
+        where: { courierId_zone: { courierId: saved.id, zone } },
+        update: { baseRate, perKgRate },
+        create: { courierId: saved.id, zone, baseRate, perKgRate },
+      });
+    }
   }
 
   // 4d. Wallets (SPEC §8) — company receiving accounts. Payments are attributed

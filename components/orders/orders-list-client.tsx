@@ -62,14 +62,35 @@ import { detectPreset } from "@/lib/date-filter";
 import { money, formatDate } from "@/lib/format";
 import {
   ALLOWED_TRANSITIONS,
+  DELIVERY_ZONES,
+  DELIVERY_ZONE_LABELS,
   EDITABLE_STATUSES,
   ORDER_STATUS_LABELS,
   TRASHABLE_STATUSES,
   joinAddress,
   type DeliveryDateModeValue,
+  type DeliveryZoneValue,
   type OrderStatusValue,
 } from "@/lib/order-constants";
-import { COURIER_STAGE_STATUSES } from "@/lib/courier-constants";
+import {
+  COURIER_STAGE_STATUSES,
+  estimateCourierCost,
+  type ZoneRate,
+} from "@/lib/courier-constants";
+
+// Shipment columns on the courier-stage tabs (CORRECTIONS Orders §6k/§6l).
+// steadfastDeliveryCharge / courierCostEstimated are COST fields — the server
+// omits them for cost-blind roles (they are optional here).
+export interface ShipmentInfo {
+  consignmentId: number | null;
+  trackingNo: string | null;
+  trackingUrl: string | null;
+  weightKg: number | null; // our recorded weight (BOM sum, editable at handover)
+  steadfastWeightKg: number | null; // what Steadfast counted
+  steadfastStatus: string | null;
+  steadfastDeliveryCharge?: number | null; // actual charge (webhook/API)
+  courierCostEstimated?: number | null; // zone+weight estimate
+}
 
 export interface OrderRow {
   id: number;
@@ -101,6 +122,13 @@ export interface OrderRow {
   purgeInDays: number | null;
   salesExecutive: string;
   salesExecutiveId: number;
+  shipment: ShipmentInfo | null;
+}
+
+// Per-order zone/weight state in the Send-to-Steadfast dialog (§1 estimates).
+interface SendEstimate {
+  zone: DeliveryZoneValue | "";
+  weightKg: string;
 }
 
 // Per-order result of a "Send to Steadfast" call (§2 step 3).
@@ -176,6 +204,7 @@ export function OrdersListClient({
   canCancelOrders,
   canPackOrders,
   canPrintInvoices,
+  canSeeCosts,
 }: {
   orders: OrderRow[];
   statusCounts: Partial<Record<OrderStatusValue, number>>; // for current window/search/SE
@@ -194,6 +223,7 @@ export function OrdersListClient({
   canCancelOrders: boolean; // orders.cancel
   canPackOrders: boolean; // orders.pack
   canPrintInvoices: boolean; // invoice.generate — bulk print (§6h)
+  canSeeCosts: boolean; // cost-visible roles see the SF Delivery Charge column (§6l)
 }) {
   const router = useRouter();
   const params = useSearchParams();
@@ -221,18 +251,66 @@ export function OrdersListClient({
     ? (activeStatus as OrderStatusValue)
     : null;
   const bulkTargets = tabStatus ? eligibleTargets(tabStatus) : [];
+  // §6j — Send to Steadfast from the CONFIRMED tab too; a confirmed order
+  // auto-packs (stock deduction + cost snapshot) on its way out.
   const showSend =
-    canManageCourier && steadfastEnabled && activeStatus === "PACKED";
+    canManageCourier &&
+    steadfastEnabled &&
+    (activeStatus === "PACKED" || activeStatus === "CONFIRMED");
   const showPrint =
     canPrintInvoices &&
     (activeStatus === "CONFIRMED" || activeStatus === "PACKED");
   const showCheckboxes =
     !!tabStatus && (bulkTargets.length > 0 || showSend || showPrint);
 
+  // Courier-stage tab columns (§6k/§6l).
+  const isHandedTab = activeStatus === "HANDED_TO_COURIER";
+  const isTransitTab = activeStatus === "IN_TRANSIT";
+  const showCourierCols = isHandedTab || isTransitTab;
+  const showChargeCol = isTransitTab && canSeeCosts;
+
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [results, setResults] = useState<SendResult[] | null>(null);
+
+  // §1 — per-order zone/weight estimates in the send dialog, pre-filled by
+  // /api/couriers/steadfast/estimate (BOM weight + order zone) and editable.
+  const [estimates, setEstimates] = useState<Record<number, SendEstimate>>({});
+  const [zoneRates, setZoneRates] = useState<ZoneRate[]>([]);
+
+  function estimateFor(orderId: number): number | null {
+    const e = estimates[orderId];
+    if (!e || !e.zone) return null;
+    const rate = zoneRates.find((r) => r.zone === e.zone);
+    const weight = e.weightKg === "" ? null : Number(e.weightKg);
+    return estimateCourierCost(
+      rate ?? null,
+      weight != null && Number.isFinite(weight) ? weight : null
+    );
+  }
+
+  async function openSendDialog() {
+    setResults(null);
+    setConfirmOpen(true);
+    setEstimates({});
+    const res = await fetch("/api/couriers/steadfast/estimate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orderIds: selectedOrders.map((o) => o.id) }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data) return; // dialog still works — just no prefill
+    setZoneRates((data.rates ?? []) as ZoneRate[]);
+    const next: Record<number, SendEstimate> = {};
+    for (const row of data.rows ?? []) {
+      next[row.orderId] = {
+        zone: (row.zone ?? "") as SendEstimate["zone"],
+        weightKg: row.weightKg != null ? String(row.weightKg) : "",
+      };
+    }
+    setEstimates(next);
+  }
 
   // Selection is meaningful only within one page of one tab — reset it
   // whenever the tab or page changes so stale ids never leak into a send. Done
@@ -274,10 +352,27 @@ export function OrdersListClient({
     if (selectedOrders.length === 0) return;
     setSending(true);
     setResults(null);
+    // §1 — the dialog's zone/weight picks ride along so the shipment records
+    // the courier cost estimate.
+    const overrides = selectedOrders.map((o) => {
+      const e = estimates[o.id];
+      const weight = e && e.weightKg !== "" ? Number(e.weightKg) : null;
+      return {
+        orderId: o.id,
+        deliveryZone: e?.zone ? e.zone : null,
+        weightKg:
+          weight != null && Number.isFinite(weight) && weight >= 0
+            ? weight
+            : null,
+      };
+    });
     const res = await fetch("/api/couriers/steadfast/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ orderIds: selectedOrders.map((o) => o.id) }),
+      body: JSON.stringify({
+        orderIds: selectedOrders.map((o) => o.id),
+        overrides,
+      }),
     });
     setSending(false);
     const data = await res.json().catch(() => null);
@@ -506,7 +601,12 @@ export function OrdersListClient({
   const to = Math.min(page * pageSize, total);
   const lastPage = Math.max(1, Math.ceil(total / pageSize));
 
-  const colCount = (showCheckboxes ? 1 : 0) + 11;
+  const colCount =
+    (showCheckboxes ? 1 : 0) +
+    11 +
+    (showCourierCols ? 2 : 0) + // Consignment ID + Tracking (§6k)
+    (isTransitTab ? 1 : 0) + // Steadfast Weight (§6l)
+    (showChargeCol ? 1 : 0); // Steadfast Delivery Charge — cost-visible only
 
   return (
     <Card>
@@ -747,10 +847,7 @@ export function OrdersListClient({
                 <Button
                   size="sm"
                   disabled={selected.size === 0}
-                  onClick={() => {
-                    setResults(null);
-                    setConfirmOpen(true);
-                  }}
+                  onClick={openSendDialog}
                 >
                   Send to Steadfast{selected.size > 0 ? ` (${selected.size})` : ""}
                 </Button>
@@ -779,6 +876,15 @@ export function OrdersListClient({
               <TableHead className="text-right">Total</TableHead>
               <TableHead className="text-right">Due</TableHead>
               <TableHead>Status</TableHead>
+              {/* Courier-stage columns (§6k/§6l) */}
+              {showCourierCols && <TableHead>Consignment ID</TableHead>}
+              {showCourierCols && <TableHead>Tracking</TableHead>}
+              {showChargeCol && (
+                <TableHead className="text-right">SF Charge</TableHead>
+              )}
+              {isTransitTab && (
+                <TableHead className="text-right">Weight</TableHead>
+              )}
               <TableHead>Note</TableHead>
               <TableHead>SE</TableHead>
               <TableHead className="text-right">Actions</TableHead>
@@ -953,6 +1059,72 @@ export function OrdersListClient({
                     <StatusBadge status={o.status} />
                   )}
                 </TableCell>
+                {/* Consignment ID + Tracking Link (§6k) — auto-filled after the
+                    Steadfast API entry; "—" for manual/unbooked shipments */}
+                {showCourierCols && (
+                  <TableCell className="font-mono text-xs">
+                    {o.shipment?.consignmentId ?? (
+                      <span className="font-sans text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                )}
+                {showCourierCols && (
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    {o.shipment?.trackingUrl ? (
+                      <a
+                        href={o.shipment.trackingUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-mono text-xs text-primary underline-offset-4 hover:underline"
+                        title="Open the Steadfast tracking page"
+                      >
+                        {o.shipment.trackingNo ?? "Track"} ↗
+                      </a>
+                    ) : o.shipment?.trackingNo ? (
+                      <span className="font-mono text-xs">{o.shipment.trackingNo}</span>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                )}
+                {/* Steadfast Delivery Charge (§6l) — the ACTUAL charge from the
+                    webhook/API; "—" until it arrives (estimate in the tooltip) */}
+                {showChargeCol && (
+                  <TableCell className="text-right">
+                    {o.shipment?.steadfastDeliveryCharge != null ? (
+                      money(o.shipment.steadfastDeliveryCharge)
+                    ) : (
+                      <span
+                        className="text-muted-foreground"
+                        title={
+                          o.shipment?.courierCostEstimated != null
+                            ? `Estimate: ${money(o.shipment.courierCostEstimated)} — actual not received yet`
+                            : "No charge received yet"
+                        }
+                      >
+                        —
+                      </span>
+                    )}
+                  </TableCell>
+                )}
+                {/* Steadfast Weight (§6l) — the courier's figure; falls back to
+                    our own recorded weight with an "(ours)" marker */}
+                {isTransitTab && (
+                  <TableCell className="whitespace-nowrap text-right text-xs">
+                    {o.shipment?.steadfastWeightKg != null ? (
+                      `${o.shipment.steadfastWeightKg} kg`
+                    ) : o.shipment?.weightKg != null ? (
+                      <span
+                        className="text-muted-foreground"
+                        title="Our recorded weight — Steadfast's figure not received yet"
+                      >
+                        {o.shipment.weightKg} kg (ours)
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                )}
                 <TableCell onClick={(e) => e.stopPropagation()}>
                   {isTrashTab ? (
                     <span className="text-muted-foreground">—</span>
@@ -1082,9 +1254,11 @@ export function OrdersListClient({
           )}
         </div>
 
-        {/* Send to Steadfast — confirm (§2) then per-order result table (§2 step 3) */}
+        {/* Send to Steadfast — confirm (§2) then per-order result table (§2 step 3).
+            Zone + weight per order feed the courier cost estimate (§1); sending
+            from CONFIRMED auto-packs first (§6j). */}
         <Dialog open={confirmOpen} onOpenChange={(o) => !o && closeSendDialog()}>
-          <DialogContent className="sm:max-w-2xl">
+          <DialogContent className="sm:max-w-3xl">
             <DialogHeader>
               <DialogTitle>
                 {results ? "Steadfast results" : "Send to Steadfast"}
@@ -1094,7 +1268,11 @@ export function OrdersListClient({
                   ? "Orders that succeeded have moved to “Handed to courier”."
                   : `Review ${selectedOrders.length} order${
                       selectedOrders.length === 1 ? "" : "s"
-                    } — a consignment is created for each and the order is handed over.`}
+                    } — a consignment is created for each and the order is handed over.${
+                      activeStatus === "CONFIRMED"
+                        ? " Confirmed orders are packed automatically first (stock deducts, costs freeze) — exactly as a manual pack."
+                        : ""
+                    } Zone + weight set the expected courier cost; Steadfast's actual charge overrides it later.`}
               </DialogDescription>
             </DialogHeader>
 
@@ -1105,23 +1283,80 @@ export function OrdersListClient({
                     <TableRow>
                       <TableHead>Order</TableHead>
                       <TableHead>Recipient</TableHead>
-                      <TableHead>Phone (BD)</TableHead>
                       <TableHead>Address</TableHead>
                       <TableHead className="text-right">COD</TableHead>
+                      <TableHead>Zone</TableHead>
+                      <TableHead className="text-right">Weight (kg)</TableHead>
+                      <TableHead className="text-right">Est. cost</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {selectedOrders.map((o) => (
-                      <TableRow key={o.id}>
-                        <TableCell className="font-mono text-xs">{o.orderNo}</TableCell>
-                        <TableCell>{o.recipientName}</TableCell>
-                        <TableCell className="font-mono text-xs">{o.recipientPhone}</TableCell>
-                        <TableCell className="max-w-[220px] truncate text-xs text-muted-foreground">
-                          {joinAddress(o.deliveryAddress, o.thana, o.district)}
-                        </TableCell>
-                        <TableCell className="text-right">{money(o.codAmount)}</TableCell>
-                      </TableRow>
-                    ))}
+                    {selectedOrders.map((o) => {
+                      const e = estimates[o.id];
+                      const est = estimateFor(o.id);
+                      return (
+                        <TableRow key={o.id}>
+                          <TableCell className="font-mono text-xs">
+                            {o.orderNo}
+                            <div className="font-sans text-[11px] text-muted-foreground">
+                              {o.recipientPhone}
+                            </div>
+                          </TableCell>
+                          <TableCell>{o.recipientName}</TableCell>
+                          <TableCell className="max-w-[160px] truncate text-xs text-muted-foreground">
+                            {joinAddress(o.deliveryAddress, o.thana, o.district)}
+                          </TableCell>
+                          <TableCell className="text-right">{money(o.codAmount)}</TableCell>
+                          <TableCell>
+                            <Select
+                              value={e?.zone ?? ""}
+                              onValueChange={(v) =>
+                                setEstimates((prev) => ({
+                                  ...prev,
+                                  [o.id]: {
+                                    zone: v as DeliveryZoneValue,
+                                    weightKg: prev[o.id]?.weightKg ?? "",
+                                  },
+                                }))
+                              }
+                            >
+                              <SelectTrigger className="h-8 w-[130px] text-xs">
+                                <SelectValue placeholder="Zone…" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {DELIVERY_ZONES.map((z) => (
+                                  <SelectItem key={z} value={z}>
+                                    {DELIVERY_ZONE_LABELS[z]}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Input
+                              type="number"
+                              min={0}
+                              step="0.1"
+                              className="ml-auto h-8 w-20 text-right text-xs"
+                              placeholder="—"
+                              value={e?.weightKg ?? ""}
+                              onChange={(ev) =>
+                                setEstimates((prev) => ({
+                                  ...prev,
+                                  [o.id]: {
+                                    zone: prev[o.id]?.zone ?? "",
+                                    weightKg: ev.target.value,
+                                  },
+                                }))
+                              }
+                            />
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap text-right text-xs text-muted-foreground">
+                            {est != null ? money(est) : "—"}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </div>

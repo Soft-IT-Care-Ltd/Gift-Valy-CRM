@@ -198,11 +198,11 @@ Verification pass for correction round 1. With seeded demo data:
    - Multi-select: select multiple orders → a "Change status" action offering only the statuses ALL selected orders are eligible for. All existing side effects (stock reserve/deduct, history logging) must still fire exactly as they do from the detail page.
 6h. [FIXED] **Bulk invoice print** from the CONFIRMED tab **and** the PACKED tab: multi-select (e.g. 20 orders) → "Print Invoices" → one print job/PDF containing all selected invoices.
 6i. [FIXED] **Invoice size = half A4**: redesign the invoice so **2 invoices fit on one A4 page** (A5 landscape halves, cut line between them). Bulk print fills A4 pages two-up automatically.
-6j. [CHANGE] **Send to Steadfast from CONFIRMED tab too** (not only PACKED): multi-select confirmed orders → Send to Steadfast. This implicitly passes through PACKED — the system must automatically apply the PACKED transition (BOM stock deduction, cost snapshot, history entry) before the handover, so the stock math stays identical. Same for the manual "direct to Handed to Courier" path.
-6k. [CHANGE] **Handed to Courier tab — 2 new columns**:
+6j. [FIXED] **Send to Steadfast from CONFIRMED tab too** (not only PACKED): multi-select confirmed orders → Send to Steadfast. This implicitly passes through PACKED — the system must automatically apply the PACKED transition (BOM stock deduction, cost snapshot, history entry) before the handover, so the stock math stays identical. Same for the manual "direct to Handed to Courier" path.
+6k. [FIXED] **Handed to Courier tab — 2 new columns**:
    - **Courier/Consignment ID** — Steadfast's consignment_id, auto-filled after API entry
    - **Tracking Link** — clickable link to Steadfast's public tracking page (e.g. https://steadfast.com.bd/tl/XXXX); capture the link/tracking code from the API response at consignment creation and store it on the shipment. Open in new tab.
-6l. [CHANGE] **In Transit tab — same Consignment ID + Tracking Link columns** as the Handed to Courier tab, PLUS two more columns fetched from Steadfast per parcel:
+6l. [FIXED] **In Transit tab — same Consignment ID + Tracking Link columns** as the Handed to Courier tab, PLUS two more columns fetched from Steadfast per parcel:
    - **Steadfast Delivery Charge** — what Steadfast is charging for this consignment. The webhook `delivery_status` payload includes `delivery_charge`; store it on the shipment as soon as any webhook carries it. Also inspect the create-order and status API responses for a charge field and capture it if present.
    - **Steadfast Weight** — the weight Steadfast counted. Check the actual API/webhook responses for a weight field (not in the V1 doc). If absent, **fetch it from the public tracking page**: the page at the parcel's tracking link (e.g. https://steadfast.com.bd/tl/{token}) displays Weight (e.g. "4.9 KG"), COD amount, and current hub — parse the weight from that page server-side (during the polling job or on-demand refresh, cached; be gentle — only for shipments missing weight). Last fallback: our own recorded order weight with an "(ours)" marker.
    - **Tracking link discovery**: the /tl/{token} public link token is NOT in the documented API response (which only returns consignment_id + tracking_code). On the first real consignment creation, log the FULL raw API response — if it contains a tracking link/token field, store and use it. Otherwise construct the public tracking URL from tracking_code if Steadfast's tracking page supports code-based lookup (verify the URL pattern against their /tracking page). Store whichever working link is found on the shipment.
@@ -276,12 +276,12 @@ Verification pass for correction round 1. With seeded demo data:
 
 ## Courier / Shipments
 
-1. [CHANGE] **Courier COST calculation by zone + weight** (this is what WE pay the courier — separate from the customer-facing delivery charge, which is usually free):
+1. [FIXED] **Courier COST calculation by zone + weight** (this is what WE pay the courier — separate from the customer-facing delivery charge, which is usually free):
    - Replace district-based zone charges with a simple 3-zone rate table per courier: **Inside Dhaka / Sub Dhaka (Dhaka suburbs) / Outside Dhaka**, each with a base rate + per-kg rate (configurable in courier settings)
    - Add an optional **weight (kg/gram) field on products** (and auto-sum for packages via BOM); order weight = sum of items, editable at handover
    - At handover/shipment entry: select zone (3 options) + weight (pre-filled from items) → **courier cost auto-calculated** and saved as the shipment's expected cost
    - When the Steadfast webhook later sends the actual `delivery_charge`, it overrides the estimate as `courier_cost_actual` (P&L always uses actual when available, else the estimate)
-2. [CHANGE] **Simplify the Courier menu — Steadfast only**:
+2. [FIXED] **Simplify the Courier menu — Steadfast only**:
    - Remove the multi-courier setup entirely for now: **no "Courier companies" CRUD, no "Returns" submenu, no "Shipments" submenu** under Courier (returns now live in Orders → Returned tab; shipment info lives in the order tabs' columns)
    - The Courier page itself = the **Steadfast Integration** page (move it here from Settings): API key + secret, Test Connection, balance, webhook Callback URL + Bearer token, "last webhook received", Sync Now
    - Plus the **zone rate config** on the same page: Inside Dhaka / Sub Dhaka / Outside Dhaka — base + per-kg rates (used for courier cost estimates per the new plan)

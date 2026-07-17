@@ -955,7 +955,9 @@ export function serializeOrderDetail(o: OrderWithRelations, showCosts: boolean) 
 }
 
 // Shared include for list queries (page + GET /api/orders) — items feed the
-// Items column badges (CORRECTIONS Orders §6c).
+// Items column badges (CORRECTIONS Orders §6c); the shipment feeds the
+// Consignment / Tracking / Charge / Weight columns on the courier-stage tabs
+// (CORRECTIONS Orders §6k/§6l).
 export const orderListInclude = {
   customer: { select: { name: true, phoneForeign: true, country: true } },
   salesExecutive: { select: { id: true, name: true } },
@@ -968,13 +970,28 @@ export const orderListInclude = {
       package: { select: { name: true } },
     },
   },
+  shipment: {
+    select: {
+      consignmentId: true,
+      trackingNo: true,
+      trackingUrl: true,
+      weightKg: true,
+      steadfastWeightKg: true,
+      steadfastStatus: true,
+      courierCostActual: true,
+      courierCostEstimated: true,
+    },
+  },
 } satisfies Prisma.OrderInclude;
 
 export type OrderListRow = Prisma.OrderGetPayload<{
   include: typeof orderListInclude;
 }>;
 
-export function serializeOrderListRow(o: OrderListRow) {
+export function serializeOrderListRow(
+  o: OrderListRow,
+  opts: { showCosts?: boolean } = {}
+) {
   return {
     id: o.id,
     orderNo: o.orderNo,
@@ -1027,5 +1044,38 @@ export function serializeOrderListRow(o: OrderListRow) {
       : null,
     salesExecutive: o.salesExecutive.name,
     salesExecutiveId: o.salesExecutive.id,
+    // Shipment columns on the Handed to Courier / In Transit tabs (§6k/§6l).
+    // The Steadfast delivery charge is what WE pay the courier — a COST field,
+    // included only for cost-visible roles (CLAUDE.md rule 1). Weights aren't
+    // cost data.
+    shipment: o.shipment
+      ? {
+          consignmentId:
+            o.shipment.consignmentId != null
+              ? Number(o.shipment.consignmentId)
+              : null,
+          trackingNo: o.shipment.trackingNo,
+          trackingUrl: o.shipment.trackingUrl,
+          weightKg:
+            o.shipment.weightKg != null ? Number(o.shipment.weightKg) : null,
+          steadfastWeightKg:
+            o.shipment.steadfastWeightKg != null
+              ? Number(o.shipment.steadfastWeightKg)
+              : null,
+          steadfastStatus: o.shipment.steadfastStatus,
+          ...(opts.showCosts
+            ? {
+                steadfastDeliveryCharge:
+                  o.shipment.courierCostActual != null
+                    ? Number(o.shipment.courierCostActual)
+                    : null,
+                courierCostEstimated:
+                  o.shipment.courierCostEstimated != null
+                    ? Number(o.shipment.courierCostEstimated)
+                    : null,
+              }
+            : {}),
+        }
+      : null,
   };
 }

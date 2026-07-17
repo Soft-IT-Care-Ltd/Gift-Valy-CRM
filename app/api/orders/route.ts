@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requirePermissionCtx, apiError, AuthzError } from "@/lib/authz";
+import { canSeeCosts } from "@/lib/catalog";
 import { logAudit } from "@/lib/audit";
 import { generateInvoiceSafe } from "@/lib/invoice";
 import {
@@ -44,8 +45,11 @@ export async function GET(req: Request) {
       }),
       prisma.order.count({ where: { AND: filters } }),
     ]);
+    // Shipment courier-cost fields are stripped for cost-blind roles
+    // (CLAUDE.md rule 1) — same gate as the order detail.
+    const showCosts = canSeeCosts(permissions);
     return NextResponse.json({
-      rows: orders.map(serializeOrderListRow),
+      rows: orders.map((o) => serializeOrderListRow(o, { showCosts })),
       total,
       page,
       pageSize: ORDER_PAGE_SIZE,

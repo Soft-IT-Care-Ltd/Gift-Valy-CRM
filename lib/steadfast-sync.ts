@@ -4,12 +4,17 @@ import { applyShipmentStatus } from "./courier";
 import { getSystemUserId } from "./system-user";
 import { ALLOWED_TRANSITIONS } from "./order-constants";
 import {
+  DELIVERY_CHARGE_KEY,
+  WEIGHT_KEY,
+  findNumericField,
   mapSteadfastStatus,
+  trackingUrlFromCode,
   STEADFAST_COURIER_NAME,
   type MappedSteadfastStatus,
 } from "./steadfast-constants";
 import { requireEnabledSteadfast } from "./steadfast-integration";
 import { statusByCid, statusByInvoice } from "./steadfast";
+import { fetchPublicTracking } from "./steadfast-track";
 
 // ============ Steadfast status sync (STEADFAST_INTEGRATION.md §3) ============
 //
@@ -69,6 +74,7 @@ export async function ingestDeliveryStatus(
     source: Source;
     rawPayload: unknown;
     deliveryCharge?: number | null;
+    weightKg?: number | null;
   }
 ): Promise<IngestResult> {
   const { shipment, rawStatus, source, rawPayload } = args;
@@ -115,6 +121,13 @@ export async function ingestDeliveryStatus(
   // 3. Steadfast-specific fields + operator flags. applyShipmentStatus already
   // set status/delivered_at above; here we set the raw status, flags, poll stamp
   // and the real courier cost from the webhook's delivery_charge (§3A step 3).
+  // The raw payload is ALSO mined for charge/weight fields the caller didn't
+  // extract explicitly — the documented payloads don't promise them everywhere,
+  // so any response that carries one is captured (CORRECTIONS Orders §6l).
+  const deliveryCharge =
+    args.deliveryCharge ?? findNumericField(rawPayload, DELIVERY_CHARGE_KEY);
+  const weightKg = args.weightKg ?? findNumericField(rawPayload, WEIGHT_KEY);
+
   const data: Prisma.ShipmentUpdateInput = {
     steadfastStatus: mapped.normalized,
     onHold: mapped.onHold,
@@ -122,8 +135,13 @@ export async function ingestDeliveryStatus(
     updatedBy: systemUserId,
   };
   if (source === "POLL") data.lastPolledAt = new Date();
-  if (args.deliveryCharge != null) {
-    data.courierCostActual = Math.round(args.deliveryCharge * 100) / 100;
+  if (deliveryCharge != null && deliveryCharge > 0) {
+    data.courierCostActual = Math.round(deliveryCharge * 100) / 100;
+  }
+  if (weightKg != null && weightKg > 0) {
+    // Anything above 100 can only be grams — gift parcels don't weigh 100+ kg.
+    const kg = weightKg > 100 ? weightKg / 1000 : weightKg;
+    data.steadfastWeightKg = Math.round(kg * 1000) / 1000;
   }
   await tx.shipment.update({ where: { id: shipment.id }, data });
 
@@ -155,19 +173,32 @@ export async function ingestTrackingUpdate(
 export interface PollSummary {
   polled: number;
   changed: number;
+  trackingChecked: number; // public tracking-page fetches this run (§6l)
   errors: { shipmentId: number; error: string }[];
 }
+
+// The public tracking page is only consulted for shipments still missing the
+// Steadfast weight, at most this often per shipment and this many per run —
+// the "gentle" rule of CORRECTIONS Orders §6l.
+const TRACKING_CHECK_MIN_GAP_MS = 6 * 60 * 60 * 1000;
+const TRACKING_CHECKS_PER_RUN = 10;
 
 // Reconcile non-final Steadfast shipments via the status API. Runs one network
 // call per shipment OUTSIDE any transaction, then a small per-shipment
 // transaction for the DB writes — so a single failure never rolls back the rest
 // and no transaction is held open across the network (§5). Pass a shipmentId for
-// the per-shipment refresh icon (ignores the interval); omit for the batch job.
+// the per-shipment refresh icon (ignores the interval + tracking-page cache);
+// omit for the batch job.
 export async function runSteadfastPoll(opts?: {
   shipmentId?: number;
 }): Promise<PollSummary> {
   const { integration, creds } = await requireEnabledSteadfast();
-  const summary: PollSummary = { polled: 0, changed: 0, errors: [] };
+  const summary: PollSummary = {
+    polled: 0,
+    changed: 0,
+    trackingChecked: 0,
+    errors: [],
+  };
 
   const courier = await prisma.courier.findUnique({
     where: { name: STEADFAST_COURIER_NAME },
@@ -199,6 +230,10 @@ export async function runSteadfastPoll(opts?: {
     select: {
       id: true,
       consignmentId: true,
+      trackingNo: true,
+      trackingUrl: true,
+      steadfastWeightKg: true,
+      trackingPageCheckedAt: true,
       order: { select: { orderNo: true } },
     },
   });
@@ -207,11 +242,16 @@ export async function runSteadfastPoll(opts?: {
     summary.polled += 1;
     try {
       let raw: string | null = null;
+      let rawResponse: unknown = null;
       try {
-        raw = await statusByCid(creds, s.consignmentId!);
+        const res = await statusByCid(creds, s.consignmentId!);
+        raw = res.deliveryStatus;
+        rawResponse = res.raw;
       } catch {
         // Fallback to invoice lookup per §3B step 2.
-        raw = await statusByInvoice(creds, s.order.orderNo);
+        const res = await statusByInvoice(creds, s.order.orderNo);
+        raw = res.deliveryStatus;
+        rawResponse = res.raw;
       }
       if (!raw) continue;
 
@@ -225,11 +265,46 @@ export async function runSteadfastPoll(opts?: {
           shipment: shipment as unknown as ShipmentForSync,
           rawStatus: raw!,
           source: "POLL",
-          rawPayload: { consignment_id: Number(s.consignmentId), delivery_status: raw },
+          // The FULL status response — ingest mines it for charge/weight (§6l).
+          rawPayload: {
+            consignment_id: Number(s.consignmentId),
+            ...(rawResponse && typeof rawResponse === "object"
+              ? (rawResponse as Record<string, unknown>)
+              : { delivery_status: raw }),
+          },
         });
         return res.transitioned;
       });
       if (changed) summary.changed += 1;
+
+      // §6l — Steadfast weight fallback from the PUBLIC tracking page, only for
+      // shipments still missing it, cached and capped so it stays gentle. A
+      // per-shipment refresh (opts.shipmentId) bypasses the cache window.
+      const trackingUrl = s.trackingUrl ?? trackingUrlFromCode(s.trackingNo);
+      const cacheFresh =
+        s.trackingPageCheckedAt != null &&
+        Date.now() - s.trackingPageCheckedAt.getTime() < TRACKING_CHECK_MIN_GAP_MS;
+      if (
+        trackingUrl &&
+        s.steadfastWeightKg == null &&
+        summary.trackingChecked < TRACKING_CHECKS_PER_RUN &&
+        (opts?.shipmentId ? true : !cacheFresh)
+      ) {
+        summary.trackingChecked += 1;
+        const info = await fetchPublicTracking(trackingUrl);
+        await prisma.shipment.update({
+          where: { id: s.id },
+          data: {
+            trackingPageCheckedAt: new Date(),
+            // Backfill the link for legacy shipments; prefer the canonical
+            // public link when the page reports one.
+            trackingUrl: info?.publicTrackingLink ?? trackingUrl,
+            ...(info?.weightKg != null && info.weightKg > 0
+              ? { steadfastWeightKg: info.weightKg }
+              : {}),
+          },
+        });
+      }
 
       // Rate-limit friendly: a small gap between calls (§5).
       await new Promise((r) => setTimeout(r, 150));

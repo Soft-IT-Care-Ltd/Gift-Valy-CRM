@@ -148,10 +148,13 @@ export interface CreateOrderResponse {
   consignment?: Consignment;
 }
 
+// Returns the consignment AND the full raw response — the raw body is logged at
+// creation (shipment_status_logs, source=API) so undocumented fields (tracking
+// link/token, charge, weight) can be discovered per CORRECTIONS Orders §6l.
 export async function createOrder(
   creds: SteadfastCreds,
   payload: CreateOrderPayload
-): Promise<Consignment> {
+): Promise<{ consignment: Consignment; raw: CreateOrderResponse }> {
   const res = await steadfastFetch<CreateOrderResponse>(creds, "/create_order", {
     method: "POST",
     body: payload,
@@ -163,7 +166,7 @@ export async function createOrder(
       res
     );
   }
-  return res.consignment;
+  return { consignment: res.consignment, raw: res };
 }
 
 // Bulk: 2–500 orders, `data` = JSON array (doc). Response has a per-item status.
@@ -188,7 +191,7 @@ export interface BulkResponse {
 export async function createBulkOrder(
   creds: SteadfastCreds,
   payloads: CreateOrderPayload[]
-): Promise<BulkResultItem[]> {
+): Promise<{ items: BulkResultItem[]; raw: BulkResponse }> {
   const res = await steadfastFetch<BulkResponse>(
     creds,
     "/create_order/bulk-order",
@@ -201,7 +204,7 @@ export async function createBulkOrder(
       res
     );
   }
-  return res.data;
+  return { items: res.data, raw: res };
 }
 
 // ---------- status polling (§3B) ----------
@@ -211,26 +214,33 @@ export interface StatusResponse {
   delivery_status?: string;
 }
 
+// The full raw response is returned alongside the status: the poll flow
+// inspects it for undocumented charge/weight fields (CORRECTIONS Orders §6l).
+export interface StatusResult {
+  deliveryStatus: string | null;
+  raw: StatusResponse;
+}
+
 export async function statusByCid(
   creds: SteadfastCreds,
   consignmentId: number | bigint
-): Promise<string | null> {
+): Promise<StatusResult> {
   const res = await steadfastFetch<StatusResponse>(
     creds,
     `/status_by_cid/${consignmentId}`,
     { method: "GET" }
   );
-  return res?.delivery_status ?? null;
+  return { deliveryStatus: res?.delivery_status ?? null, raw: res };
 }
 
 export async function statusByInvoice(
   creds: SteadfastCreds,
   invoice: string
-): Promise<string | null> {
+): Promise<StatusResult> {
   const res = await steadfastFetch<StatusResponse>(
     creds,
     `/status_by_invoice/${encodeURIComponent(invoice)}`,
     { method: "GET" }
   );
-  return res?.delivery_status ?? null;
+  return { deliveryStatus: res?.delivery_status ?? null, raw: res };
 }

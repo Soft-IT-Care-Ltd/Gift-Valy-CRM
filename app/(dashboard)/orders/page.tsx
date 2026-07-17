@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { requirePagePermission } from "@/lib/page-auth";
 import { getEffectivePermissions } from "@/lib/rbac";
+import { canSeeCosts } from "@/lib/catalog";
 import {
   ORDER_PAGE_SIZE,
   buildOrderListFilters,
@@ -61,8 +62,8 @@ export default async function OrdersPage({
       ? (statusCounts[status] ?? 0)
       : Object.values(statusCounts).reduce((s, n) => s + (n ?? 0), 0);
 
-  // "Send to Steadfast" on the PACKED tab needs courier.manage + an enabled
-  // integration (STEADFAST_INTEGRATION.md §2).
+  // "Send to Steadfast" on the CONFIRMED + PACKED tabs needs courier.manage +
+  // an enabled integration (STEADFAST_INTEGRATION.md §2 + CORRECTIONS §6j).
   const canManageCourier = permissions.includes("courier.manage");
   const steadfastEnabled = canManageCourier
     ? ((await getSteadfastIntegration())?.isEnabled ?? false)
@@ -93,9 +94,13 @@ export default async function OrdersPage({
     });
   }
 
+  // The In Transit tab's Steadfast Delivery Charge column is a COST — only
+  // cost-visible roles receive it (CLAUDE.md rule 1; stripped in the payload).
+  const showCosts = canSeeCosts(permissions);
+
   return (
     <OrdersListClient
-      orders={orders.map(serializeOrderListRow)}
+      orders={orders.map((o) => serializeOrderListRow(o, { showCosts }))}
       statusCounts={statusCounts}
       trashCount={trashCount}
       total={total}
@@ -112,6 +117,7 @@ export default async function OrdersPage({
       canCancelOrders={permissions.includes("orders.cancel")}
       canPackOrders={permissions.includes("orders.pack")}
       canPrintInvoices={permissions.includes("invoice.generate")}
+      canSeeCosts={showCosts}
     />
   );
 }

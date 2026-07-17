@@ -35,6 +35,10 @@ const bodySchema = z.object({
     .nullable()
     .optional()
     .transform((v) => (v?.trim() ? v.trim() : null)),
+  // CORRECTIONS Courier §1 — zone + weight for the courier cost estimate.
+  // Omitted → the order's zone and the BOM weight sum apply.
+  deliveryZone: z.enum(["INSIDE_DHAKA", "SUB_DHAKA", "OUTSIDE_DHAKA"]).nullable().optional(),
+  weightKg: z.number().min(0).nullable().optional(),
 });
 
 export async function POST(req: Request) {
@@ -67,6 +71,8 @@ export async function POST(req: Request) {
           codAmount: data.codAmount,
           expectedDelivery: data.expectedDelivery ? dbDate(data.expectedDelivery) : null,
           note: data.note,
+          deliveryZone: data.deliveryZone,
+          weightKg: data.weightKg,
         },
         integration!,
         session.user.id
@@ -107,6 +113,8 @@ export async function POST(req: Request) {
           codAmount: data.codAmount,
           expectedDelivery: data.expectedDelivery ? dbDate(data.expectedDelivery) : null,
           note: data.note,
+          deliveryZone: data.deliveryZone,
+          weightKg: data.weightKg,
         },
         session.user.id
       )

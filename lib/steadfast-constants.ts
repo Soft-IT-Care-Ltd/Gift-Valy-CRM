@@ -85,3 +85,95 @@ export function normalizeBdPhone(raw: string | null | undefined): string | null 
   if (d.startsWith("88")) d = d.slice(2);
   return /^01\d{9}$/.test(d) ? d : null;
 }
+
+// ---------- public tracking link (CORRECTIONS Orders §6k/§6l) ----------
+
+// Steadfast's public tracking page. Verified against steadfast.com.bd: the
+// tracking form resolves both /t/{code} and /tl/{token} links (their frontend's
+// resolveCode regex is /\/t(?:l)?\/([^/?&#\s]+)/) and the page itself calls
+// GET /tl/{token} with Accept: application/json — so the constructed link works
+// for tracking_code-based lookups and doubles as our server-side JSON source.
+export const STEADFAST_TRACKING_BASE = "https://steadfast.com.bd/tl/";
+
+export function trackingUrlFromCode(
+  trackingCode: string | null | undefined
+): string | null {
+  const code = trackingCode?.trim();
+  return code ? `${STEADFAST_TRACKING_BASE}${encodeURIComponent(code)}` : null;
+}
+
+// The documented create-order response carries only consignment_id +
+// tracking_code, but §6l says: log the FULL raw response and, if a tracking
+// link/token field ever shows up, prefer it. This scans any raw payload
+// (objects/arrays, a few levels deep) for such a field — a full URL under a
+// *track*-named key, any /t/… or /tl/… steadfast link in a string value, or a
+// bare token under a key like public_tracking_token.
+export function discoverTrackingUrl(raw: unknown): string | null {
+  const seen = new Set<object>();
+  function scan(node: unknown, depth: number): string | null {
+    if (node == null || depth > 4) return null;
+    if (typeof node === "string") {
+      const m = node.match(
+        /https?:\/\/(?:www\.)?steadfast\.com\.bd\/t(?:l)?\/[^\s"'<>]+/i
+      );
+      return m ? m[0] : null;
+    }
+    if (typeof node !== "object") return null;
+    if (seen.has(node as object)) return null;
+    seen.add(node as object);
+    const entries = Array.isArray(node)
+      ? node.map((v, i) => [String(i), v] as const)
+      : Object.entries(node as Record<string, unknown>);
+    // Pass 1: keys that look like a tracking link/token.
+    for (const [key, value] of entries) {
+      if (typeof value !== "string" || !value.trim()) continue;
+      if (!/track/i.test(key)) continue;
+      if (/link|url/i.test(key)) {
+        const v = value.trim();
+        return /^https?:\/\//i.test(v) ? v : `${STEADFAST_TRACKING_BASE}${v}`;
+      }
+      if (/token/i.test(key)) return `${STEADFAST_TRACKING_BASE}${value.trim()}`;
+    }
+    // Pass 2: any nested value containing a steadfast tracking URL.
+    for (const [, value] of entries) {
+      const found = scan(value, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  return scan(raw, 0);
+}
+
+// §6l — the documented payloads don't promise delivery_charge/weight outside the
+// webhook, so every raw API response is also inspected for them. Finds the first
+// numeric value under a matching key (a few levels deep), e.g. delivery_charge,
+// weight, parcel_weight.
+export function findNumericField(
+  raw: unknown,
+  keyPattern: RegExp
+): number | null {
+  const seen = new Set<object>();
+  function scan(node: unknown, depth: number): number | null {
+    if (node == null || typeof node !== "object" || depth > 4) return null;
+    if (seen.has(node as object)) return null;
+    seen.add(node as object);
+    const entries = Array.isArray(node)
+      ? node.map((v, i) => [String(i), v] as const)
+      : Object.entries(node as Record<string, unknown>);
+    for (const [key, value] of entries) {
+      if (keyPattern.test(key)) {
+        const n = Number(value);
+        if (value !== null && value !== "" && Number.isFinite(n)) return n;
+      }
+    }
+    for (const [, value] of entries) {
+      const found = scan(value, depth + 1);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  return scan(raw, 0);
+}
+
+export const DELIVERY_CHARGE_KEY = /^(delivery_charge|deliveryCharge|charge)$/;
+export const WEIGHT_KEY = /^(weight|parcel_weight|weight_kg)$/i;
