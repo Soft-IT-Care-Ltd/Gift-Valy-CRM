@@ -8,6 +8,7 @@ import {
 } from "@/lib/steadfast-integration";
 import { STEADFAST_COURIER_NAME } from "@/lib/steadfast-constants";
 import { DELIVERY_ZONES } from "@/lib/order-constants";
+import { getCourierOverchargeTolerancePct } from "@/lib/settings";
 import {
   SteadfastCourierClient,
   type StatusLogRow,
@@ -24,18 +25,20 @@ export default async function CourierPage() {
   const session = await requirePagePermission("courier.manage");
   const permissions = await getEffectivePermissions(session.user.id);
 
-  const [integration, logs, steadfastCourier] = await Promise.all([
-    getSteadfastIntegration(),
-    prisma.shipmentStatusLog.findMany({
-      orderBy: { receivedAt: "desc" },
-      take: 15,
-      include: { shipment: { select: { order: { select: { orderNo: true } } } } },
-    }),
-    prisma.courier.findUnique({
-      where: { name: STEADFAST_COURIER_NAME },
-      select: { zoneRates: true },
-    }),
-  ]);
+  const [integration, logs, steadfastCourier, overchargeTolerancePct] =
+    await Promise.all([
+      getSteadfastIntegration(),
+      prisma.shipmentStatusLog.findMany({
+        orderBy: { receivedAt: "desc" },
+        take: 15,
+        include: { shipment: { select: { order: { select: { orderNo: true } } } } },
+      }),
+      prisma.courier.findUnique({
+        where: { name: STEADFAST_COURIER_NAME },
+        select: { zoneRates: true },
+      }),
+      getCourierOverchargeTolerancePct(),
+    ]);
 
   // Callback URL host: NEXTAUTH_URL if set, else the request's own origin.
   const h = await headers();
@@ -68,6 +71,7 @@ export default async function CourierPage() {
       initial={serializeIntegration(integration, { callbackUrl })}
       logs={logRows}
       zoneRates={zoneRates}
+      overchargeTolerancePct={overchargeTolerancePct}
       canManageKeys={permissions.includes("settings.manage")}
     />
   );

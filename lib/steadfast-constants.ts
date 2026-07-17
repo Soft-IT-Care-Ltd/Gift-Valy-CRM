@@ -191,7 +191,13 @@ export function findNumericField(
   return scan(raw, 0);
 }
 
-export const DELIVERY_CHARGE_KEY = /^(delivery_charge|deliveryCharge|charge)$/;
+// CORRECTIONS Orders §R3 — the delivery charge is not in the documented status
+// API, but it surfaces (under slightly different names) in create/status
+// responses and the public tracking JSON. Match every spelling Steadfast has
+// been seen to use, case-insensitively; anchored so it never catches
+// `cod_charge` / `return_charge`.
+export const DELIVERY_CHARGE_KEY =
+  /^(delivery_charge|deliverycharge|total_delivery_charge|delivery_fee|charge)$/i;
 export const WEIGHT_KEY = /^(weight|parcel_weight|weight_kg)$/i;
 
 // CORRECTIONS Orders §6m — rider name/contact are NOT in the documented API,
@@ -250,4 +256,17 @@ export function findRiderInfo(raw: unknown): RiderInfo | null {
     return null;
   }
   return scan(raw, 0);
+}
+
+// CORRECTIONS Orders §R2 — the parcel counts as "assigned to a rider" ONLY when
+// a REAL rider is detected: a name AND a contact number. Steadfast populates the
+// rider block with a name+phone the moment a delivery agent picks the parcel up;
+// a bare name with no contact is a hub/placeholder, not an assignment, and must
+// NOT flip the status to Assigned. This is the single gate every capture path
+// (webhook, status API, tracking page) runs through.
+export function realRider(rider: RiderInfo | null | undefined): RiderInfo | null {
+  if (!rider) return null;
+  const name = rider.name?.trim();
+  const phone = rider.phone?.trim();
+  return name && phone ? { name, phone } : null;
 }

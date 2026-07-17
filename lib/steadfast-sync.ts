@@ -8,6 +8,7 @@ import {
   WEIGHT_KEY,
   findNumericField,
   findRiderInfo,
+  realRider,
   mapSteadfastStatus,
   trackingUrlFromCode,
   STEADFAST_COURIER_NAME,
@@ -38,6 +39,7 @@ export interface ShipmentForSync {
   id: number;
   status: "HANDED_TO_COURIER" | "IN_TRANSIT" | "DELIVERED" | "RETURNED";
   courierStatus: CourierStatusValue | null; // §6m sub-state (never downgraded)
+  riderName: string | null; // §R2 — a stored real rider is what makes ASSIGNED real
   order: { id: number; status: string; cancelReason: string | null };
 }
 
@@ -130,16 +132,21 @@ export async function ingestDeliveryStatus(
   const deliveryCharge =
     args.deliveryCharge ?? findNumericField(rawPayload, DELIVERY_CHARGE_KEY);
   const weightKg = args.weightKg ?? findNumericField(rawPayload, WEIGHT_KEY);
-  // §6m — rider info from ANY payload that carries it (preferred over the
-  // tracking-page scrape). A named rider means the parcel is ASSIGNED.
-  const rider = findRiderInfo(rawPayload);
+  // §6m/§R2 — rider info from ANY payload that carries it (preferred over the
+  // tracking-page scrape), but ONLY a REAL rider counts: a name AND a contact.
+  // A bare name (hub/placeholder) is discarded so it never fakes an assignment.
+  const rider = realRider(findRiderInfo(rawPayload));
 
-  // §6m sub-state: what the raw status implies, upgraded to ASSIGNED when a
-  // rider is known. A late/duplicate "pending" never downgrades ASSIGNED.
+  // §6m/§R2 sub-state: what the raw status implies, upgraded to ASSIGNED only
+  // when a real rider is on record — either this payload carries one, or one was
+  // already stored (a late/duplicate "pending" then never downgrades a genuine
+  // ASSIGNED). ASSIGNED is thus never written without matching rider info, so the
+  // warehouse-received state can no longer masquerade as Assigned.
   let courierStatus = mapped.courierStatus;
   if (
     courierStatus === "PENDING" &&
-    (rider != null || shipment.courierStatus === "ASSIGNED")
+    (rider != null ||
+      (shipment.courierStatus === "ASSIGNED" && shipment.riderName != null))
   ) {
     courierStatus = "ASSIGNED";
   }
@@ -153,7 +160,7 @@ export async function ingestDeliveryStatus(
   if (courierStatus != null) data.courierStatus = courierStatus;
   if (rider != null) {
     data.riderName = rider.name;
-    if (rider.phone) data.riderPhone = rider.phone;
+    data.riderPhone = rider.phone;
   }
   if (source === "POLL") data.lastPolledAt = new Date();
   if (deliveryCharge != null && deliveryCharge > 0) {
@@ -212,8 +219,15 @@ const TRACKING_CHECKS_PER_RUN = 10;
 // and no transaction is held open across the network (§5). Pass a shipmentId for
 // the per-shipment refresh icon (ignores the interval + tracking-page cache);
 // omit for the batch job.
+//
+// CORRECTIONS Orders §R1 — the order-list "Sync now" buttons scope a manual sync
+// to one tab (`statuses`) and force it past the polling-interval gate (`force`),
+// so clicking always refreshes every parcel currently in that tab right now. The
+// tracking-page cache still applies (it stays gentle even under a manual sync).
 export async function runSteadfastPoll(opts?: {
   shipmentId?: number;
+  statuses?: ("HANDED_TO_COURIER" | "IN_TRANSIT")[];
+  force?: boolean;
 }): Promise<PollSummary> {
   const { integration, creds } = await requireEnabledSteadfast();
   const summary: PollSummary = {
@@ -236,19 +250,24 @@ export async function runSteadfastPoll(opts?: {
     where: {
       courierId: courier.id,
       consignmentId: { not: null },
-      // Only non-final states (§3B step: stop once DELIVERED/RETURNED/PARTIAL).
-      order: { status: { in: ["HANDED_TO_COURIER", "IN_TRANSIT"] } },
+      // Only non-final states (§3B step: stop once DELIVERED/RETURNED/PARTIAL);
+      // a tab-scoped manual sync (§R1) narrows this to the requested tab.
+      order: { status: { in: opts?.statuses ?? ["HANDED_TO_COURIER", "IN_TRANSIT"] } },
       ...(opts?.shipmentId
         ? { id: opts.shipmentId }
-        : {
-            AND: [
-              { OR: [{ lastPolledAt: null }, { lastPolledAt: { lt: cutoff } }] },
-              // "Last webhook/poll update older than the interval" (§3B): every
-              // webhook and poll writes a status log, so a log inside the window
-              // means the shipment is fresh — skip it this round.
-              { statusLogs: { none: { receivedAt: { gte: cutoff } } } },
-            ],
-          }),
+        : opts?.force
+          ? // §R1 manual "Sync now": refresh every shipment in the tab now,
+            // regardless of when it was last polled.
+            {}
+          : {
+              AND: [
+                { OR: [{ lastPolledAt: null }, { lastPolledAt: { lt: cutoff } }] },
+                // "Last webhook/poll update older than the interval" (§3B): every
+                // webhook and poll writes a status log, so a log inside the window
+                // means the shipment is fresh — skip it this round.
+                { statusLogs: { none: { receivedAt: { gte: cutoff } } } },
+              ],
+            }),
     },
     select: {
       id: true,
@@ -308,6 +327,7 @@ export async function runSteadfastPoll(opts?: {
         where: { id: s.id },
         select: {
           steadfastWeightKg: true,
+          courierCostActual: true,
           riderName: true,
           courierStatus: true,
           trackingPageCheckedAt: true,
@@ -324,6 +344,11 @@ export async function runSteadfastPoll(opts?: {
           : Date.now() - fresh.trackingPageCheckedAt.getTime();
       const wantsWeight =
         fresh.steadfastWeightKg == null && sinceCheck >= TRACKING_CHECK_MIN_GAP_MS;
+      // §R3 — chase the delivery charge from the tracking page too, on the same
+      // gentle cadence, until we have it (the status API never carries it, so
+      // without this the SF Charge column stays empty until a delivered webhook).
+      const wantsCharge =
+        fresh.courierCostActual == null && sinceCheck >= TRACKING_CHECK_MIN_GAP_MS;
       // Rider hunting only makes sense while the parcel is In Transit and no
       // rider is known yet (PENDING / legacy-null sub-state, §6m).
       const wantsRider =
@@ -334,13 +359,23 @@ export async function runSteadfastPoll(opts?: {
       if (
         trackingUrl &&
         summary.trackingChecked < TRACKING_CHECKS_PER_RUN &&
-        (opts?.shipmentId ? true : wantsWeight || wantsRider)
+        (opts?.shipmentId ? true : wantsWeight || wantsCharge || wantsRider)
       ) {
         summary.trackingChecked += 1;
         const info = await fetchPublicTracking(trackingUrl);
-        // §6m — a rider on the page flips PENDING → ASSIGNED. Never overwrite
-        // rider info a webhook/API payload already provided.
-        const foundRider = info?.riderName != null && fresh.riderName == null;
+        // §6m/§R2 — a REAL rider on the page (name + phone, already enforced by
+        // fetchPublicTracking) flips PENDING → ASSIGNED. Never overwrite rider
+        // info a webhook/API payload already provided.
+        const foundRider =
+          info?.riderName != null &&
+          info.riderPhone != null &&
+          fresh.riderName == null;
+        // §R3 — record the counted charge as the real courier cost, but never
+        // clobber a value a webhook/API already set (that one is authoritative).
+        const foundCharge =
+          info?.deliveryCharge != null &&
+          info.deliveryCharge > 0 &&
+          fresh.courierCostActual == null;
         await prisma.shipment.update({
           where: { id: s.id },
           data: {
@@ -350,6 +385,9 @@ export async function runSteadfastPoll(opts?: {
             trackingUrl: info?.publicTrackingLink ?? trackingUrl,
             ...(info?.weightKg != null && info.weightKg > 0
               ? { steadfastWeightKg: info.weightKg }
+              : {}),
+            ...(foundCharge
+              ? { courierCostActual: Math.round(info!.deliveryCharge! * 100) / 100 }
               : {}),
             ...(foundRider
               ? {

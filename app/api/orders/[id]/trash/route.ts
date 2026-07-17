@@ -30,7 +30,13 @@ export async function POST(req: Request, { params }: Params) {
     if (!order) {
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
     }
-    if (!TRASHABLE_STATUSES.includes(order.status)) {
+    // CORRECTIONS Orders §R5 — Admin can trash from ANY status with the dedicated
+    // override permission (an escape hatch for Steadfast mishaps). Physically-out
+    // stock is left deducted (releaseOrderStock below only releases reservations),
+    // which is correct: the goods really are gone/with the courier. Everyone else
+    // is still held to the normal trashable set.
+    const isOverride = !TRASHABLE_STATUSES.includes(order.status);
+    if (isOverride && !permissions.includes("orders.courier_override")) {
       throw new AuthzError(
         400,
         `A ${ORDER_STATUS_LABELS[order.status]} order cannot be trashed — ` +
@@ -60,11 +66,15 @@ export async function POST(req: Request, { params }: Params) {
     });
     await logAudit({
       userId: session.user.id,
-      action: "order.trash",
+      action: isOverride ? "order.trash_override" : "order.trash",
       entity: "orders",
       entityId: id,
       before: { orderNo: order.orderNo, status: order.status },
-      after: { deletedAt: new Date().toISOString(), retentionDays: TRASH_RETENTION_DAYS },
+      after: {
+        deletedAt: new Date().toISOString(),
+        retentionDays: TRASH_RETENTION_DAYS,
+        manualOverride: isOverride,
+      },
     });
     return NextResponse.json({ ok: true });
   } catch (e) {

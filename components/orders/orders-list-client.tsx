@@ -55,12 +55,14 @@ import {
   PackageCheck,
   Pencil,
   Printer,
+  RefreshCw,
+  ShieldAlert,
   Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DateFilter } from "@/components/ui/date-filter";
 import { detectPreset } from "@/lib/date-filter";
-import { money, formatDate } from "@/lib/format";
+import { money, formatDate, formatDateTime } from "@/lib/format";
 import {
   ALLOWED_TRANSITIONS,
   DELIVERY_ZONES,
@@ -77,8 +79,12 @@ import {
   COURIER_STAGE_STATUSES,
   COURIER_STATUSES,
   COURIER_STATUS_LABELS,
+  SHIPMENT_NEXT_STATUSES,
+  displayedCourierStatus,
   estimateCourierCost,
+  isOvercharged,
   type CourierStatusValue,
+  type ShipmentStatusValue,
   type ZoneRate,
 } from "@/lib/courier-constants";
 import {
@@ -188,16 +194,71 @@ const COURIER_STATUS_BADGE: Record<CourierStatusValue, string> = {
   RETURN_APPROVAL_PENDING: "bg-orange-100 text-orange-800",
 };
 
+// §R2 — the badge takes the raw sub-state AND whether a real rider is on record,
+// so an ASSIGNED-with-no-rider row still reads "Pending" (never fakes Assigned).
 function CourierStatusBadge({
   status,
+  hasRider,
 }: {
   status: CourierStatusValue | null;
+  hasRider: boolean;
 }) {
-  const s = status ?? "PENDING";
+  const s = displayedCourierStatus(status, hasRider);
   return (
     <Badge variant="outline" className={cn("whitespace-nowrap", COURIER_STATUS_BADGE[s])}>
       {COURIER_STATUS_LABELS[s]}
     </Badge>
+  );
+}
+
+// §R5 — labels for the manual-override targets. RETURNED doubles as the
+// "cancelled delivery" outcome in the courier world (the parcel comes back).
+const OVERRIDE_TARGET_LABELS: Record<ShipmentStatusValue, string> = {
+  HANDED_TO_COURIER: "Handed to courier",
+  IN_TRANSIT: "In transit",
+  DELIVERED: "Delivered",
+  RETURNED: "Returned / Cancelled",
+};
+
+// §R4 — our estimate vs Steadfast's counted figure, shown as two stacked
+// sub-values in the Weight and Delivery Charge columns. Steadfast's number turns
+// red (with ⚠) once it exceeds ours by more than the configured tolerance, so
+// overcharging is caught at a glance. "SF: —" until Steadfast reports its figure.
+function OursVsSf({
+  ours,
+  sf,
+  tolerancePct,
+  format,
+  hint,
+}: {
+  ours: number | null;
+  sf: number | null;
+  tolerancePct: number;
+  format: (n: number) => string;
+  hint: string;
+}) {
+  const over = isOvercharged(ours, sf, tolerancePct);
+  return (
+    <div className="leading-tight" title={hint}>
+      <div className="text-muted-foreground">
+        Ours: {ours != null ? format(ours) : "—"}
+      </div>
+      <div
+        className={
+          over ? "font-semibold text-red-600 dark:text-red-400" : undefined
+        }
+      >
+        SF:{" "}
+        {sf != null ? (
+          <>
+            {format(sf)}
+            {over && " ⚠"}
+          </>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -238,6 +299,9 @@ export function OrdersListClient({
   canCreate,
   canManageCourier,
   steadfastEnabled,
+  steadfastLastSyncAt,
+  canCourierOverride,
+  overchargeTolerancePct,
   canTrash,
   canEditOrders,
   canCancelOrders,
@@ -261,6 +325,9 @@ export function OrdersListClient({
   canCreate: boolean;
   canManageCourier: boolean; // courier.manage — may send to Steadfast
   steadfastEnabled: boolean; // integration on
+  steadfastLastSyncAt: string | null; // §R1 — last poll-sync time for the hint
+  canCourierOverride: boolean; // §R5 — manual courier overrides + trash-any (Admin)
+  overchargeTolerancePct: number; // §R4 — Ours-vs-SF overcharge highlight tolerance
   canTrash: boolean; // orders.trash — trash/restore + sees the Trash tab (§6e/§6f)
   canEditOrders: boolean; // orders.edit
   canCancelOrders: boolean; // orders.cancel
@@ -613,6 +680,80 @@ export function OrdersListClient({
     }
   }
 
+  // ---- §R1: per-tab "Sync now" — refresh every parcel in the Handed to
+  // Courier / In Transit tab from Steadfast (force past the poll interval). ----
+  const [syncingTab, setSyncingTab] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(
+    steadfastLastSyncAt
+  );
+
+  async function syncTab() {
+    if (!tabStatus || syncingTab) return;
+    setSyncingTab(true);
+    try {
+      const res = await fetch("/api/couriers/steadfast/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ statuses: [tabStatus], force: true }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        toast.error(data?.error ?? "Sync failed");
+        return;
+      }
+      setLastSyncedAt(new Date().toISOString());
+      toast.success(
+        `Synced — ${data.polled} parcel${data.polled === 1 ? "" : "s"} checked, ${data.changed} updated`
+      );
+      router.refresh();
+    } finally {
+      setSyncingTab(false);
+    }
+  }
+
+  // ---- §R5: Admin manual courier override — correct a shipment status by hand
+  // (fires the normal side effects; stamped "manual override by <admin>"). ----
+  const [override, setOverride] = useState<{
+    order: OrderRow;
+    to: ShipmentStatusValue;
+  } | null>(null);
+  const [overrideReason, setOverrideReason] = useState("");
+  const [overrideBusy, setOverrideBusy] = useState(false);
+
+  async function confirmOverride() {
+    if (!override || overrideBusy) return;
+    const shipmentId = override.order.shipment?.id;
+    if (!shipmentId) {
+      toast.error("This order has no courier shipment to override");
+      return;
+    }
+    setOverrideBusy(true);
+    try {
+      const res = await fetch(`/api/shipments/${shipmentId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          to: override.to,
+          manualOverride: true,
+          note: overrideReason.trim() || null,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        toast.error(data?.error ?? "Override failed");
+        return;
+      }
+      toast.success(
+        `${override.order.orderNo} → ${OVERRIDE_TARGET_LABELS[override.to]} (manual override)`
+      );
+      setOverride(null);
+      setOverrideReason("");
+      router.refresh();
+    } finally {
+      setOverrideBusy(false);
+    }
+  }
+
   // ---- Items dialog (§6c): the "+N more" chip opens the full list ----
   const [itemsOrder, setItemsOrder] = useState<OrderRow | null>(null);
 
@@ -958,6 +1099,29 @@ export function OrdersListClient({
           </div>
         )}
 
+        {/* §R1 — per-tab "Sync now": pull the latest Steadfast status/data for
+            every parcel in the Handed to Courier / In Transit tab on demand. */}
+        {showCourierCols && canManageCourier && steadfastEnabled && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 py-2">
+            <span className="text-xs text-muted-foreground">
+              {lastSyncedAt
+                ? `Last synced ${formatDateTime(lastSyncedAt)}`
+                : "Not synced yet this session"}
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={syncTab}
+              disabled={syncingTab}
+            >
+              <RefreshCw
+                className={cn("mr-1.5 size-3.5", syncingTab && "animate-spin")}
+              />
+              {syncingTab ? "Syncing…" : "Sync now"}
+            </Button>
+          </div>
+        )}
+
         {/* Bulk action bar — status change (§6g), invoice print (§6h), Steadfast (§2) */}
         {showCheckboxes && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/40 px-3 py-2">
@@ -1054,10 +1218,14 @@ export function OrdersListClient({
               {showCourierCols && <TableHead>Consignment ID</TableHead>}
               {showCourierCols && <TableHead>Tracking</TableHead>}
               {showChargeCol && (
-                <TableHead className="text-right">SF Charge</TableHead>
+                <TableHead className="text-right">
+                  Charge <span className="font-normal text-muted-foreground">(ours / SF)</span>
+                </TableHead>
               )}
               {isTransitTab && (
-                <TableHead className="text-right">Weight</TableHead>
+                <TableHead className="text-right">
+                  Weight <span className="font-normal text-muted-foreground">(ours / SF)</span>
+                </TableHead>
               )}
               {/* §6n: Returned sub-state + receive action */}
               {isReturnedTab && <TableHead>Return</TableHead>}
@@ -1233,10 +1401,14 @@ export function OrdersListClient({
                   )}
                 </TableCell>
                 )}
-                {/* Courier Status (§6m) — the 4-value sub-state */}
+                {/* Courier Status (§6m/§R2) — the 4-value sub-state; ASSIGNED
+                    shows only with a real rider on record */}
                 {isTransitTab && (
                   <TableCell>
-                    <CourierStatusBadge status={o.shipment?.courierStatus ?? null} />
+                    <CourierStatusBadge
+                      status={o.shipment?.courierStatus ?? null}
+                      hasRider={!!o.shipment?.riderName}
+                    />
                   </TableCell>
                 )}
                 {/* Rider Info (§6m) — "Unassigned" until Steadfast assigns */}
@@ -1286,42 +1458,40 @@ export function OrdersListClient({
                     )}
                   </TableCell>
                 )}
-                {/* Steadfast Delivery Charge (§6l) — the ACTUAL charge from the
-                    webhook/API; "—" until it arrives (estimate in the tooltip) */}
+                {/* Steadfast Delivery Charge (§6l/§R4) — our zone+weight estimate
+                    vs the actual charge Steadfast counted; SF flagged when it
+                    exceeds ours beyond the tolerance */}
                 {showChargeCol && (
-                  <TableCell className="text-right">
-                    {o.shipment?.steadfastDeliveryCharge != null ? (
-                      money(o.shipment.steadfastDeliveryCharge)
-                    ) : (
-                      <span
-                        className="text-muted-foreground"
-                        title={
-                          o.shipment?.courierCostEstimated != null
-                            ? `Estimate: ${money(o.shipment.courierCostEstimated)} — actual not received yet`
-                            : "No charge received yet"
-                        }
-                      >
-                        —
-                      </span>
-                    )}
+                  <TableCell className="text-right text-xs">
+                    <OursVsSf
+                      ours={o.shipment?.courierCostEstimated ?? null}
+                      sf={o.shipment?.steadfastDeliveryCharge ?? null}
+                      tolerancePct={overchargeTolerancePct}
+                      format={money}
+                      hint={
+                        o.shipment?.courierCostEstimated != null
+                          ? `এই parcel-এর charge ${money(o.shipment.courierCostEstimated)} হওয়ার কথা (our zone+weight estimate)`
+                          : "No estimate configured for this zone"
+                      }
+                    />
                   </TableCell>
                 )}
-                {/* Steadfast Weight (§6l) — the courier's figure; falls back to
-                    our own recorded weight with an "(ours)" marker */}
+                {/* Steadfast Weight (§6l/§R4) — our recorded weight vs Steadfast's
+                    counted weight; SF flagged when heavier than ours beyond the
+                    tolerance */}
                 {isTransitTab && (
                   <TableCell className="whitespace-nowrap text-right text-xs">
-                    {o.shipment?.steadfastWeightKg != null ? (
-                      `${o.shipment.steadfastWeightKg} kg`
-                    ) : o.shipment?.weightKg != null ? (
-                      <span
-                        className="text-muted-foreground"
-                        title="Our recorded weight — Steadfast's figure not received yet"
-                      >
-                        {o.shipment.weightKg} kg (ours)
-                      </span>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
+                    <OursVsSf
+                      ours={o.shipment?.weightKg ?? null}
+                      sf={o.shipment?.steadfastWeightKg ?? null}
+                      tolerancePct={overchargeTolerancePct}
+                      format={(n) => `${n} kg`}
+                      hint={
+                        o.shipment?.weightKg != null
+                          ? `এই parcel-এর weight ${o.shipment.weightKg} kg হওয়ার কথা (from the order items)`
+                          : "No recorded weight for this order"
+                      }
+                    />
                   </TableCell>
                 )}
                 {/* Return (§6n): receive action while pending, stamp once done */}
@@ -1419,6 +1589,44 @@ export function OrdersListClient({
                           </Link>
                         </Button>
                       )}
+                      {/* §R5 — Admin manual courier override on the courier-stage
+                          tabs: force the shipment to a corrected status by hand */}
+                      {canCourierOverride &&
+                        (isHandedTab || isTransitTab) &&
+                        o.shipment?.id != null && (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="size-7 text-muted-foreground hover:text-amber-600"
+                                title="Manual status override (Admin)"
+                              >
+                                <ShieldAlert className="size-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuLabel>
+                                Override {o.orderNo} to
+                              </DropdownMenuLabel>
+                              {(
+                                SHIPMENT_NEXT_STATUSES[
+                                  o.status as ShipmentStatusValue
+                                ] ?? []
+                              ).map((to) => (
+                                <DropdownMenuItem
+                                  key={to}
+                                  onClick={() => {
+                                    setOverrideReason("");
+                                    setOverride({ order: o, to });
+                                  }}
+                                >
+                                  {OVERRIDE_TARGET_LABELS[to]}
+                                </DropdownMenuItem>
+                              ))}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        )}
                       {canTrash && (
                         <Button
                           size="icon"
@@ -1427,9 +1635,14 @@ export function OrdersListClient({
                           title={
                             TRASHABLE_STATUSES.includes(o.status)
                               ? "Move to trash"
-                              : "This status cannot be trashed"
+                              : canCourierOverride
+                                ? "Trash (manual override — any status)"
+                                : "This status cannot be trashed"
                           }
-                          disabled={!TRASHABLE_STATUSES.includes(o.status)}
+                          disabled={
+                            !TRASHABLE_STATUSES.includes(o.status) &&
+                            !canCourierOverride
+                          }
                           onClick={() => setTrashOrder(o)}
                         >
                           <Trash2 className="size-4" />
@@ -1748,6 +1961,18 @@ export function OrdersListClient({
                 days, then it is deleted permanently.
               </DialogDescription>
             </DialogHeader>
+            {/* §R5 — trashing a status the normal rules block is a manual Admin
+                override: the physically-out stock is NOT restored (the goods are
+                with the courier / delivered), so warn before it happens. */}
+            {trashOrder && !TRASHABLE_STATUSES.includes(trashOrder.status) && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
+                <strong>Manual override:</strong> this{" "}
+                {ORDER_STATUS_LABELS[trashOrder.status]} order is past the normal
+                trash point. Any stock already sent out stays deducted (it is not
+                returned to inventory) — use this only to correct a Steadfast/data
+                mistake. The action is audit-logged.
+              </div>
+            )}
             <DialogFooter>
               <Button
                 variant="outline"
@@ -1758,6 +1983,50 @@ export function OrdersListClient({
               </Button>
               <Button variant="destructive" onClick={confirmTrash} disabled={trashBusy}>
                 {trashBusy ? "Trashing…" : "Move to Trash"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* §R5 — manual courier status override confirm (Admin). Fires the normal
+            side effects and stamps "manual override by <admin>" in history. */}
+        <Dialog
+          open={override !== null}
+          onOpenChange={(o) => !o && !overrideBusy && setOverride(null)}
+        >
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>
+                Override {override?.order.orderNo} →{" "}
+                {override ? OVERRIDE_TARGET_LABELS[override.to] : ""}
+              </DialogTitle>
+              <DialogDescription>
+                Manually move this parcel from{" "}
+                {override ? ORDER_STATUS_LABELS[override.order.status] : ""} to{" "}
+                {override ? OVERRIDE_TARGET_LABELS[override.to] : ""}. Stock, the
+                COD reconciliation queue and history all update as on a real
+                courier event, and the change is stamped “manual override by you”.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-1.5">
+              <Label className="text-xs">Reason (optional)</Label>
+              <Textarea
+                rows={2}
+                placeholder="e.g. Steadfast marked it wrong; parcel actually delivered"
+                value={overrideReason}
+                onChange={(e) => setOverrideReason(e.target.value)}
+              />
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setOverride(null)}
+                disabled={overrideBusy}
+              >
+                Cancel
+              </Button>
+              <Button onClick={confirmOverride} disabled={overrideBusy}>
+                {overrideBusy ? "Applying…" : "Apply override"}
               </Button>
             </DialogFooter>
           </DialogContent>

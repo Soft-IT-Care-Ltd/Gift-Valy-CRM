@@ -18,6 +18,7 @@ import {
   type ReturnSubTabValue,
 } from "@/lib/courier-constants";
 import { getSteadfastIntegration } from "@/lib/steadfast-integration";
+import { getCourierOverchargeTolerancePct } from "@/lib/settings";
 import { OrdersListClient } from "@/components/orders/orders-list-client";
 
 export const dynamic = "force-dynamic";
@@ -59,18 +60,28 @@ export default async function OrdersPage({
         : "pending"
       : null;
 
+  // §6m/§R2 — "Pending" collects everything not in a later sub-state: no
+  // shipment, no sub-state yet, an explicit PENDING, OR an ASSIGNED with no real
+  // rider on record (which displayedCourierStatus renders as Pending). "Assigned"
+  // therefore requires a stored rider, so the two always agree with the badge.
   const noShipmentOrNoSubState: Prisma.OrderWhereInput = {
     OR: [
       { shipment: { is: null } },
       { shipment: { is: { courierStatus: null } } },
       { shipment: { is: { courierStatus: "PENDING" } } },
+      { shipment: { is: { courierStatus: "ASSIGNED", riderName: null } } },
     ],
+  };
+  const assignedWithRider: Prisma.OrderWhereInput = {
+    shipment: { is: { courierStatus: "ASSIGNED", riderName: { not: null } } },
   };
   if (transitSub) {
     filters.push(
       transitSub === "PENDING"
         ? noShipmentOrNoSubState
-        : { shipment: { is: { courierStatus: transitSub } } }
+        : transitSub === "ASSIGNED"
+          ? assignedWithRider
+          : { shipment: { is: { courierStatus: transitSub } } }
     );
   }
   const returnedPendingWhere: Prisma.OrderWhereInput = {
@@ -88,7 +99,15 @@ export default async function OrdersPage({
     );
   }
 
-  const [orders, grouped, trashCount, transitGrouped, returnedPendingCount, returnedReceivedCount] =
+  const [
+    orders,
+    grouped,
+    trashCount,
+    transitGrouped,
+    transitAssignedNoRider,
+    returnedPendingCount,
+    returnedReceivedCount,
+  ] =
     await Promise.all([
       prisma.order.findMany({
         where: { AND: filters },
@@ -120,6 +139,21 @@ export default async function OrdersPage({
             _count: { _all: true },
           })
         : Promise.resolve(null),
+      // §R2 — ASSIGNED rows with no real rider are still "Pending" for the tabs;
+      // count them so they can be moved from the Assigned tally to Pending.
+      status === "IN_TRANSIT"
+        ? prisma.shipment.count({
+            where: {
+              courierStatus: "ASSIGNED",
+              riderName: null,
+              order: {
+                is: {
+                  AND: [...baseFilters, { status: "IN_TRANSIT" }, { deletedAt: null }],
+                },
+              },
+            },
+          })
+        : Promise.resolve(0),
       status === "RETURNED"
         ? prisma.order.count({
             where: { AND: [...baseFilters, { status: "RETURNED" }, returnedPendingWhere] },
@@ -147,6 +181,10 @@ export default async function OrdersPage({
       // No sub-state yet → Pending (§6m: pending = received at warehouse).
       transitSubCounts[g.courierStatus ?? "PENDING"] += g._count._all;
     }
+    // §R2 — an ASSIGNED row with no real rider isn't truly assigned: move it from
+    // the Assigned tally to Pending so the counts match the badge and filters.
+    transitSubCounts.ASSIGNED -= transitAssignedNoRider;
+    transitSubCounts.PENDING += transitAssignedNoRider;
     // Manual IN_TRANSIT orders without a shipment row belong to Pending too.
     const withShipment = transitGrouped.reduce((s, g) => s + g._count._all, 0);
     transitSubCounts.PENDING += Math.max(
@@ -170,11 +208,19 @@ export default async function OrdersPage({
           : Object.values(statusCounts).reduce((s, n) => s + (n ?? 0), 0);
 
   // "Send to Steadfast" on the CONFIRMED + PACKED tabs needs courier.manage +
-  // an enabled integration (STEADFAST_INTEGRATION.md §2 + CORRECTIONS §6j).
+  // an enabled integration (STEADFAST_INTEGRATION.md §2 + CORRECTIONS §6j). The
+  // integration also feeds the §R1 "Sync now" buttons' "last synced" hint.
   const canManageCourier = permissions.includes("courier.manage");
-  const steadfastEnabled = canManageCourier
-    ? ((await getSteadfastIntegration())?.isEnabled ?? false)
-    : false;
+  const integration = canManageCourier ? await getSteadfastIntegration() : null;
+  const steadfastEnabled = integration?.isEnabled ?? false;
+  const steadfastLastSyncAt = integration?.lastSyncAt
+    ? integration.lastSyncAt.toISOString()
+    : null;
+  // §R5 — manual courier-stage overrides + trash-from-any-status (Admin-only by
+  // default via the dedicated permission).
+  const canCourierOverride = permissions.includes("orders.courier_override");
+  // §R4 — overcharge alert tolerance for the Ours-vs-Steadfast comparison.
+  const overchargeTolerancePct = await getCourierOverchargeTolerancePct();
 
   // SE filter dropdown only for team/all scopes — an SE never sees other SEs.
   const scopeLevel = orderViewScope(permissions);
@@ -221,6 +267,9 @@ export default async function OrdersPage({
       canCreate={permissions.includes("orders.create")}
       canManageCourier={canManageCourier}
       steadfastEnabled={steadfastEnabled}
+      steadfastLastSyncAt={steadfastLastSyncAt}
+      canCourierOverride={canCourierOverride}
+      overchargeTolerancePct={overchargeTolerancePct}
       canTrash={canTrash}
       canEditOrders={permissions.includes("orders.edit")}
       canCancelOrders={permissions.includes("orders.cancel")}

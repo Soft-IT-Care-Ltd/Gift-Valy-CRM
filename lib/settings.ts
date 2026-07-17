@@ -1,10 +1,12 @@
 import { prisma } from "./db";
+import { DEFAULT_OVERCHARGE_TOLERANCE_PCT } from "./courier-constants";
 
 // SPEC §14 settings table — JSON values keyed by string. Missing keys fall
 // back to code defaults so no seed row is required.
 export const SETTING_KEYS = {
   orderEditWindowMinutes: "order_edit_window_minutes",
   onboardingExcludeDays: "onboarding_exclude_days",
+  courierOverchargeTolerancePct: "courier_overcharge_tolerance_pct",
 } as const;
 
 // SPEC §10 default onboarding grace: new joiners excluded from team aggregates
@@ -30,5 +32,15 @@ export async function getOnboardingExcludeDays(): Promise<number> {
   return getNumberSetting(
     SETTING_KEYS.onboardingExcludeDays,
     DEFAULT_ONBOARDING_EXCLUDE_DAYS
+  );
+}
+
+// CORRECTIONS Orders §R4 — how much higher Steadfast's counted weight/charge may
+// be than our own figure before the In Transit tab flags it as an overcharge
+// (percent). Admin sets it on the Courier page; default 10%.
+export async function getCourierOverchargeTolerancePct(): Promise<number> {
+  return getNumberSetting(
+    SETTING_KEYS.courierOverchargeTolerancePct,
+    DEFAULT_OVERCHARGE_TOLERANCE_PCT
   );
 }

@@ -46,6 +46,14 @@ export const PERMISSION_DEFS: PermissionDef[] = [
   { key: "orders.approve_edit", label: "Approve order edits", group: "Orders" },
   { key: "orders.cancel", label: "Cancel orders", group: "Orders" },
   { key: "orders.trash", label: "Trash & restore orders", group: "Orders" },
+  // CORRECTIONS Orders §R5 — manual courier-stage overrides (correct a status by
+  // hand when Steadfast is wrong) + trash from ANY status. Seeded to Admin only
+  // (the RBAC layer grants Admin every permission row); grant to others per user.
+  {
+    key: "orders.courier_override",
+    label: "Manual courier status overrides",
+    group: "Orders",
+  },
   { key: "orders.pack", label: "Packing queue & mark packed", group: "Orders" },
   { key: "invoice.generate", label: "Generate invoices", group: "Orders" },
   // Money

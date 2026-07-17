@@ -5,6 +5,10 @@ import { requirePermission, apiError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
 import { DELIVERY_ZONES } from "@/lib/order-constants";
 import { STEADFAST_COURIER_NAME } from "@/lib/steadfast-constants";
+import {
+  SETTING_KEYS,
+  getCourierOverchargeTolerancePct,
+} from "@/lib/settings";
 
 // CORRECTIONS Courier §1/§2 — the 3-zone courier cost rate table (base + per-kg
 // per zone) on the Courier page. Only Steadfast is exposed in the UI, but the
@@ -19,6 +23,9 @@ const rateSchema = z.object({
 
 const bodySchema = z.object({
   rates: z.array(rateSchema).max(DELIVERY_ZONES.length),
+  // §R4 — overcharge alert tolerance (percent). Optional so older clients that
+  // only send rates keep working.
+  overchargeTolerancePct: z.number().min(0).max(100).optional(),
 });
 
 async function steadfastCourierId(userId?: number): Promise<number> {
@@ -51,6 +58,7 @@ export async function GET() {
           perKgRate: r ? Number(r.perKgRate) : 0,
         };
       }),
+      overchargeTolerancePct: await getCourierOverchargeTolerancePct(),
     });
   } catch (e) {
     return apiError(e);
@@ -60,7 +68,7 @@ export async function GET() {
 export async function PUT(req: Request) {
   try {
     const session = await requirePermission("courier.manage");
-    const { rates } = bodySchema.parse(await req.json());
+    const { rates, overchargeTolerancePct } = bodySchema.parse(await req.json());
     const courierId = await steadfastCourierId(session.user.id);
 
     const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -74,6 +82,17 @@ export async function PUT(req: Request) {
             zone: r.zone,
             baseRate: round2(r.baseRate),
             perKgRate: round2(r.perKgRate),
+          },
+        });
+      }
+      // §R4 — persist the overcharge tolerance in the settings table (JSON value).
+      if (overchargeTolerancePct != null) {
+        await tx.setting.upsert({
+          where: { key: SETTING_KEYS.courierOverchargeTolerancePct },
+          update: { value: round2(overchargeTolerancePct) },
+          create: {
+            key: SETTING_KEYS.courierOverchargeTolerancePct,
+            value: round2(overchargeTolerancePct),
           },
         });
       }

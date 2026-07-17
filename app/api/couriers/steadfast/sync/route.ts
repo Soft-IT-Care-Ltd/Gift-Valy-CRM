@@ -6,9 +6,18 @@ import { runSteadfastPoll } from "@/lib/steadfast-sync";
 
 // Manual "Sync now" (STEADFAST_INTEGRATION.md §3B) — the polling fallback on
 // demand. Optional shipmentId drives the per-shipment refresh icon (ignores the
-// polling interval). Requires courier.manage.
+// polling interval). CORRECTIONS Orders §R1 — the order-list tab buttons pass
+// `statuses` (scope to Handed to Courier / In Transit) + `force` (ignore the
+// interval so the click always refreshes the whole tab). Requires courier.manage.
 const bodySchema = z
-  .object({ shipmentId: z.number().int().positive().optional() })
+  .object({
+    shipmentId: z.number().int().positive().optional(),
+    statuses: z
+      .array(z.enum(["HANDED_TO_COURIER", "IN_TRANSIT"]))
+      .min(1)
+      .optional(),
+    force: z.boolean().optional(),
+  })
   .optional();
 
 export async function POST(req: Request) {
@@ -17,7 +26,11 @@ export async function POST(req: Request) {
     const body = bodySchema.parse(await req.json().catch(() => ({})));
 
     const summary = await runSteadfastPoll(
-      body?.shipmentId ? { shipmentId: body.shipmentId } : undefined
+      body?.shipmentId
+        ? { shipmentId: body.shipmentId }
+        : body?.statuses
+          ? { statuses: body.statuses, force: body.force }
+          : undefined
     );
 
     await logAudit({

@@ -13,6 +13,12 @@
 // (Cloudflare block, HTML instead of JSON, timeout) returns null — the UI then
 // falls back to our own recorded weight with an "(ours)" marker.
 
+import {
+  DELIVERY_CHARGE_KEY,
+  findNumericField,
+  realRider,
+} from "./steadfast-constants";
+
 const TIMEOUT_MS = 12_000;
 
 // A plain server fetch can trip bot protection; send ordinary browser headers.
@@ -25,9 +31,10 @@ const PAGE_HEADERS: Record<string, string> = {
 
 export interface PublicTrackingInfo {
   weightKg: number | null;
+  deliveryCharge: number | null; // §R3 — the charge Steadfast counted, if shown
   codAmount: number | null;
   publicTrackingLink: string | null; // canonical link when the payload carries one
-  riderName: string | null; // "Assigned To" — consumed by the In Transit work (C6)
+  riderName: string | null; // "Assigned To" — real rider only (name + phone, §R2)
   riderPhone: string | null;
   currentHub: string | null;
   rawStatus: string | null;
@@ -44,6 +51,13 @@ function normalizeWeightKg(value: unknown): number | null {
 
 function str(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+// A finite non-null number, else null (blank strings / null / NaN all drop out).
+function numeric(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }
 
 export async function fetchPublicTracking(
@@ -69,6 +83,7 @@ export async function fetchPublicTracking(
       return m
         ? {
             weightKg: normalizeWeightKg(m[1]),
+            deliveryCharge: null,
             codAmount: null,
             publicTrackingLink: null,
             riderName: null,
@@ -88,15 +103,27 @@ export async function fetchPublicTracking(
 
     const rider = result.rider as Record<string, unknown> | null | undefined;
     const hub = result.currenthub as Record<string, unknown> | null | undefined;
+    // §R2 — only a real rider (name AND contact) counts as an assignment; a bare
+    // name (hub/placeholder) is dropped so it can't flip the parcel to Assigned.
+    const assigned = realRider({
+      name: str(rider?.name) ?? "",
+      phone:
+        str(rider?.phone) ?? str(rider?.contact) ?? str(rider?.mobile) ?? null,
+    });
+    // §R3 — the counted delivery charge. Prefer an explicit field on `result`,
+    // else mine the whole payload for any delivery-charge-shaped key.
+    const deliveryCharge =
+      numeric(result.delivery_charge) ??
+      numeric((result as { total_delivery_charge?: unknown }).total_delivery_charge) ??
+      findNumericField(body, DELIVERY_CHARGE_KEY);
     return {
       weightKg: normalizeWeightKg(result.weight),
-      codAmount:
-        result.cod_amount != null && Number.isFinite(Number(result.cod_amount))
-          ? Number(result.cod_amount)
-          : null,
+      deliveryCharge:
+        deliveryCharge != null && deliveryCharge >= 0 ? deliveryCharge : null,
+      codAmount: numeric(result.cod_amount),
       publicTrackingLink: str(result.public_tracking_link),
-      riderName: str(rider?.name),
-      riderPhone: str(rider?.phone),
+      riderName: assigned?.name ?? null,
+      riderPhone: assigned?.phone ?? null,
       currentHub: str(hub?.name),
       rawStatus: str(result.status),
     };

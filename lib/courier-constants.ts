@@ -63,6 +63,20 @@ export const COURIER_STATUS_LABELS: Record<CourierStatusValue, string> = {
   RETURN_APPROVAL_PENDING: "Return Approval Pending",
 };
 
+// CORRECTIONS Orders §R2 — "Assigned" is only real once an actual rider is on
+// record (name + contact). A shipment can carry courierStatus = ASSIGNED with no
+// rider only from pre-fix data or a mid-write race; treat that as still Pending
+// EVERYWHERE (badge, sub-tab filter, counts) so the warehouse-received state can
+// never masquerade as Assigned. The two approval sub-states are independent of
+// the rider and pass through untouched.
+export function displayedCourierStatus(
+  courierStatus: CourierStatusValue | null,
+  hasRider: boolean
+): CourierStatusValue {
+  if (courierStatus === "ASSIGNED" && !hasRider) return "PENDING";
+  return courierStatus ?? "PENDING";
+}
+
 // CORRECTIONS Orders §6n — the Returned tab's sub-tabs: Pending = the parcel is
 // on its way back (no stock change yet); Received = the Packaging team took it
 // in and ran the damage inspection (OK → stock, Damaged → damage log).
@@ -84,6 +98,24 @@ export interface ZoneRate {
   zone: "INSIDE_DHAKA" | "SUB_DHAKA" | "OUTSIDE_DHAKA";
   baseRate: number;
   perKgRate: number;
+}
+
+// CORRECTIONS Orders §R4 — "overcharge" alert tolerance. Steadfast's counted
+// weight/charge is flagged only when it exceeds our own figure by MORE than this
+// percentage, so tiny rounding differences don't cry wolf. Admin-configurable on
+// the Courier page (stored in the settings table); this is the code fallback.
+export const DEFAULT_OVERCHARGE_TOLERANCE_PCT = 10;
+
+// True when `actual` (Steadfast's number) exceeds `ours` (our estimate) by more
+// than `tolerancePct` %. Needs a positive baseline to compare against — with no
+// estimate there is nothing to be "over". Shared by the UI and any report.
+export function isOvercharged(
+  ours: number | null | undefined,
+  actual: number | null | undefined,
+  tolerancePct: number
+): boolean {
+  if (ours == null || ours <= 0 || actual == null) return false;
+  return actual > ours * (1 + Math.max(tolerancePct, 0) / 100);
 }
 
 // The courier cost ESTIMATE: base + per-kg × weight, rounded to paisa. Null when

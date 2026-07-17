@@ -77,11 +77,13 @@ export function SteadfastCourierClient({
   initial,
   logs,
   zoneRates,
+  overchargeTolerancePct,
   canManageKeys,
 }: {
   initial: SteadfastSettings;
   logs: StatusLogRow[];
   zoneRates: ZoneRateRow[];
+  overchargeTolerancePct: number;
   canManageKeys: boolean;
 }) {
   const router = useRouter();
@@ -111,6 +113,8 @@ export function SteadfastCourierClient({
     })
   );
   const [savingRates, setSavingRates] = useState(false);
+  // §R4 — overcharge alert tolerance (percent), edited alongside the zone rates.
+  const [tolerance, setTolerance] = useState(String(overchargeTolerancePct));
 
   async function save() {
     setSaving(true);
@@ -215,6 +219,10 @@ export function SteadfastCourierClient({
           baseRate: Math.max(Number(r.baseRate) || 0, 0),
           perKgRate: Math.max(Number(r.perKgRate) || 0, 0),
         })),
+        overchargeTolerancePct: Math.min(
+          Math.max(Number(tolerance) || 0, 0),
+          100
+        ),
       }),
     });
     setSavingRates(false);
@@ -404,15 +412,40 @@ export function SteadfastCourierClient({
               ))}
             </TableBody>
           </Table>
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-xs text-muted-foreground">
-              Estimate = base + per-kg × parcel weight (BOM item sum, editable
-              at send time).
-            </p>
+          {/* §R4 — overcharge alert tolerance: how far Steadfast's counted
+              weight/charge may exceed our estimate before the In Transit tab
+              flags it red. */}
+          <div className="flex flex-wrap items-end justify-between gap-3 border-t pt-4">
+            <div className="grid gap-1.5">
+              <Label htmlFor="overcharge-tol" className="text-sm">
+                Overcharge alert tolerance
+              </Label>
+              <div className="flex items-center gap-1.5">
+                <Input
+                  id="overcharge-tol"
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={1}
+                  className="w-24"
+                  value={tolerance}
+                  onChange={(e) => setTolerance(e.target.value)}
+                />
+                <span className="text-sm text-muted-foreground">%</span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Flag a parcel when Steadfast&apos;s weight or charge is more than
+                this % above our own figure.
+              </p>
+            </div>
             <Button onClick={saveRates} disabled={savingRates}>
               {savingRates ? "Saving…" : "Save rates"}
             </Button>
           </div>
+          <p className="text-xs text-muted-foreground">
+            Estimate = base + per-kg × parcel weight (BOM item sum, editable at
+            send time).
+          </p>
         </CardContent>
       </Card>
 
