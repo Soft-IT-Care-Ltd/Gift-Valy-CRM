@@ -1,4 +1,5 @@
 import path from "path";
+import { existsSync } from "fs";
 import { mkdir, writeFile } from "fs/promises";
 import PDFDocument from "pdfkit";
 import { Prisma, type Invoice } from "@prisma/client";
@@ -6,11 +7,17 @@ import { prisma } from "./db";
 import { logAudit } from "./audit";
 import { PAYMENT_METHOD_LABELS } from "./order-constants";
 import { getCurrencyForCountry } from "./currency";
+import { getInvoiceBranding } from "./settings";
 import {
   formatInCurrency,
   rateLine,
   type CurrencyDisplay,
 } from "./currency-constants";
+import {
+  DEFAULT_INVOICE_BRANDING,
+  brandingContactLine,
+  type InvoiceBranding,
+} from "./invoice-branding-constants";
 
 // ============ SPEC §5 — Invoice PDF generation & versioning ============
 // Auto-generated on order confirmation; regenerated (version N+1) when an
@@ -23,17 +30,12 @@ import {
 // cut line at the middle; bulk print (§6h) fills each A4 page with two
 // invoices, one per half, cut line between them.
 
-// Owner-editable letterhead. The logo box stays a placeholder until a real
-// logo file exists — drop one in and swap drawLogoPlaceholder for doc.image.
-const COMPANY = {
-  name: "Gift Valy",
-  taglineBn: "প্রবাসীর ভালোবাসা, প্রিয়জনের দুয়ারে",
-  contactLine: "WhatsApp: +880 1XXX-XXXXXX  ·  facebook.com/giftvaly  ·  Dhaka, Bangladesh",
-};
-
-// Condensed to one line each — the half-A4 slot has no room for a terms list.
-const FOOTER_TERMS_LINE =
-  "ডেলিভারির সময় বাকি টাকা (COD) পরিশোধযোগ্য  ·  অর্ডার নিশ্চিত হওয়ার পর অগ্রিম ফেরতযোগ্য নয়  ·  পণ্য গ্রহণের সময় প্যাকেজ খুলে মিলিয়ে নিন  ·  কম্পিউটারে তৈরি ইনভয়েস, স্বাক্ষরের প্রয়োজন নেই";
+// CORRECTIONS §R9 — the letterhead/footer content is Admin-editable (Settings →
+// Business / Invoice, stored under the invoice_branding settings key). The old
+// hard-coded strings live on as DEFAULT_INVOICE_BRANDING, so an untouched
+// install renders exactly as before. Callers load the branding once
+// (getInvoiceBranding) and pass it into the render functions — new invoices
+// pick up a settings change immediately.
 
 const FONT_DIR = path.join(process.cwd(), "public", "fonts");
 const FONT_REGULAR = path.join(FONT_DIR, "NotoSansBengali-Regular.ttf");
@@ -107,6 +109,33 @@ function drawLogoPlaceholder(doc: Doc, x: number, y: number, size: number) {
     .text("GV", x, y + size / 2 - size * 0.3, { width: size, align: "center" });
 }
 
+// §R9 — the uploaded logo (PNG/JPEG under public/uploads, path re-validated
+// here) fits into a wider box than the square placeholder so wordmark-style
+// logos stay legible. Any read/decode failure falls back to the placeholder —
+// a bad file must never block an invoice. Returns the x where the company
+// text column starts.
+const LOGO_BOX_W = 64;
+const LOGO_BOX_H = 30;
+
+function drawLogo(doc: Doc, branding: InvoiceBranding, x: number, y: number): number {
+  if (branding.logoUrl) {
+    const uploadsDir = path.join(process.cwd(), "public", "uploads");
+    const file = path.resolve(
+      path.join(process.cwd(), "public", branding.logoUrl)
+    );
+    if (file.startsWith(uploadsDir + path.sep) && existsSync(file)) {
+      try {
+        doc.image(file, x, y, { fit: [LOGO_BOX_W, LOGO_BOX_H] });
+        return x + LOGO_BOX_W + 8;
+      } catch {
+        // fall through to the placeholder
+      }
+    }
+  }
+  drawLogoPlaceholder(doc, x, y, 30);
+  return x + 38;
+}
+
 // Dashed cut line at the page middle — scissors glyphs are outside the Bangla
 // font, so a labelled dash line marks the cut instead (§6i).
 function drawCutLine(doc: Doc) {
@@ -134,7 +163,8 @@ function drawInvoiceHalf(
   order: InvoiceOrder,
   version: number,
   currency: CurrencyDisplay | null | undefined,
-  top: number // 0 for the upper half, HALF_H for the lower
+  top: number, // 0 for the upper half, HALF_H for the lower
+  branding: InvoiceBranding
 ) {
   const x0 = SLOT_MARGIN;
   const x1 = PAGE_W - SLOT_MARGIN;
@@ -142,16 +172,32 @@ function drawInvoiceHalf(
   const slotBottom = top + HALF_H - 16;
   let y = top + 18;
 
-  // ---- Header: logo + company vs INVOICE meta ----
-  drawLogoPlaceholder(doc, x0, y, 30);
-  const companyX = x0 + 38;
-  doc.font("bn-b").fontSize(13).fillColor(BRAND).text(COMPANY.name, companyX, y - 1);
+  // ---- Header: logo + company vs INVOICE meta (§R9 — all from settings) ----
+  const companyX = drawLogo(doc, branding, x0, y);
+  const companyW = x1 - 180 - companyX - 6; // stop before the INVOICE meta box
+  doc
+    .font("bn-b")
+    .fontSize(13)
+    .fillColor(BRAND)
+    .text(branding.businessName, companyX, y - 1, {
+      width: companyW,
+      height: 16,
+      ellipsis: true,
+    });
   doc
     .font("bn")
     .fontSize(6.5)
     .fillColor(MUTED)
-    .text(COMPANY.taglineBn, companyX, y + 16)
-    .text(COMPANY.contactLine, companyX, y + 25);
+    .text(branding.tagline, companyX, y + 16, {
+      width: companyW,
+      height: 9,
+      ellipsis: true,
+    })
+    .text(brandingContactLine(branding), companyX, y + 25, {
+      width: companyW,
+      height: 9,
+      ellipsis: true,
+    });
 
   const metaW = 180;
   const metaX = x1 - metaW;
@@ -420,44 +466,47 @@ function drawInvoiceHalf(
       });
   }
 
-  // ---- Footer: one-line terms + brand line, pinned to the slot bottom ----
+  // ---- Footer: one-line terms + brand line, pinned to the slot bottom
+  // (§R9 — both lines from settings; a blank line simply drops out) ----
   doc
     .moveTo(x0, slotBottom - 16)
     .lineTo(x1, slotBottom - 16)
     .lineWidth(0.4)
     .stroke(BORDER);
-  doc
-    .font("bn")
-    .fontSize(5.5)
-    .fillColor(MUTED)
-    .text(FOOTER_TERMS_LINE, x0, slotBottom - 13, {
-      width: W,
-      height: 7,
-      ellipsis: true,
-      align: "center",
-    });
-  doc
-    .font("bn-b")
-    .fontSize(6.5)
-    .fillColor(BRAND)
-    .text(
-      `${COMPANY.name} — আপনার ভালোবাসা পৌঁছে দিতে পেরে আমরা আনন্দিত`,
-      x0,
-      slotBottom - 5,
-      { width: W, align: "center" }
-    );
+  if (branding.footerText) {
+    doc
+      .font("bn")
+      .fontSize(5.5)
+      .fillColor(MUTED)
+      .text(branding.footerText, x0, slotBottom - 13, {
+        width: W,
+        height: 7,
+        ellipsis: true,
+        align: "center",
+      });
+  }
+  const brandLine = [branding.businessName, branding.thankYouLine]
+    .filter(Boolean)
+    .join(" — ");
+  if (brandLine) {
+    doc
+      .font("bn-b")
+      .fontSize(6.5)
+      .fillColor(BRAND)
+      .text(brandLine, x0, slotBottom - 5, { width: W, align: "center" });
+  }
 }
 
 // ---------- document assembly ----------
 
-function createDoc(title: string): Doc {
+function createDoc(title: string, author: string): Doc {
   // font in the constructor: skips pdfkit's default Helvetica (AFM) load,
   // so Noto Sans Bengali is the only font ever touched.
   const doc = new PDFDocument({
     size: "A4",
     margin: 0,
     font: FONT_REGULAR,
-    info: { Title: title, Author: COMPANY.name },
+    info: { Title: title, Author: author },
   });
   doc.registerFont("bn", FONT_REGULAR);
   doc.registerFont("bn-b", FONT_BOLD);
@@ -478,13 +527,20 @@ function docToBuffer(doc: Doc): Promise<Buffer> {
 // stays blank for the scissors.
 // currency (SPEC §5, optional): when the customer's country matches a row in
 // the Admin rate table, totals also show approximate customer-currency values.
+// §R9 — branding is optional on the render functions (defaults keep old
+// callers/tests working) but every production caller loads it via
+// getInvoiceBranding() so a settings change reaches the very next PDF.
 export async function renderInvoicePdf(
   order: InvoiceOrder,
   version: number,
-  currency?: CurrencyDisplay | null
+  currency?: CurrencyDisplay | null,
+  branding: InvoiceBranding = DEFAULT_INVOICE_BRANDING
 ): Promise<Buffer> {
-  const doc = createDoc(`Invoice ${order.orderNo} v${version}`);
-  drawInvoiceHalf(doc, order, version, currency, 0);
+  const doc = createDoc(
+    `Invoice ${order.orderNo} v${version}`,
+    branding.businessName
+  );
+  drawInvoiceHalf(doc, order, version, currency, 0, branding);
   drawCutLine(doc);
   return docToBuffer(doc);
 }
@@ -498,15 +554,26 @@ export interface BatchInvoiceEntry {
 // Bulk print (§6h): one PDF, two invoices per A4 page (§6i), cut line between
 // them — 20 selected orders come out as 10 sheets.
 export async function renderInvoiceBatchPdf(
-  entries: BatchInvoiceEntry[]
+  entries: BatchInvoiceEntry[],
+  branding: InvoiceBranding = DEFAULT_INVOICE_BRANDING
 ): Promise<Buffer> {
   if (entries.length === 0) throw new Error("No invoices to render");
-  const doc = createDoc(`Invoices — ${entries.length} orders`);
+  const doc = createDoc(
+    `Invoices — ${entries.length} orders`,
+    branding.businessName
+  );
   entries.forEach((entry, i) => {
     const slot = i % 2;
     if (i > 0 && slot === 0) doc.addPage();
     if (slot === 0) drawCutLine(doc);
-    drawInvoiceHalf(doc, entry.order, entry.version, entry.currency, slot * HALF_H);
+    drawInvoiceHalf(
+      doc,
+      entry.order,
+      entry.version,
+      entry.currency,
+      slot * HALF_H,
+      branding
+    );
   });
   return docToBuffer(doc);
 }
@@ -542,6 +609,7 @@ export async function generateInvoice(
 ): Promise<Invoice> {
   const order = await loadInvoiceOrder(orderId);
   const currency = await getCurrencyForCountry(order.customer.country);
+  const branding = await getInvoiceBranding();
   for (let attempt = 0; ; attempt++) {
     const last = await prisma.invoice.findFirst({
       where: { orderId },
@@ -549,7 +617,7 @@ export async function generateInvoice(
       select: { version: true },
     });
     const version = (last?.version ?? 0) + 1;
-    const pdf = await renderInvoicePdf(order, version, currency);
+    const pdf = await renderInvoicePdf(order, version, currency, branding);
     const fileName = invoiceFileName(order.orderNo, version);
     await mkdir(INVOICE_DIR, { recursive: true });
     await writeFile(path.join(INVOICE_DIR, fileName), pdf);

@@ -5,6 +5,11 @@ import {
   DEFAULT_STUCK_RED_DAYS,
 } from "./courier-constants";
 import { DEFAULT_OCCASION_LEAD_DAYS } from "./occasion-constants";
+import {
+  INVOICE_BRANDING_KEY,
+  normalizeInvoiceBranding,
+  type InvoiceBranding,
+} from "./invoice-branding-constants";
 
 // SPEC §14 settings table — JSON values keyed by string. Missing keys fall
 // back to code defaults so no seed row is required.
@@ -76,6 +81,16 @@ export async function getCourierStuckThresholds(): Promise<StuckThresholds> {
     getNumberSetting(SETTING_KEYS.courierStuckRedDays, DEFAULT_STUCK_RED_DAYS),
   ]);
   return { amberDays, redDays: Math.max(redDaysRaw, amberDays) };
+}
+
+// CORRECTIONS §R9 — the invoice letterhead/footer branding. Missing row or
+// fields → the historical hard-coded look (DEFAULT_INVOICE_BRANDING), so
+// invoices render identically until Admin edits the settings.
+export async function getInvoiceBranding(): Promise<InvoiceBranding> {
+  const row = await prisma.setting.findUnique({
+    where: { key: INVOICE_BRANDING_KEY },
+  });
+  return normalizeInvoiceBranding(row?.value ?? null);
 }
 
 // CORRECTIONS Orders §R8 — the Steadfast payout wallet. Returns null when unset

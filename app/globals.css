@@ -249,4 +249,19 @@
   html {
     @apply font-sans;
   }
+
+  /* CORRECTIONS §R11 — big-monitor readability: every Tailwind size/space is
+     rem-based, so nudging the root font scales typography AND spacing
+     proportionally on large desktops instead of leaving tiny text in a sea of
+     whitespace. */
+  @media (min-width: 1920px) {
+    html {
+      font-size: 17px;
+    }
+  }
+  @media (min-width: 2400px) {
+    html {
+      font-size: 18px;
+    }
+  }
 }

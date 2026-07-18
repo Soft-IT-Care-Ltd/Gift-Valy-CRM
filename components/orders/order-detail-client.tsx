@@ -522,7 +522,7 @@ export function OrderDetailClient({
   }
 
   return (
-    <div className="mx-auto grid max-w-5xl gap-4">
+    <div className="grid gap-4">
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="font-mono text-xl font-semibold">{order.orderNo}</h1>
         <StatusBadge status={order.status} />

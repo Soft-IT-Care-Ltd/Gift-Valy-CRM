@@ -25,7 +25,7 @@ export default async function AttendanceManagePage() {
   ]);
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5">
+    <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Attendance &amp; leave</h1>
