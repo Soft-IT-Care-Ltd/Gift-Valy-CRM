@@ -234,6 +234,8 @@ export default async function DashboardLayout({
       { href: "/settings/invoice", label: "Business / Invoice" },
       { href: "/settings/pnl", label: "P&L Settings" },
       { href: "/settings/attendance", label: "Attendance Settings" },
+      // CORRECTIONS §R10 — shifts + per-employee weekly roster.
+      { href: "/settings/roster", label: "Shifts & Roster" },
       { href: "/settings/whatsapp", label: "WhatsApp Invoice" },
       { href: "/settings/currencies", label: "Currency Rates" },
       // CORRECTIONS Orders §7 (C8) — occasion reminder lead time.

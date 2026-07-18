@@ -15,19 +15,21 @@ import {
 import { formatDateTime } from "@/lib/format";
 import {
   ATTENDANCE_STATUS_LABELS,
+  describeDayPlan,
   type AttendanceRow,
-  type AttendanceSettings,
+  type DayPlan,
 } from "@/lib/attendance-constants";
 
-// SPEC §11 — the employee's check-in / check-out control. Buttons POST to the
-// server, which stamps the timestamp; the row (with auto Late/Half-day status)
-// comes back and the page refreshes.
+// SPEC §11 / R10 — the employee's check-in / check-out control. Buttons POST to
+// the server, which stamps the timestamp; the row (with auto Late/Half-day
+// status judged against the person's OWN shift) comes back and the page
+// refreshes. `plan` is today's resolved roster entry.
 export function CheckInCard({
   today,
-  settings,
+  plan,
 }: {
   today: AttendanceRow | null;
-  settings: Pick<AttendanceSettings, "officeStart" | "lateThreshold" | "officeEnd">;
+  plan: DayPlan;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -57,8 +59,9 @@ export function CheckInCard({
           <div>
             <CardTitle className="text-base">Today&apos;s attendance</CardTitle>
             <CardDescription>
-              Office hours {settings.officeStart}–{settings.officeEnd} · late after{" "}
-              {settings.lateThreshold} (Asia/Dhaka)
+              {plan.kind === "OFF"
+                ? `${describeDayPlan(plan)} — enjoy! A check-in still records your time.`
+                : `${describeDayPlan(plan)} (Asia/Dhaka)`}
             </CardDescription>
           </div>
           {today && (

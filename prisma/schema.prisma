@@ -44,6 +44,7 @@ model User {
   rewards            Reward[]                 @relation("UserRewards")
   attendance         Attendance[]             @relation("UserAttendance")
   leaveRequests      LeaveRequest[]           @relation("UserLeaves")
+  rosterAssignments  RosterAssignment[]       @relation("UserRoster")
   damageInspections  DamageLog[]              @relation("DamageInspections")
 
   @@map("users")
@@ -1436,4 +1437,54 @@ model LeaveRequest {
   @@index([userId])
   @@index([status])
   @@map("leave_requests")
+}
+
+// R10 — a named shift (Morning 09:00–17:00 …). Times are "HH:MM" Asia/Dhaka
+// wall-clock; the late/half-day thresholds are minutes AFTER the shift start so
+// they follow the shift wherever it moves. halfDayAfterMin null disables the
+// half-day rule for that shift. Deactivated shifts stay resolvable for history
+// but can't be picked in the roster grid.
+model Shift {
+  id              Int      @id @default(autoincrement())
+  name            String   @unique
+  startTime       String   @map("start_time")
+  endTime         String   @map("end_time")
+  lateAfterMin    Int      @default(15) @map("late_after_min")
+  halfDayAfterMin Int?     @map("half_day_after_min")
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  createdBy       Int?     @map("created_by")
+  updatedBy       Int?     @map("updated_by")
+
+  rosterAssignments RosterAssignment[]
+
+  @@map("shifts")
+}
+
+// R10 — weekly roster, versioned by effective date. A "version" is the set of
+// rows sharing (userId, effectiveFrom); a date resolves against the LATEST
+// version on/before it, so history is preserved and changes apply only forward.
+// Within a version: shiftId set = that weekday's shift, shiftId NULL = off-day,
+// no row at all = fall back to the global office-hours default for that weekday.
+model RosterAssignment {
+  id            Int      @id @default(autoincrement())
+  userId        Int      @map("user_id")
+  effectiveFrom DateTime @map("effective_from") @db.Date
+  weekday       Int // 0=Sun … 6=Sat
+  shiftId       Int?     @map("shift_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  createdBy     Int?     @map("created_by")
+  updatedBy     Int?     @map("updated_by")
+
+  user  User   @relation("UserRoster", fields: [userId], references: [id], onDelete: Cascade)
+  // Restrict: NULL shiftId means "off-day", so a shift delete must never
+  // cascade into silently granting off-days — deactivate the shift instead.
+  shift Shift? @relation(fields: [shiftId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, effectiveFrom, weekday])
+  @@index([userId, effectiveFrom])
+  @@index([shiftId])
+  @@map("roster_assignments")
 }

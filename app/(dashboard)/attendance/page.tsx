@@ -1,11 +1,12 @@
 import { requirePagePermission } from "@/lib/page-auth";
 import {
   getTodayAttendance,
-  getAttendanceSettings,
+  resolveUserDayPlan,
   buildEmployeeMonthlySheet,
   getUserLeaveRequests,
 } from "@/lib/attendance";
 import {
+  dhakaYmd,
   monthKeyOf,
   serializeAttendance,
   serializeLeaveRequest,
@@ -31,9 +32,10 @@ export default async function AttendancePage() {
   const now = new Date();
   const monthKey = monthKeyOf(now);
 
-  const [today, settings, sheet, leaves] = await Promise.all([
+  const [today, plan, sheet, leaves] = await Promise.all([
     getTodayAttendance(session.user.id, now),
-    getAttendanceSettings(),
+    // R10 — today's plan from THEIR roster (shift / off-day / default hours).
+    resolveUserDayPlan(session.user.id, dhakaYmd(now)),
     buildEmployeeMonthlySheet(session.user.id, monthKey, now),
     getUserLeaveRequests(session.user.id),
   ]);
@@ -50,14 +52,15 @@ export default async function AttendancePage() {
 
       <CheckInCard
         today={today ? serializeAttendance(today) : null}
-        settings={settings}
+        plan={plan}
       />
 
       <Card>
         <CardHeader>
           <CardTitle className="text-base">{monthLabel(monthKey)}</CardTitle>
           <CardDescription>
-            Your month at a glance. Absent days are workdays with no check-in.
+            Your month at a glance. Absent days are your rostered workdays with
+            no check-in — off-days never count as absent.
           </CardDescription>
         </CardHeader>
         <CardContent>
