@@ -671,6 +671,7 @@ model Order {
   shipment         Shipment?
   whatsappMessages WhatsAppMessage[]
   damageLogs       DamageLog[]
+  steadfastPaymentItems SteadfastPaymentItem[]
 
   // List queries filter by scope/status/window and sort by created_at desc —
   // composite indexes keep them fast as data accumulates (SPEC-scale: years).
@@ -747,8 +748,9 @@ model Wallet {
   createdBy Int?       @map("created_by")
   updatedBy Int?       @map("updated_by")
 
-  payments Payment[]
-  expenses Expense[]
+  payments          Payment[]
+  expenses          Expense[]
+  steadfastPayments SteadfastPayment[]
 
   @@map("wallets")
 }
@@ -786,6 +788,7 @@ model Payment {
   // collections/wallets the moment it was trashed).
   order  Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   wallet Wallet? @relation(fields: [walletId], references: [id])
+  steadfastPaymentItems SteadfastPaymentItem[]
 
   @@index([orderId])
   @@index([walletId])
@@ -1055,6 +1058,7 @@ model Shipment {
   statusLogs     ShipmentStatusLog[]
   trackingEvents ShipmentTrackingEvent[]
   damageLogs     DamageLog[]
+  steadfastPaymentItems SteadfastPaymentItem[]
 
   @@index([status])
   @@index([courierId])
@@ -1152,10 +1156,94 @@ model CourierIntegration {
   connectedAt           DateTime?              @map("connected_at")
   lastSyncAt            DateTime?              @map("last_sync_at")
   lastWebhookAt         DateTime?              @map("last_webhook_at")
+  // CORRECTIONS Orders §R8 — the hourly payments poll runs on its own clock so
+  // the */15 status cron can host it without over-calling GET /payments.
+  lastPaymentsSyncAt    DateTime?              @map("last_payments_sync_at")
   createdAt             DateTime               @default(now()) @map("created_at")
   updatedAt             DateTime               @updatedAt @map("updated_at")
 
   @@map("courier_integrations")
+}
+
+// ============ CORRECTIONS Orders §R8 — Steadfast payment records ============
+
+// Their payout lifecycle: a requested payment sits in `processing` until the
+// money is disbursed, then flips to `paid`. Money side effects (order COD rows,
+// the two charge expenses, the wallet deposit) fire only at PAID.
+enum SteadfastPaymentStatus {
+  PROCESSING
+  PAID
+}
+
+// One row per Steadfast payment/payout invoice (GET /payments), e.g.
+// SFC-30699149. Amounts follow the invoice: amount_delivered = GROSS per-parcel
+// COD total; payable delivery charge + COD charge are deducted at source; the
+// NET is what lands in the bank. The GET /payments* response shapes are not
+// fully documented, so the FIRST raw list item and detail response are stored
+// verbatim (raw_payload / raw_detail_payload) for shape discovery, and every
+// field is parsed defensively (lib/steadfast-payments-constants.ts).
+// Reconciliation is idempotent: the *ExpenseId columns guard the two auto
+// expenses and reconciled_at stamps the first paid-side-effect run.
+model SteadfastPayment {
+  id                      Int                    @id @default(autoincrement())
+  steadfastPaymentId      BigInt                 @unique @map("steadfast_payment_id")
+  invoiceNo               String?                @map("invoice_no")
+  status                  SteadfastPaymentStatus @default(PROCESSING)
+  paymentDate             DateTime               @map("payment_date") // their invoice date (fallback: first seen)
+  paidAt                  DateTime?              @map("paid_at") // when WE first saw status=paid
+  amountDelivered         Decimal                @default(0) @map("amount_delivered") @db.Decimal(12, 2)
+  deliveryCharge          Decimal                @default(0) @map("delivery_charge") @db.Decimal(12, 2)
+  codCharge               Decimal                @default(0) @map("cod_charge") @db.Decimal(12, 2)
+  netAmount               Decimal                @default(0) @map("net_amount") @db.Decimal(12, 2)
+  availableBalance        Decimal?               @map("available_balance") @db.Decimal(12, 2)
+  parcelCount             Int                    @default(0) @map("parcel_count")
+  walletId                Int?                   @map("wallet_id") // bank wallet the NET was deposited into
+  reconciledAt            DateTime?              @map("reconciled_at")
+  deliveryChargeExpenseId Int?                   @map("delivery_charge_expense_id")
+  codChargeExpenseId      Int?                   @map("cod_charge_expense_id")
+  rawPayload              Json?                  @map("raw_payload")
+  rawDetailPayload        Json?                  @map("raw_detail_payload")
+  createdAt               DateTime               @default(now()) @map("created_at")
+  updatedAt               DateTime               @updatedAt @map("updated_at")
+
+  wallet Wallet?                @relation(fields: [walletId], references: [id])
+  items  SteadfastPaymentItem[]
+
+  @@index([status, paymentDate])
+  @@map("steadfast_payments")
+}
+
+// One cleared consignment inside a payment invoice (GET /payments/{id}):
+// per-parcel COD (GROSS — settles the order's due) + per-parcel bill (the real
+// delivery charge → shipment.courier_cost_actual). shipment/order are the match
+// (consignment_id first, invoice = our order_no as fallback); NULL = unmatched,
+// surfaced as a flagged list for manual review. order_payment_id links the
+// COD_COURIER payment row this item auto-created — the guard that makes replays
+// idempotent AND lets the dashboard separate payout-backed COD from manual COD.
+model SteadfastPaymentItem {
+  id             Int      @id @default(autoincrement())
+  paymentId      Int      @map("payment_id")
+  consignmentId  BigInt?  @map("consignment_id")
+  invoice        String?
+  codAmount      Decimal  @default(0) @map("cod_amount") @db.Decimal(12, 2)
+  deliveryCharge Decimal? @map("delivery_charge") @db.Decimal(12, 2) // their per-parcel "bill"
+  status         String?
+  shipmentId     Int?     @map("shipment_id")
+  orderId        Int?     @map("order_id")
+  orderPaymentId Int?     @map("order_payment_id")
+  rawPayload     Json?    @map("raw_payload")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  payment      SteadfastPayment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  shipment     Shipment?        @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+  order        Order?           @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  orderPayment Payment?         @relation(fields: [orderPaymentId], references: [id], onDelete: SetNull)
+
+  @@unique([paymentId, consignmentId])
+  @@index([shipmentId])
+  @@index([consignmentId])
+  @@map("steadfast_payment_items")
 }
 
 // SPEC §14 — key/value settings (edit-window minutes, packaging cost, …).

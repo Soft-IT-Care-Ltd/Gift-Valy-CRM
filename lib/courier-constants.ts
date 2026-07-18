@@ -88,6 +88,14 @@ export type ReturnSubTabValue = (typeof RETURN_SUB_TABS)[number];
 // the return courier charge both post here (SPEC §7 / §9.1, "Courier Charge").
 export const COURIER_EXPENSE_CATEGORY = "Courier Charge";
 
+// CORRECTIONS Orders §R8 — the two REAL charge lines a paid Steadfast payout
+// posts (numbers from the payment invoice, not estimates): the payable delivery
+// charge total and the ~1% COD fee. Kept apart from the legacy estimated
+// "Courier Charge" so net collection + these two lines always reconcile back to
+// the gross COD (net + charges = gross).
+export const COURIER_DELIVERY_CHARGE_EXPENSE_CATEGORY = "Courier Delivery Charge";
+export const COD_CHARGE_EXPENSE_CATEGORY = "COD Charge";
+
 // CORRECTIONS Orders §6n — damaged returns post their at-cost loss here so the
 // monthly P&L counts it as a variable operating cost automatically.
 export const DAMAGED_STOCK_EXPENSE_CATEGORY = "Damaged Stock";

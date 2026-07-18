@@ -97,6 +97,7 @@ export function serializeIntegration(
     connectedAt: integration?.connectedAt?.toISOString() ?? null,
     lastSyncAt: integration?.lastSyncAt?.toISOString() ?? null,
     lastWebhookAt: integration?.lastWebhookAt?.toISOString() ?? null,
+    lastPaymentsSyncAt: integration?.lastPaymentsSyncAt?.toISOString() ?? null,
   };
 }
 

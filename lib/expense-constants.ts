@@ -42,6 +42,9 @@ export const AUTO_EXPENSE_SOURCES: Record<
 > = {
   purchases: { label: "Purchase", href: "/purchases" },
   shipments: { label: "Courier", href: "/courier/shipments" },
+  // CORRECTIONS Orders §R8 — the two real charge lines a paid Steadfast payout
+  // auto-posts ("Courier Delivery Charge" + "COD Charge").
+  steadfast_payments: { label: "Steadfast payout", href: "/courier" },
 };
 
 export function autoExpenseSource(refTable: string | null): {

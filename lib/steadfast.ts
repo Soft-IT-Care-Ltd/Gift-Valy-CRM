@@ -244,3 +244,32 @@ export async function statusByInvoice(
   );
   return { deliveryStatus: res?.delivery_status ?? null, raw: res };
 }
+
+// ---------- payments (CORRECTIONS Orders §R8) ----------
+//
+// GET /payments (the payout list) and GET /payments/{payment_id} (one invoice
+// with its cleared consignments). The V1 doc names the endpoints but not the
+// response shapes, so both return the RAW body untyped — parsing happens in
+// lib/steadfast-payments-constants.ts (defensive key-pattern matching) and the
+// first real payloads are persisted on the steadfast_payments row for shape
+// discovery.
+
+export async function getPayments(
+  creds: SteadfastCreds,
+  page = 1
+): Promise<unknown> {
+  return steadfastFetch<unknown>(
+    creds,
+    page > 1 ? `/payments?page=${page}` : "/payments",
+    { method: "GET" }
+  );
+}
+
+export async function getPaymentDetail(
+  creds: SteadfastCreds,
+  paymentId: number | bigint
+): Promise<unknown> {
+  return steadfastFetch<unknown>(creds, `/payments/${paymentId}`, {
+    method: "GET",
+  });
+}

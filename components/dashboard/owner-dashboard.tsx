@@ -23,6 +23,7 @@ import { WhoIsInCard } from "@/components/attendance/who-is-in-card";
 import { StatTile } from "./stat-tile";
 import { DateRangeSwitch } from "./date-range-switch";
 import { CourierBalanceTile } from "./courier-balance-tile";
+import { CollectionSyncButton } from "./collection-sync-button";
 import { LineChart, Funnel, Donut, ProgressBar, chartColor } from "./charts";
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
@@ -34,17 +35,24 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 }
 
 // CORRECTIONS Dashboard §5 — one line of the Total Collection breakdown.
+// §R8: the Courier COD line carries an optional hover breakdown (gross −
+// charges = net) and a sub-caption — both supplied by the caller, which
+// cost-gates them.
 function CollectionLine({
   label,
   value,
   colorIdx,
+  sub,
+  title,
 }: {
   label: string;
   value: number;
   colorIdx: number;
+  sub?: string;
+  title?: string;
 }) {
   return (
-    <div className="rounded-lg border p-2.5">
+    <div className="rounded-lg border p-2.5" title={title}>
       <div className="flex items-center gap-1.5">
         <span
           className="size-2 shrink-0 rounded-full"
@@ -55,6 +63,11 @@ function CollectionLine({
       <div className="mt-1 text-base font-semibold tabular-nums">
         {money(value)}
       </div>
+      {sub && (
+        <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+          {sub}
+        </div>
+      )}
     </div>
   );
 }
@@ -138,17 +151,26 @@ export function OwnerDashboard({
               s.advanceCollection.count === 1 ? "" : "s"
             }`}
           />
-          {/* §6 Courier balance (live, client-fetched) */}
+          {/* §6 Courier balance (live, client-fetched) + §R8 latest payout */}
           <CourierBalanceTile
             enabled={s.courierEnabled}
             canManage={canManageCourier}
+            latestPayout={s.latestPayout}
           />
-          {/* §5 Total collection with source breakdown */}
+          {/* §5 Total collection with source breakdown. §R8: the Courier COD
+              line is the NET payout (what reached the bank); its gross/charge
+              breakdown is a COST view, hover-shown to cost-visible roles only.
+              The refresh icon triggers the payments sync in place. */}
           <Card className="sm:col-span-2">
             <CardContent className="p-4">
               <div className="flex items-baseline justify-between gap-2">
-                <div className="text-xs font-medium text-muted-foreground">
-                  Total collection
+                <div className="flex items-center gap-2">
+                  <div className="text-xs font-medium text-muted-foreground">
+                    Total collection
+                  </div>
+                  {canManageCourier && s.courierEnabled && (
+                    <CollectionSyncButton />
+                  )}
                 </div>
                 <div className="text-2xl font-bold tabular-nums">
                   {money(s.collection.total)}
@@ -164,6 +186,26 @@ export function OwnerDashboard({
                   label="Courier COD"
                   value={s.collection.cod}
                   colorIdx={1}
+                  sub={
+                    s.codBreakdown.payouts > 0
+                      ? `Net payout · ${s.codBreakdown.payouts} payout${
+                          s.codBreakdown.payouts === 1 ? "" : "s"
+                        } (${s.codBreakdown.parcels} parcels)`
+                      : "Net payout"
+                  }
+                  title={
+                    showCosts && s.codBreakdown.payouts > 0
+                      ? `Gross COD ${money(s.codBreakdown.grossSf)} − delivery charge ${money(
+                          s.codBreakdown.deliveryCharge
+                        )} − COD charge ${money(s.codBreakdown.codCharge)} = ${money(
+                          s.codBreakdown.netSf
+                        )}${
+                          s.codBreakdown.manualCod > 0
+                            ? ` · + manual COD ${money(s.codBreakdown.manualCod)}`
+                            : ""
+                        }`
+                      : undefined
+                  }
                 />
                 <CollectionLine
                   label="Post-delivery MFS"
