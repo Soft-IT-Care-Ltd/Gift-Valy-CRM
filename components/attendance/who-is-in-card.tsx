@@ -20,9 +20,17 @@ export function WhoIsInCard({
   data: WhoIsInToday;
   showLink?: boolean;
 }) {
-  const { entries, stillInCount, leftCount, onLeave, activeEmployeeCount } = data;
+  const {
+    entries,
+    stillInCount,
+    leftCount,
+    onLeave,
+    offToday,
+    activeEmployeeCount,
+  } = data;
+  // R10 — rostered off-days are their own bucket, never "not in yet"/absent.
   const notInYet = Math.max(
-    activeEmployeeCount - entries.length - onLeave.length,
+    activeEmployeeCount - entries.length - onLeave.length - offToday.length,
     0
   );
 
@@ -33,7 +41,7 @@ export function WhoIsInCard({
           <CardTitle className="text-base">Who&apos;s in today</CardTitle>
           <CardDescription>
             {stillInCount} in office · {leftCount} left · {onLeave.length} on leave ·{" "}
-            {notInYet} not in yet
+            {offToday.length} off today · {notInYet} not in yet
           </CardDescription>
         </div>
         {showLink && (
@@ -71,7 +79,8 @@ export function WhoIsInCard({
                   </div>
                   <div className="text-xs text-muted-foreground">
                     {e.roleName}
-                    {e.teamName ? ` · ${e.teamName}` : ""} · in{" "}
+                    {e.teamName ? ` · ${e.teamName}` : ""}
+                    {e.shiftName ? ` · ${e.shiftName} shift` : ""} · in{" "}
                     {formatDateTime(e.checkInAt)}
                     {e.checkOutAt ? ` · out ${formatDateTime(e.checkOutAt)}` : ""}
                   </div>
@@ -95,6 +104,11 @@ export function WhoIsInCard({
         {onLeave.length > 0 && (
           <p className="text-xs text-muted-foreground">
             On leave: {onLeave.map((u) => u.name).join(", ")}
+          </p>
+        )}
+        {offToday.length > 0 && (
+          <p className="text-xs text-muted-foreground">
+            Off today: {offToday.map((u) => u.name).join(", ")}
           </p>
         )}
       </CardContent>

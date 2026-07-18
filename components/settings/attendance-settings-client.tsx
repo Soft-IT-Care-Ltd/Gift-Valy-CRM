@@ -66,8 +66,9 @@ export function AttendanceSettingsClient({
       <div>
         <h1 className="text-2xl font-semibold">Attendance settings</h1>
         <p className="text-sm text-muted-foreground">
-          Office hours and thresholds that auto-flag Late, Half-day and Absent
-          (times in Asia/Dhaka).
+          Default office hours and thresholds that auto-flag Late, Half-day and
+          Absent (times in Asia/Dhaka). R10: these apply to anyone without a
+          roster — per-employee shifts live in Shifts &amp; Roster.
         </p>
       </div>
 

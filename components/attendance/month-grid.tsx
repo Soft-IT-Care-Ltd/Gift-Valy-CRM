@@ -65,6 +65,7 @@ export function MonthGrid({
             const dayNum = Number(d.date.slice(8, 10));
             const title = [
               `${d.date} — ${DAY_CELL_LABELS[d.status]}`,
+              d.shiftName ? `Shift: ${d.shiftName}` : null,
               d.checkInAt ? `In: ${formatDateTime(d.checkInAt)}` : null,
               d.checkOutAt ? `Out: ${formatDateTime(d.checkOutAt)}` : null,
               d.workedHours != null ? `${d.workedHours}h` : null,

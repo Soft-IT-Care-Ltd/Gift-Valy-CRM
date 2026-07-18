@@ -47,7 +47,7 @@ export type DayCellStatus = AttendanceStatusValue | "OFF" | "NOT_MARKED" | "UPCO
 
 export const DAY_CELL_LABELS: Record<DayCellStatus, string> = {
   ...ATTENDANCE_STATUS_LABELS,
-  OFF: "Weekly off",
+  OFF: "Off day",
   NOT_MARKED: "Not marked",
   UPCOMING: "Upcoming",
 };
@@ -92,7 +92,7 @@ export const DEFAULT_ATTENDANCE_SETTINGS: AttendanceSettings = {
 // The settings-table key holding the JSON blob above.
 export const ATTENDANCE_SETTINGS_KEY = "attendance_settings";
 
-const HHMM_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+export const HHMM_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
 
 // "HH:MM" → minutes since midnight; null when empty/invalid (a disabled rule).
 export function parseHHMM(value: string | null | undefined): number | null {
@@ -199,6 +199,131 @@ export function isWorkday(weekday: number, s: AttendanceSettings): boolean {
   return s.workdays.includes(weekday);
 }
 
+// ---------- R10 shifts & weekly roster (pure) ----------
+
+// A shift definition serialized for the client. Times are "HH:MM" Asia/Dhaka;
+// late/half-day thresholds are minutes AFTER the shift start (half null = off).
+export interface ShiftDef {
+  id: number;
+  name: string;
+  startTime: string;
+  endTime: string;
+  lateAfterMin: number;
+  halfDayAfterMin: number | null;
+  isActive: boolean;
+}
+
+// One weekday cell of a roster version: a shift id, "OFF" (weekly off-day) or
+// null (no roster row — fall back to the global office-hours default).
+export type RosterDay = number | "OFF" | null;
+
+// One roster version: the week pattern that applies from `from` (YYYY-MM-DD)
+// onward, days indexed 0=Sun … 6=Sat. JSON-safe, so the grid UI shares it.
+export interface RosterVersion {
+  from: string;
+  days: RosterDay[];
+}
+
+// What the schedule says one person should do on one calendar day.
+export type DayPlanSource = "roster" | "default";
+export type DayPlan =
+  | { kind: "OFF"; source: DayPlanSource }
+  | {
+      kind: "WORK";
+      source: DayPlanSource;
+      shiftId: number | null; // null = the office-hours default "shift"
+      shiftName: string | null;
+      startMin: number;
+      endMin: number;
+      lateMin: number | null; // strictly after this → LATE (null = never late)
+      halfMin: number | null; // at/after this → HALF_DAY (null = disabled)
+    };
+
+// Minutes since midnight → "HH:MM".
+export function minutesToHHMM(min: number): string {
+  const m = ((min % 1440) + 1440) % 1440;
+  return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+}
+
+// The old global office-hours setting acting as the default shift (R10) for
+// anyone/anyday the roster doesn't cover.
+export function defaultDayPlan(weekday: number, s: AttendanceSettings): DayPlan {
+  if (!isWorkday(weekday, s)) return { kind: "OFF", source: "default" };
+  return {
+    kind: "WORK",
+    source: "default",
+    shiftId: null,
+    shiftName: null,
+    startMin: parseHHMM(s.officeStart) ?? 0,
+    endMin: parseHHMM(s.officeEnd) ?? 0,
+    lateMin: parseHHMM(s.lateThreshold),
+    halfMin: parseHHMM(s.halfDayThreshold),
+  };
+}
+
+// A rostered shift as a day plan — thresholds anchored to THIS shift's start.
+export function shiftDayPlan(shift: ShiftDef): DayPlan {
+  const start = parseHHMM(shift.startTime) ?? 0;
+  return {
+    kind: "WORK",
+    source: "roster",
+    shiftId: shift.id,
+    shiftName: shift.name,
+    startMin: start,
+    endMin: parseHHMM(shift.endTime) ?? start,
+    lateMin: start + Math.max(shift.lateAfterMin, 0),
+    halfMin:
+      shift.halfDayAfterMin != null ? start + shift.halfDayAfterMin : null,
+  };
+}
+
+// The latest roster version effective on/before a day (versions sorted by
+// `from` ascending) — later versions never apply retroactively.
+export function latestVersionOn(
+  versions: RosterVersion[],
+  ymd: string
+): RosterVersion | null {
+  let match: RosterVersion | null = null;
+  for (const v of versions) {
+    if (v.from <= ymd) match = v;
+    else break;
+  }
+  return match;
+}
+
+// R10 — resolve what one person's day looks like: their roster version for the
+// date decides shift/off per weekday; any gap (no version, weekday not saved,
+// or a since-deleted shift) falls back to the office-hours default.
+export function resolveDayPlan(
+  ymd: string,
+  versions: RosterVersion[],
+  shiftsById: Map<number, ShiftDef>,
+  settings: AttendanceSettings
+): DayPlan {
+  const weekday = weekdayOfYmd(ymd);
+  const version = latestVersionOn(versions, ymd);
+  if (!version) return defaultDayPlan(weekday, settings);
+  const entry = version.days[weekday] ?? null;
+  if (entry === null) return defaultDayPlan(weekday, settings);
+  if (entry === "OFF") return { kind: "OFF", source: "roster" };
+  const shift = shiftsById.get(entry);
+  if (!shift) return defaultDayPlan(weekday, settings);
+  return shiftDayPlan(shift);
+}
+
+// Short human label for the check-in card ("Morning 09:00–17:00 · late after
+// 09:15", "Office hours 10:00–18:00 · …", or the off-day note).
+export function describeDayPlan(plan: DayPlan): string {
+  if (plan.kind === "OFF") {
+    return plan.source === "roster" ? "Your rostered off-day" : "Weekly off";
+  }
+  const name = plan.shiftName ?? "Office hours";
+  const window = `${minutesToHHMM(plan.startMin)}–${minutesToHHMM(plan.endMin)}`;
+  const late =
+    plan.lateMin != null ? ` · late after ${minutesToHHMM(plan.lateMin)}` : "";
+  return `${name} ${window}${late}`;
+}
+
 // ---------- status derivation (SPEC §11 auto flags) ----------
 
 // Given a check-in time (minutes since midnight, Dhaka) decide the stored status:
@@ -212,6 +337,19 @@ export function deriveCheckInStatus(
   const half = parseHHMM(s.halfDayThreshold);
   if (half != null && checkInMinutes >= half) return "HALF_DAY";
   if (late != null && checkInMinutes > late) return "LATE";
+  return "PRESENT";
+}
+
+// R10 — the same decision against the person's OWN plan for the day. Checking
+// in on an off-day can never be Late/Half-day (there is no shift start to be
+// late against), so it stores PRESENT.
+export function deriveDayPlanStatus(
+  checkInMinutes: number,
+  plan: DayPlan
+): Extract<AttendanceStatusValue, "PRESENT" | "LATE" | "HALF_DAY"> {
+  if (plan.kind === "OFF") return "PRESENT";
+  if (plan.halfMin != null && checkInMinutes >= plan.halfMin) return "HALF_DAY";
+  if (plan.lateMin != null && checkInMinutes > plan.lateMin) return "LATE";
   return "PRESENT";
 }
 
@@ -299,6 +437,27 @@ export function serializeLeaveRequest(l: LeaveRequestPayload): LeaveRequestRow {
     approvedBy: l.approvedBy,
     approvedAt: l.approvedAt ? l.approvedAt.toISOString() : null,
     createdAt: l.createdAt.toISOString(),
+  };
+}
+
+// R10 — a Prisma shift row → the client-safe ShiftDef.
+export function serializeShift(s: {
+  id: number;
+  name: string;
+  startTime: string;
+  endTime: string;
+  lateAfterMin: number;
+  halfDayAfterMin: number | null;
+  isActive: boolean;
+}): ShiftDef {
+  return {
+    id: s.id,
+    name: s.name,
+    startTime: s.startTime,
+    endTime: s.endTime,
+    lateAfterMin: s.lateAfterMin,
+    halfDayAfterMin: s.halfDayAfterMin,
+    isActive: s.isActive,
   };
 }
 

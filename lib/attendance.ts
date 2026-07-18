@@ -6,20 +6,27 @@ import {
   ATTENDANCE_SETTINGS_KEY,
   ATTENDANCE_USER_INCLUDE,
   DEFAULT_ATTENDANCE_SETTINGS,
+  HHMM_RE,
   attendanceSettingsToJson,
-  deriveCheckInStatus,
+  deriveDayPlanStatus,
   dhakaMinutesOfDay,
   dhakaYmd,
   dayStartUTC,
-  isWorkday,
   monthDays,
   normalizeAttendanceSettings,
+  parseHHMM,
+  resolveDayPlan,
+  serializeShift,
   weekdayOfYmd,
   workedHours,
   ymdOfDateCol,
   type AttendanceSettings,
   type AttendanceStatusValue,
   type DayCellStatus,
+  type DayPlan,
+  type RosterDay,
+  type RosterVersion,
+  type ShiftDef,
 } from "./attendance-constants";
 
 type Tx = Prisma.TransactionClient | PrismaClient;
@@ -63,6 +70,251 @@ export async function saveAttendanceSettings(
   return settings;
 }
 
+// ---------- R10 shifts (Admin CRUD) ----------
+
+export const shiftSchema = z
+  .object({
+    name: z.string().trim().min(1, "Name the shift").max(60),
+    startTime: z.string().regex(HHMM_RE, "Start time must be HH:MM"),
+    endTime: z.string().regex(HHMM_RE, "End time must be HH:MM"),
+    lateAfterMin: z.number().int().min(0).max(720),
+    halfDayAfterMin: z.number().int().min(1).max(1440).nullable(),
+    isActive: z.boolean(),
+  })
+  .refine((s) => parseHHMM(s.endTime)! > parseHHMM(s.startTime)!, {
+    message: "End must be after start (overnight shifts aren't supported)",
+    path: ["endTime"],
+  });
+
+export type ShiftInput = z.infer<typeof shiftSchema>;
+
+export async function getShifts(db: Tx = prisma): Promise<ShiftDef[]> {
+  const rows = await db.shift.findMany({
+    orderBy: [{ startTime: "asc" }, { name: "asc" }],
+  });
+  return rows.map(serializeShift);
+}
+
+export async function createShift(
+  raw: unknown,
+  actorId: number,
+  db: Tx = prisma
+): Promise<ShiftDef> {
+  const data = shiftSchema.parse(raw);
+  const row = await db.shift.create({
+    data: { ...data, createdBy: actorId, updatedBy: actorId },
+  });
+  return serializeShift(row);
+}
+
+export async function updateShift(
+  id: number,
+  raw: unknown,
+  actorId: number,
+  db: Tx = prisma
+): Promise<{ before: ShiftDef; after: ShiftDef }> {
+  const data = shiftSchema.parse(raw);
+  const existing = await db.shift.findUnique({ where: { id } });
+  if (!existing) throw new AuthzError(404, "Shift not found");
+  const row = await db.shift.update({
+    where: { id },
+    data: { ...data, updatedBy: actorId },
+  });
+  return { before: serializeShift(existing), after: serializeShift(row) };
+}
+
+// A shift referenced anywhere in roster history can't be deleted (that history
+// must keep resolving) — deactivate it instead.
+export async function deleteShift(id: number, db: Tx = prisma): Promise<ShiftDef> {
+  const existing = await db.shift.findUnique({ where: { id } });
+  if (!existing) throw new AuthzError(404, "Shift not found");
+  const used = await db.rosterAssignment.count({ where: { shiftId: id } });
+  if (used > 0) {
+    throw new AuthzError(
+      400,
+      "This shift is used in a roster — deactivate it instead of deleting"
+    );
+  }
+  await db.shift.delete({ where: { id } });
+  return serializeShift(existing);
+}
+
+// ---------- R10 weekly roster (versions by effective date) ----------
+
+export interface RosterData {
+  versionsByUser: Map<number, RosterVersion[]>; // sorted by `from` ascending
+  shiftsById: Map<number, ShiftDef>;
+}
+
+// Load every roster version (optionally for a subset of users) + all shifts —
+// inactive shifts included so historical versions keep resolving.
+export async function loadRosterData(
+  db: Tx = prisma,
+  userIds?: number[]
+): Promise<RosterData> {
+  const [assignments, shifts] = await Promise.all([
+    db.rosterAssignment.findMany({
+      where: userIds ? { userId: { in: userIds } } : undefined,
+      orderBy: [{ userId: "asc" }, { effectiveFrom: "asc" }, { weekday: "asc" }],
+      select: {
+        userId: true,
+        effectiveFrom: true,
+        weekday: true,
+        shiftId: true,
+      },
+    }),
+    getShifts(db),
+  ]);
+
+  const versionsByUser = new Map<number, RosterVersion[]>();
+  for (const a of assignments) {
+    const from = ymdOfDateCol(a.effectiveFrom);
+    const versions = versionsByUser.get(a.userId) ?? [];
+    let version = versions[versions.length - 1];
+    if (!version || version.from !== from) {
+      version = { from, days: Array<RosterDay>(7).fill(null) };
+      versions.push(version);
+    }
+    if (a.weekday >= 0 && a.weekday <= 6) {
+      version.days[a.weekday] = a.shiftId ?? "OFF";
+    }
+    versionsByUser.set(a.userId, versions);
+  }
+  return {
+    versionsByUser,
+    shiftsById: new Map(shifts.map((s) => [s.id, s])),
+  };
+}
+
+// One person's plan for one day (roster → shift/off, else office-hours default).
+export async function resolveUserDayPlan(
+  userId: number,
+  ymd: string,
+  db: Tx = prisma,
+  settings?: AttendanceSettings
+): Promise<DayPlan> {
+  const [s, roster] = await Promise.all([
+    settings ?? getAttendanceSettings(db),
+    loadRosterData(db, [userId]),
+  ]);
+  return resolveDayPlan(
+    ymd,
+    roster.versionsByUser.get(userId) ?? [],
+    roster.shiftsById,
+    s
+  );
+}
+
+const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+export const rosterWeekSchema = z.object({
+  userId: z.number().int().positive(),
+  effectiveFrom: z.string().regex(YMD_RE, "Pick an effective date"),
+  // 0=Sun … 6=Sat: a shift id, "OFF", or null = default office hours.
+  days: z
+    .array(z.union([z.number().int().positive(), z.literal("OFF"), z.null()]))
+    .length(7),
+});
+
+export type RosterWeekInput = z.infer<typeof rosterWeekSchema>;
+
+// Save one person's week as the version at `effectiveFrom` (upsert per weekday;
+// a "default" cell deletes its row). Saving all-default removes the version —
+// the person falls back to office hours from that date. Past versions are never
+// touched, so history is preserved.
+export async function saveRosterWeek(
+  raw: unknown,
+  actorId: number,
+  db: Tx = prisma
+): Promise<RosterWeekInput> {
+  const data = rosterWeekSchema.parse(raw);
+  const shiftIds = [
+    ...new Set(data.days.filter((d): d is number => typeof d === "number")),
+  ];
+  if (shiftIds.length > 0) {
+    const found = await db.shift.count({ where: { id: { in: shiftIds } } });
+    if (found !== shiftIds.length) {
+      throw new AuthzError(400, "Unknown shift in the roster");
+    }
+  }
+  const user = await db.user.findUnique({
+    where: { id: data.userId },
+    select: { id: true },
+  });
+  if (!user) throw new AuthzError(404, "Employee not found");
+
+  const effectiveFrom = dayStartUTC(data.effectiveFrom);
+  for (let weekday = 0; weekday < 7; weekday++) {
+    const day = data.days[weekday];
+    const where = {
+      userId_effectiveFrom_weekday: {
+        userId: data.userId,
+        effectiveFrom,
+        weekday,
+      },
+    };
+    if (day === null) {
+      await db.rosterAssignment.deleteMany({
+        where: { userId: data.userId, effectiveFrom, weekday },
+      });
+    } else {
+      const shiftId = day === "OFF" ? null : day;
+      await db.rosterAssignment.upsert({
+        where,
+        update: { shiftId, updatedBy: actorId },
+        create: {
+          userId: data.userId,
+          effectiveFrom,
+          weekday,
+          shiftId,
+          createdBy: actorId,
+          updatedBy: actorId,
+        },
+      });
+    }
+  }
+  return data;
+}
+
+export interface RosterEmployee {
+  id: number;
+  name: string;
+  roleName: string;
+  teamName: string | null;
+  versions: RosterVersion[];
+}
+
+// Everything the roster grid needs: active employees with their full version
+// history, plus every shift.
+export async function getRosterOverview(db: Tx = prisma): Promise<{
+  employees: RosterEmployee[];
+  shifts: ShiftDef[];
+}> {
+  const [users, roster] = await Promise.all([
+    db.user.findMany({
+      where: { isActive: true },
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        name: true,
+        role: { select: { name: true } },
+        team: { select: { name: true } },
+      },
+    }),
+    loadRosterData(db),
+  ]);
+  return {
+    employees: users.map((u) => ({
+      id: u.id,
+      name: u.name,
+      roleName: u.role.name,
+      teamName: u.team?.name ?? null,
+      versions: roster.versionsByUser.get(u.id) ?? [],
+    })),
+    shifts: [...roster.shiftsById.values()],
+  };
+}
+
 // ---------- check-in / check-out (SPEC §11 — server-side timestamps) ----------
 
 // Today's attendance row for a user (button state), or null if not yet marked.
@@ -78,11 +330,11 @@ export async function getTodayAttendance(
   });
 }
 
-// SPEC §11 — record a server-side check-in for the current Dhaka day. Auto-flags
-// Late / Half-day from the check-in time against office-hours settings. One
+// SPEC §11 / R10 — record a server-side check-in for the current Dhaka day.
+// Auto-flags Late / Half-day from the check-in time against the person's OWN
+// plan for the day (their rostered shift, or the office-hours default). One
 // check-in per day: a second attempt is rejected.
 export async function checkIn(userId: number, now: Date, db: Tx = prisma) {
-  const settings = await getAttendanceSettings(db);
   const ymd = dhakaYmd(now);
   const date = dayStartUTC(ymd);
 
@@ -93,7 +345,8 @@ export async function checkIn(userId: number, now: Date, db: Tx = prisma) {
     throw new AuthzError(400, "You have already checked in today");
   }
 
-  const status = deriveCheckInStatus(dhakaMinutesOfDay(now), settings);
+  const plan = await resolveUserDayPlan(userId, ymd, db);
+  const status = deriveDayPlanStatus(dhakaMinutesOfDay(now), plan);
   return db.attendance.create({
     data: {
       userId,
@@ -128,8 +381,6 @@ export async function checkOut(userId: number, now: Date, db: Tx = prisma) {
 }
 
 // ---------- leave requests (SPEC §11 — simple approval flow) ----------
-
-const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export const leaveRequestSchema = z
   .object({
@@ -272,6 +523,7 @@ export interface DayCell {
   date: string;
   weekday: number;
   status: DayCellStatus;
+  shiftName: string | null; // the rostered shift that day (null = default hours or off)
   checkInAt: string | null;
   checkOutAt: string | null;
   workedHours: number | null;
@@ -285,16 +537,18 @@ export interface AttendanceCounts {
   leave: number;
   off: number;
   daysPresent: number; // physically in = present + late + half-day
-  workdays: number; // office days in the month (isWorkday)
+  workdays: number; // the person's OWN rostered working days in the month (R10)
   totalWorkHours: number;
 }
 
 // The per-day cells and the roll-up counts for one person's month. `now` decides
 // which workdays are already in the past (→ ABSENT if unmarked) vs today/future.
+// R10: `planFor` resolves the person's own roster (shift / off-day / default),
+// so an off-day is never counted absent and workdays follow their roster.
 function computeDays(
   monthKey: string,
   now: Date,
-  settings: AttendanceSettings,
+  planFor: (ymd: string) => DayPlan,
   rowsByYmd: Map<
     string,
     {
@@ -320,7 +574,9 @@ function computeDays(
 
   const days = monthDays(monthKey).map<DayCell>((date) => {
     const weekday = weekdayOfYmd(date);
-    const workday = isWorkday(weekday, settings);
+    const plan = planFor(date);
+    const workday = plan.kind === "WORK";
+    const shiftName = plan.kind === "WORK" ? plan.shiftName : null;
     if (workday) counts.workdays++;
 
     const row = rowsByYmd.get(date);
@@ -371,7 +627,15 @@ function computeDays(
     }
     if (hours != null) counts.totalWorkHours += hours;
 
-    return { date, weekday, status, checkInAt, checkOutAt, workedHours: hours };
+    return {
+      date,
+      weekday,
+      status,
+      shiftName,
+      checkInAt,
+      checkOutAt,
+      workedHours: hours,
+    };
   });
 
   counts.totalWorkHours = Math.round(counts.totalWorkHours * 100) / 100;
@@ -387,7 +651,7 @@ export interface EmployeeMonthlySheet {
 }
 
 // R10 — one employee's month: a day-by-day sheet plus present/late/absent/half/
-// leave counts and total work hours.
+// leave counts and total work hours, evaluated against their own roster.
 export async function buildEmployeeMonthlySheet(
   userId: number,
   monthKey: string,
@@ -395,7 +659,7 @@ export async function buildEmployeeMonthlySheet(
   db: Tx = prisma
 ): Promise<EmployeeMonthlySheet> {
   const days = monthDays(monthKey);
-  const [settings, user, rows, leaveByUser] = await Promise.all([
+  const [settings, user, rows, leaveByUser, roster] = await Promise.all([
     getAttendanceSettings(db),
     db.user.findUniqueOrThrow({
       where: { id: userId },
@@ -412,6 +676,7 @@ export async function buildEmployeeMonthlySheet(
       select: { date: true, status: true, checkInAt: true, checkOutAt: true },
     }),
     approvedLeaveDaysByUser(monthKey, db),
+    loadRosterData(db, [userId]),
   ]);
 
   const rowsByYmd = new Map(
@@ -424,10 +689,11 @@ export async function buildEmployeeMonthlySheet(
       },
     ])
   );
+  const versions = roster.versionsByUser.get(userId) ?? [];
   const { days: cells, counts } = computeDays(
     monthKey,
     now,
-    settings,
+    (ymd) => resolveDayPlan(ymd, versions, roster.shiftsById, settings),
     rowsByYmd,
     leaveByUser.get(userId) ?? new Set()
   );
@@ -449,14 +715,14 @@ export interface TeamMonthlySummary {
 }
 
 // R10 — team summary: present/late/absent/half/leave counts and work hours for
-// every active employee this month.
+// every active employee this month, each against their own roster.
 export async function buildTeamMonthlySummary(
   monthKey: string,
   now: Date,
   db: Tx = prisma
 ): Promise<TeamMonthlySummary> {
   const days = monthDays(monthKey);
-  const [settings, users, rows, leaveByUser] = await Promise.all([
+  const [settings, users, rows, leaveByUser, roster] = await Promise.all([
     getAttendanceSettings(db),
     db.user.findMany({
       where: { isActive: true },
@@ -484,6 +750,7 @@ export async function buildTeamMonthlySummary(
       },
     }),
     approvedLeaveDaysByUser(monthKey, db),
+    loadRosterData(db),
   ]);
 
   const rowsByUser = new Map<
@@ -508,10 +775,11 @@ export async function buildTeamMonthlySummary(
   }
 
   const summaryRows = users.map((u) => {
+    const versions = roster.versionsByUser.get(u.id) ?? [];
     const { counts } = computeDays(
       monthKey,
       now,
-      settings,
+      (ymd) => resolveDayPlan(ymd, versions, roster.shiftsById, settings),
       rowsByUser.get(u.id) ?? new Map(),
       leaveByUser.get(u.id) ?? new Set()
     );
@@ -535,6 +803,7 @@ export interface WhoIsInEntry {
   roleName: string;
   teamName: string | null;
   status: AttendanceStatusValue;
+  shiftName: string | null; // their rostered shift today (null = default hours)
   checkInAt: string;
   checkOutAt: string | null;
   stillIn: boolean;
@@ -546,11 +815,13 @@ export interface WhoIsInToday {
   stillInCount: number;
   leftCount: number;
   onLeave: { userId: number; name: string }[];
+  offToday: { userId: number; name: string }[]; // rostered/weekly off, not absent
   activeEmployeeCount: number;
 }
 
 // Live snapshot for the admin dashboard: who has checked in today (and whether
-// they are still in), plus who is on approved leave today.
+// they are still in), who is on approved leave, and — R10 — whose roster says
+// today is an off-day (shown separately, never among the missing).
 export async function whoIsInToday(
   now: Date,
   db: Tx = prisma
@@ -558,7 +829,7 @@ export async function whoIsInToday(
   const ymd = dhakaYmd(now);
   const date = dayStartUTC(ymd);
 
-  const [rows, leaves, activeEmployeeCount] = await Promise.all([
+  const [rows, leaves, activeUsers, settings, roster] = await Promise.all([
     db.attendance.findMany({
       where: { date, checkInAt: { not: null } },
       orderBy: { checkInAt: "asc" },
@@ -584,23 +855,50 @@ export async function whoIsInToday(
       },
       select: { userId: true, user: { select: { name: true } } },
     }),
-    db.user.count({ where: { isActive: true } }),
+    db.user.findMany({
+      where: { isActive: true },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    }),
+    getAttendanceSettings(db),
+    loadRosterData(db),
   ]);
 
-  const entries: WhoIsInEntry[] = rows.map((r) => ({
-    userId: r.userId,
-    name: r.user.name,
-    roleName: r.user.role.name,
-    teamName: r.user.team?.name ?? null,
-    status: r.status as AttendanceStatusValue,
-    checkInAt: r.checkInAt!.toISOString(),
-    checkOutAt: r.checkOutAt ? r.checkOutAt.toISOString() : null,
-    stillIn: r.checkOutAt == null,
-  }));
+  const planFor = (userId: number) =>
+    resolveDayPlan(
+      ymd,
+      roster.versionsByUser.get(userId) ?? [],
+      roster.shiftsById,
+      settings
+    );
 
-  // Dedupe leave list (one entry per user).
+  const entries: WhoIsInEntry[] = rows.map((r) => {
+    const plan = planFor(r.userId);
+    return {
+      userId: r.userId,
+      name: r.user.name,
+      roleName: r.user.role.name,
+      teamName: r.user.team?.name ?? null,
+      status: r.status as AttendanceStatusValue,
+      shiftName: plan.kind === "WORK" ? plan.shiftName : null,
+      checkInAt: r.checkInAt!.toISOString(),
+      checkOutAt: r.checkOutAt ? r.checkOutAt.toISOString() : null,
+      stillIn: r.checkOutAt == null,
+    };
+  });
+  const checkedIn = new Set(entries.map((e) => e.userId));
+
+  // Off-day per each person's own plan (unless they came in anyway). OFF wins
+  // over LEAVE — same precedence as the monthly sheet.
+  const offToday = activeUsers.filter(
+    (u) => !checkedIn.has(u.id) && planFor(u.id).kind === "OFF"
+  );
+  const offIds = new Set(offToday.map((u) => u.id));
+
+  // Dedupe leave list (one entry per user); off-day users stay under Off.
   const seen = new Set<number>();
   const onLeave = leaves
+    .filter((l) => !offIds.has(l.userId))
     .filter((l) => (seen.has(l.userId) ? false : (seen.add(l.userId), true)))
     .map((l) => ({ userId: l.userId, name: l.user.name }));
 
@@ -610,7 +908,8 @@ export async function whoIsInToday(
     stillInCount: entries.filter((e) => e.stillIn).length,
     leftCount: entries.filter((e) => !e.stillIn).length,
     onLeave,
-    activeEmployeeCount,
+    offToday: offToday.map((u) => ({ userId: u.id, name: u.name })),
+    activeEmployeeCount: activeUsers.length,
   };
 }
 

@@ -102,10 +102,19 @@ export function AttendanceReportClient({
 
   function exportSheet() {
     if (!sheet) return;
-    const headers = ["Date", "Weekday", "Status", "Check-in", "Check-out", "Hours"];
+    const headers = [
+      "Date",
+      "Weekday",
+      "Shift",
+      "Status",
+      "Check-in",
+      "Check-out",
+      "Hours",
+    ];
     const body = sheet.days.map((d) => [
       d.date,
       WEEKDAY_LABELS[d.weekday],
+      d.shiftName ?? (d.status === "OFF" ? "" : "Default"),
       DAY_CELL_LABELS[d.status],
       d.checkInAt ? formatDateTime(d.checkInAt) : "",
       d.checkOutAt ? formatDateTime(d.checkOutAt) : "",
@@ -151,11 +160,20 @@ export function AttendanceReportClient({
       sections.push({
         heading: `Monthly sheet — ${sheet.user.name}`,
         note: `Present ${sheet.counts.present} · Late ${sheet.counts.late} · Half-day ${sheet.counts.halfDay} · Absent ${sheet.counts.absent} · On leave ${sheet.counts.leave} · Work hours ${sheet.counts.totalWorkHours}`,
-        headers: ["Date", "Weekday", "Status", "Check-in", "Check-out", "Hours"],
-        aligns: ["l", "l", "l", "l", "l", "r"],
+        headers: [
+          "Date",
+          "Weekday",
+          "Shift",
+          "Status",
+          "Check-in",
+          "Check-out",
+          "Hours",
+        ],
+        aligns: ["l", "l", "l", "l", "l", "l", "r"],
         rows: sheet.days.map((d) => [
           formatDate(d.date),
           WEEKDAY_LABELS[d.weekday],
+          d.shiftName ?? (d.status === "OFF" ? "—" : "Default"),
           DAY_CELL_LABELS[d.status],
           d.checkInAt ? formatDateTime(d.checkInAt) : "—",
           d.checkOutAt ? formatDateTime(d.checkOutAt) : "—",
@@ -207,8 +225,8 @@ export function AttendanceReportClient({
           <div>
             <CardTitle className="text-base">Team summary</CardTitle>
             <CardDescription>
-              Present / late / absent / half-day / leave counts and work hours per
-              employee.
+              Present / late / absent / half-day / leave counts and work hours
+              per employee — each judged against their own roster (R10).
             </CardDescription>
           </div>
           <Button

@@ -167,6 +167,58 @@ async function main() {
       value: attendanceSettingsToJson(DEFAULT_ATTENDANCE_SETTINGS),
     },
   });
+
+  // 4b-ter. R10 — demo shifts + weekly rosters (the CORRECTIONS examples:
+  // Sanjoy Fri off + Morning all week; Partho Tue off + Evening) effective from
+  // the 1st of the current Dhaka month. Everyone else stays on default hours.
+  {
+    const mkShift = async (
+      name: string,
+      startTime: string,
+      endTime: string,
+      halfDayAfterMin: number | null
+    ) => {
+      const s = await prisma.shift.upsert({
+        where: { name },
+        update: {},
+        create: { name, startTime, endTime, lateAfterMin: 15, halfDayAfterMin },
+      });
+      return s.id;
+    };
+    const morningId = await mkShift("Morning", "09:00", "17:00", 270);
+    const eveningId = await mkShift("Evening", "14:00", "22:00", 270);
+
+    const monthFirst = dayStartUTC(`${dhakaYmd(new Date()).slice(0, 7)}-01`);
+    const setWeek = async (email: string, days: (number | null)[]) => {
+      const userId = userIdByEmail.get(email);
+      if (!userId) return;
+      for (let weekday = 0; weekday < 7; weekday++) {
+        await prisma.rosterAssignment.upsert({
+          where: {
+            userId_effectiveFrom_weekday: {
+              userId,
+              effectiveFrom: monthFirst,
+              weekday,
+            },
+          },
+          update: {},
+          create: {
+            userId,
+            effectiveFrom: monthFirst,
+            weekday,
+            shiftId: days[weekday], // null = off-day
+          },
+        });
+      }
+    };
+    // 0=Sun … 5=Fri, 6=Sat
+    await setWeek("sanjoy@giftvaly.com", [
+      morningId, morningId, morningId, morningId, morningId, null, morningId,
+    ]);
+    await setWeek("partho@giftvaly.com", [
+      eveningId, eveningId, null, eveningId, eveningId, eveningId, eveningId,
+    ]);
+  }
   {
     const now = new Date();
     const todayYmd = dhakaYmd(now);
