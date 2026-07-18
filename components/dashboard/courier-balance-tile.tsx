@@ -5,14 +5,28 @@
 // gated) on mount and on the refresh icon; shows "—" when the integration is
 // off or the viewer has no courier access. Kept client-side so a slow/failing
 // courier API never blocks the dashboard render.
+//
+// CORRECTIONS Orders §R8 — two additions: the latest paid payout renders as a
+// sub-line (server-provided), and a "Request payment" deep link into the
+// Steadfast merchant panel appears while the balance is > 0 (their V1 API has
+// no payment-request endpoint — the request is made in their panel, and the
+// /payments sync picks up the resulting processing → paid record).
 import { useEffect, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { ExternalLink, RefreshCw } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { money } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { STEADFAST_PANEL_PAYMENT_REQUEST_URL } from "@/lib/steadfast-payments-constants";
 
 type Status = "idle" | "loading" | "ok" | "error";
 type BalanceResult = { ok: true; balance: number } | { ok: false };
+
+export interface LatestPayout {
+  invoiceNo: string | null;
+  netAmount: number;
+  date: string; // ISO
+  parcels: number;
+}
 
 // Pure fetch/parse — no React state, so both the mount effect and the refresh
 // handler can share it without tripping react-hooks/set-state-in-effect.
@@ -27,9 +41,11 @@ async function fetchBalance(): Promise<BalanceResult> {
 export function CourierBalanceTile({
   enabled,
   canManage,
+  latestPayout = null,
 }: {
   enabled: boolean;
   canManage: boolean;
+  latestPayout?: LatestPayout | null;
 }) {
   const active = enabled && canManage;
   const [balance, setBalance] = useState<number | null>(null);
@@ -75,6 +91,14 @@ export function CourierBalanceTile({
           ? "Loading…"
           : "Steadfast · live";
 
+  const payoutDate = latestPayout
+    ? new Date(latestPayout.date).toLocaleDateString("en-GB", {
+        timeZone: "Asia/Dhaka",
+        day: "numeric",
+        month: "short",
+      })
+    : null;
+
   return (
     <Card className="h-full">
       <CardContent className="p-4">
@@ -95,10 +119,34 @@ export function CourierBalanceTile({
             </button>
           )}
         </div>
-        <div className="mt-1 text-2xl font-bold tabular-nums">
-          {status === "ok" && balance !== null ? money(balance) : "—"}
+        <div className="flex items-baseline justify-between gap-2">
+          <div className="mt-1 text-2xl font-bold tabular-nums">
+            {status === "ok" && balance !== null ? money(balance) : "—"}
+          </div>
+          {active && status === "ok" && balance !== null && balance > 0 && (
+            <a
+              href={STEADFAST_PANEL_PAYMENT_REQUEST_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-medium text-primary hover:underline"
+              title="Open the Steadfast panel's payment request page"
+            >
+              Request payment
+              <ExternalLink className="size-3" />
+            </a>
+          )}
         </div>
         <div className="mt-1 truncate text-xs text-muted-foreground">{sub}</div>
+        {canManage && latestPayout && (
+          <div
+            className="mt-0.5 truncate text-xs text-muted-foreground"
+            title={latestPayout.invoiceNo ?? undefined}
+          >
+            Latest payout {money(latestPayout.netAmount)} · {latestPayout.parcels}{" "}
+            parcel{latestPayout.parcels === 1 ? "" : "s"}
+            {payoutDate ? ` · ${payoutDate}` : ""}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

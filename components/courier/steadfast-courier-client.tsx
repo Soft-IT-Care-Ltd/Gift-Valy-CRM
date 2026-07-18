@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -24,13 +24,22 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { RefreshCw } from "lucide-react";
+import { ExternalLink, RefreshCw } from "lucide-react";
 import { money, formatDateTime } from "@/lib/format";
 import {
   DELIVERY_ZONE_LABELS,
   DELIVERY_ZONES,
   type DeliveryZoneValue,
 } from "@/lib/order-constants";
+import type { WalletOption } from "@/lib/wallet";
+import {
+  STEADFAST_PANEL_PAYMENT_REQUEST_URL,
+  type SteadfastPaymentRow,
+} from "@/lib/steadfast-payments-constants";
+import {
+  SteadfastPaymentsCard,
+  type PaidSummary,
+} from "./steadfast-payments-card";
 
 export interface SteadfastSettings {
   configured: boolean;
@@ -44,6 +53,7 @@ export interface SteadfastSettings {
   connectedAt: string | null;
   lastSyncAt: string | null;
   lastWebhookAt: string | null;
+  lastPaymentsSyncAt: string | null;
 }
 
 export interface StatusLogRow {
@@ -81,6 +91,11 @@ export function SteadfastCourierClient({
   stuckAmberDays,
   stuckRedDays,
   canManageKeys,
+  payments,
+  wallets,
+  payoutWalletId,
+  paidToday,
+  paidThisMonth,
 }: {
   initial: SteadfastSettings;
   logs: StatusLogRow[];
@@ -89,6 +104,12 @@ export function SteadfastCourierClient({
   stuckAmberDays: number; // §R6 — stuck-parcel escalation thresholds (days)
   stuckRedDays: number;
   canManageKeys: boolean;
+  // §R8 — the Steadfast Payments section
+  payments: SteadfastPaymentRow[];
+  wallets: WalletOption[];
+  payoutWalletId: number | null;
+  paidToday: PaidSummary;
+  paidThisMonth: PaidSummary;
 }) {
   const router = useRouter();
   const [s, setS] = useState(initial);
@@ -104,6 +125,24 @@ export function SteadfastCourierClient({
   const [syncing, setSyncing] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
   const [tokenPlain, setTokenPlain] = useState<string | null>(null);
+
+  // §R8 — fetch the balance on mount (integration on): the "Request Payment"
+  // deep link shows only while the Steadfast balance is > 0, so the page needs
+  // the figure without waiting for a manual Test connection. Inline .then per
+  // the repo's fetch-on-mount convention; a failure just leaves the badge off.
+  useEffect(() => {
+    if (!initial.isEnabled || !initial.configured) return;
+    let cancelled = false;
+    fetch("/api/couriers/steadfast/balance")
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled && data?.ok) setBalance(Number(data.balance));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [initial.isEnabled, initial.configured]);
 
   // Zone rate table (CORRECTIONS Courier §1) — kept as strings while editing.
   const [rates, setRates] = useState(() =>
@@ -353,6 +392,22 @@ export function SteadfastCourierClient({
                 >
                   refresh
                 </button>
+                {/* §R8 — no payment-request API exists in their documented V1:
+                    this deep-links their panel's request page; the /payments
+                    sync then picks up the processing → paid record. */}
+                {balance > 0 && (
+                  <Button asChild variant="outline" size="sm">
+                    <a
+                      href={STEADFAST_PANEL_PAYMENT_REQUEST_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Open the Steadfast panel's payment request page"
+                    >
+                      Request payment
+                      <ExternalLink className="ml-1 size-3" />
+                    </a>
+                  </Button>
+                )}
               </span>
             )}
           </div>
@@ -493,6 +548,17 @@ export function SteadfastCourierClient({
           </p>
         </CardContent>
       </Card>
+
+      {/* §R8 — Steadfast payments: payout list + COD reconciliation */}
+      <SteadfastPaymentsCard
+        payments={payments}
+        wallets={wallets}
+        payoutWalletId={payoutWalletId}
+        paidToday={paidToday}
+        paidThisMonth={paidThisMonth}
+        lastPaymentsSyncAt={s.lastPaymentsSyncAt}
+        enabled={s.isEnabled}
+      />
 
       {/* Webhook — token management is Admin-only */}
       <Card>

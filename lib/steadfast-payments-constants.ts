@@ -1,0 +1,382 @@
+// Steadfast payments parsing — CORRECTIONS Orders §R8. Client-safe: no
+// Prisma/server imports (shared by the sync engine, the API routes, the UI and
+// the verify script).
+//
+// The GET /payments and GET /payments/{payment_id} response shapes are NOT
+// fully documented in the V1 API doc — only the invoice's business fields are
+// known (Amount Delivered, Payable Delivery Charge, COD Charge, Available
+// Balance, and the cleared-consignment list with per-parcel COD + bill). So
+// everything here parses DEFENSIVELY: the payment array is hunted for wherever
+// it lives in the envelope (data / data.data / payments / …), every field is
+// matched by a tolerant key pattern, and any figure the response doesn't carry
+// is derived from the reconciliation identity net + charges = gross when the
+// other two sides are present. The sync engine stores the first real raw
+// list/detail payloads on the payment row (raw_payload / raw_detail_payload)
+// so the actual shape is captured in the DB the first time it is seen.
+
+export const round2 = (n: number) => Math.round(n * 100) / 100;
+
+// The merchant panel's payment-request page — the V1 API has no payment-request
+// endpoint, so the "Request Payment" button is a deep link into their panel;
+// the /payments sync then picks up the resulting processing → paid record.
+export const STEADFAST_PANEL_PAYMENT_REQUEST_URL =
+  "https://steadfast.com.bd/user/payment-request";
+
+export type SteadfastPaymentStatusValue = "PROCESSING" | "PAID";
+
+export const STEADFAST_PAYMENT_STATUS_LABELS: Record<
+  SteadfastPaymentStatusValue,
+  string
+> = {
+  PROCESSING: "Processing",
+  PAID: "Paid",
+};
+
+// The documented lifecycle is processing → paid. Anything that clearly says the
+// money went out counts as PAID; every other/unknown state stays PROCESSING so
+// no money side effect ever fires off an ambiguous status.
+export function normalizeSteadfastPaymentStatus(
+  raw: string | null | undefined
+): SteadfastPaymentStatusValue {
+  const n = (raw ?? "").trim().toLowerCase();
+  if (n === "unpaid") return "PROCESSING";
+  if (/^(paid|complete|completed|success|successful|done|disbursed)$/.test(n)) {
+    return "PAID";
+  }
+  return "PROCESSING";
+}
+
+export interface ParsedSteadfastPayment {
+  steadfastPaymentId: number;
+  invoiceNo: string | null; // e.g. "SFC-30699149"
+  statusRaw: string | null;
+  status: SteadfastPaymentStatusValue;
+  paymentDate: Date | null;
+  amountDelivered: number | null; // GROSS per-parcel COD total
+  deliveryCharge: number | null; // payable delivery charge (deducted at source)
+  codCharge: number | null; // the ~1% COD fee (deducted at source)
+  netAmount: number | null; // what actually reaches the bank
+  availableBalance: number | null;
+  parcelCount: number | null;
+  raw: unknown; // this item's own raw object (stored on first sight)
+}
+
+export interface ParsedPaymentConsignment {
+  consignmentId: number | null;
+  invoice: string | null; // their invoice = our order_no
+  codAmount: number | null; // per-parcel COD (GROSS)
+  deliveryCharge: number | null; // per-parcel "bill" → courier_cost_actual
+  statusRaw: string | null;
+  raw: unknown;
+}
+
+// ---------- tolerant field pickers ----------
+
+// Scan an object's own keys, then one nested level (some APIs wrap rows in
+// `attributes`/`payment` envelopes) — never deeper, so a consignment list on a
+// detail row can't bleed its numbers into the payment totals.
+function pick(
+  obj: unknown,
+  keyPattern: RegExp,
+  depth = 1
+): unknown {
+  if (obj == null || typeof obj !== "object" || Array.isArray(obj)) return undefined;
+  const record = obj as Record<string, unknown>;
+  for (const [key, value] of Object.entries(record)) {
+    if (keyPattern.test(key) && value !== null && value !== undefined && value !== "") {
+      return value;
+    }
+  }
+  if (depth > 0) {
+    for (const value of Object.values(record)) {
+      if (value != null && typeof value === "object" && !Array.isArray(value)) {
+        const found = pick(value, keyPattern, depth - 1);
+        if (found !== undefined) return found;
+      }
+    }
+  }
+  return undefined;
+}
+
+function pickNumber(obj: unknown, keyPattern: RegExp, depth = 1): number | null {
+  const v = pick(obj, keyPattern, depth);
+  if (v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function pickString(obj: unknown, keyPattern: RegExp, depth = 1): string | null {
+  const v = pick(obj, keyPattern, depth);
+  if (typeof v === "string" && v.trim()) return v.trim();
+  if (typeof v === "number") return String(v);
+  return null;
+}
+
+function pickDate(obj: unknown, keyPatterns: RegExp[]): Date | null {
+  for (const pattern of keyPatterns) {
+    const v = pick(obj, pattern, 0);
+    if (typeof v !== "string" && typeof v !== "number") continue;
+    const d = new Date(v);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  return null;
+}
+
+// ---------- envelope hunting ----------
+
+// A payment-shaped object: has an id AND at least one of status / an invoice-ish
+// code / a money field. Loose on purpose — the envelope shape is unknown.
+const PAYMENT_ID_KEY = /^(id|payment_id|paymentid)$/i;
+const STATUS_KEY = /^(status|payment_status|state)$/i;
+const INVOICE_NO_KEY = /^(invoice|invoice_no|invoice_number|invoice_code|payment_invoice)$/i;
+const MONEYISH_KEY =
+  /^(amount|amount_delivered|net_amount|total_amount|payable_amount|cod_amount)$/i;
+
+function looksLikePayment(node: unknown): boolean {
+  if (node == null || typeof node !== "object" || Array.isArray(node)) return false;
+  const keys = Object.keys(node as Record<string, unknown>);
+  const hasId = keys.some((k) => PAYMENT_ID_KEY.test(k));
+  const hasSignal = keys.some(
+    (k) => STATUS_KEY.test(k) || INVOICE_NO_KEY.test(k) || MONEYISH_KEY.test(k)
+  );
+  return hasId && hasSignal;
+}
+
+// Find the first array of payment-shaped objects anywhere in the envelope
+// (raw itself, raw.data, raw.data.data, raw.payments, …), a few levels deep.
+export function findPaymentArray(raw: unknown): unknown[] {
+  const seen = new Set<object>();
+  function scan(node: unknown, depth: number): unknown[] | null {
+    if (node == null || depth > 4) return null;
+    if (Array.isArray(node)) {
+      return node.length === 0 || node.some(looksLikePayment) ? node : null;
+    }
+    if (typeof node !== "object") return null;
+    if (seen.has(node as object)) return null;
+    seen.add(node as object);
+    for (const value of Object.values(node as Record<string, unknown>)) {
+      const found = scan(value, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  return scan(raw, 0) ?? [];
+}
+
+// Laravel-style pagination hints — lets the sync walk a couple of extra pages
+// when the envelope advertises them, without assuming they exist.
+export function findNextPage(raw: unknown): number | null {
+  const current = pickNumber(raw, /^current_page$/i, 2);
+  const last = pickNumber(raw, /^last_page$/i, 2);
+  if (current != null && last != null && last > current) return current + 1;
+  const nextUrl = pickString(raw, /^next_page_url$/i, 2);
+  if (nextUrl) {
+    const m = nextUrl.match(/[?&]page=(\d+)/);
+    if (m) return Number(m[1]);
+  }
+  return null;
+}
+
+// ---------- list-item / detail parsing ----------
+
+const PAYMENT_DATE_KEYS = [
+  /^payment_date$/i,
+  /^paid_at$/i,
+  /^date$/i,
+  /^created_at$/i,
+];
+const AMOUNT_DELIVERED_KEY =
+  /^(amount_delivered|total_amount_delivered|total_delivered_amount|delivered_amount|cod_amount|total_cod_amount|total_cod|collected_amount|total_collected_amount)$/i;
+const PAYABLE_DELIVERY_CHARGE_KEY =
+  /^(payable_delivery_charge|total_delivery_charge|delivery_charge|delivery_fee|total_delivery_fee)$/i;
+const COD_CHARGE_KEY =
+  /^(cod_charge|total_cod_charge|cod_fee|total_cod_fee|cod_percentage_amount)$/i;
+const NET_AMOUNT_KEY =
+  /^(net_amount|net_payable|net_paid|net_payable_amount|payable_amount|total_paid|paid_amount)$/i;
+const AVAILABLE_BALANCE_KEY = /^(available_balance|current_balance)$/i;
+const PARCEL_COUNT_KEY =
+  /^(total_parcels?|parcels?_count|parcels?|consignments?_count|total_consignments?|number_of_parcels?)$/i;
+
+// Fill the missing side of net + charges = gross when two sides are present.
+function deriveAmounts(p: ParsedSteadfastPayment): ParsedSteadfastPayment {
+  const delivery = p.deliveryCharge ?? 0;
+  const cod = p.codCharge ?? 0;
+  if (p.netAmount == null && p.amountDelivered != null) {
+    p.netAmount = round2(p.amountDelivered - delivery - cod);
+  } else if (p.amountDelivered == null && p.netAmount != null) {
+    p.amountDelivered = round2(p.netAmount + delivery + cod);
+  }
+  return p;
+}
+
+export function parsePaymentListItem(item: unknown): ParsedSteadfastPayment | null {
+  const id = pickNumber(item, PAYMENT_ID_KEY, 1);
+  if (id == null || id <= 0) return null;
+
+  let invoiceNo = pickString(item, INVOICE_NO_KEY, 1);
+  // Fallback: any own string value shaped like their SFC- invoice code.
+  if (!invoiceNo && item != null && typeof item === "object" && !Array.isArray(item)) {
+    for (const value of Object.values(item as Record<string, unknown>)) {
+      if (typeof value === "string" && /^SFC-\d+$/i.test(value.trim())) {
+        invoiceNo = value.trim();
+        break;
+      }
+    }
+  }
+
+  const statusRaw = pickString(item, STATUS_KEY, 1);
+  return deriveAmounts({
+    steadfastPaymentId: id,
+    invoiceNo,
+    statusRaw,
+    status: normalizeSteadfastPaymentStatus(statusRaw),
+    paymentDate: pickDate(item, PAYMENT_DATE_KEYS),
+    amountDelivered: pickNumber(item, AMOUNT_DELIVERED_KEY, 1),
+    deliveryCharge: pickNumber(item, PAYABLE_DELIVERY_CHARGE_KEY, 1),
+    codCharge: pickNumber(item, COD_CHARGE_KEY, 1),
+    netAmount: pickNumber(item, NET_AMOUNT_KEY, 1),
+    availableBalance: pickNumber(item, AVAILABLE_BALANCE_KEY, 1),
+    parcelCount: pickNumber(item, PARCEL_COUNT_KEY, 1),
+    raw: item,
+  });
+}
+
+export function parsePaymentsList(raw: unknown): ParsedSteadfastPayment[] {
+  const parsed: ParsedSteadfastPayment[] = [];
+  for (const item of findPaymentArray(raw)) {
+    const p = parsePaymentListItem(item);
+    if (p) parsed.push(p);
+  }
+  return parsed;
+}
+
+// ---------- detail: the cleared-consignment list ----------
+
+const CONSIGNMENT_ID_KEY = /^(consignment_id|consignmentid|cid)$/i;
+const CONSIGNMENT_COD_KEY =
+  /^(cod_amount|cod|collected_amount|amount)$/i;
+// Their per-parcel delivery charge is the invoice's "bill" column; match every
+// plausible spelling. Anchored so cod_charge/return_charge never leak in.
+const CONSIGNMENT_BILL_KEY =
+  /^(bill|bills|total_bill|delivery_bill|payable_delivery_charge|delivery_charge|delivery_fee|charge)$/i;
+
+function looksLikeConsignment(node: unknown): boolean {
+  if (node == null || typeof node !== "object" || Array.isArray(node)) return false;
+  const keys = Object.keys(node as Record<string, unknown>);
+  const hasCid = keys.some((k) => CONSIGNMENT_ID_KEY.test(k));
+  const hasInvoiceAndMoney =
+    keys.some((k) => INVOICE_NO_KEY.test(k) || /^tracking_code$/i.test(k)) &&
+    keys.some((k) => CONSIGNMENT_COD_KEY.test(k) || CONSIGNMENT_BILL_KEY.test(k));
+  return hasCid || hasInvoiceAndMoney;
+}
+
+export function findConsignmentArray(raw: unknown): unknown[] {
+  const seen = new Set<object>();
+  function scan(node: unknown, depth: number): unknown[] | null {
+    if (node == null || depth > 4) return null;
+    if (Array.isArray(node)) {
+      return node.length > 0 && node.every(looksLikeConsignment) ? node : null;
+    }
+    if (typeof node !== "object") return null;
+    if (seen.has(node as object)) return null;
+    seen.add(node as object);
+    for (const value of Object.values(node as Record<string, unknown>)) {
+      const found = scan(value, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  return scan(raw, 0) ?? [];
+}
+
+export function parsePaymentConsignment(item: unknown): ParsedPaymentConsignment {
+  return {
+    consignmentId: pickNumber(item, CONSIGNMENT_ID_KEY, 1),
+    invoice: pickString(item, INVOICE_NO_KEY, 1),
+    codAmount: pickNumber(item, CONSIGNMENT_COD_KEY, 1),
+    deliveryCharge: pickNumber(item, CONSIGNMENT_BILL_KEY, 1),
+    statusRaw: pickString(item, STATUS_KEY, 0),
+    raw: item,
+  };
+}
+
+export interface ParsedPaymentDetail {
+  // Payment-level fields the detail carries (often fuller than the list row) —
+  // merged over the stored record where non-null.
+  payment: ParsedSteadfastPayment | null;
+  consignments: ParsedPaymentConsignment[];
+}
+
+export function parsePaymentDetail(raw: unknown): ParsedPaymentDetail {
+  // The payment object may BE the response, or sit under payment/data/invoice.
+  let paymentNode: unknown = raw;
+  if (raw != null && typeof raw === "object" && !Array.isArray(raw)) {
+    if (!looksLikePayment(raw)) {
+      for (const value of Object.values(raw as Record<string, unknown>)) {
+        if (looksLikePayment(value)) {
+          paymentNode = value;
+          break;
+        }
+      }
+    }
+  }
+  return {
+    payment: parsePaymentListItem(paymentNode),
+    consignments: findConsignmentArray(raw).map(parsePaymentConsignment),
+  };
+}
+
+// ---------- serialized shapes (server → client) ----------
+
+// One payout row on the Courier page's payments list. Serialized by
+// lib/steadfast-payments.ts (server); typed here so the client card imports no
+// server code.
+export interface SteadfastPaymentRow {
+  id: number;
+  steadfastPaymentId: number;
+  invoiceNo: string | null;
+  status: SteadfastPaymentStatusValue;
+  paymentDate: string; // ISO
+  amountDelivered: number;
+  deliveryCharge: number;
+  codCharge: number;
+  netAmount: number;
+  parcelCount: number;
+  matchedCount: number;
+  unmatchedCount: number;
+  reconciles: boolean; // net + charges = gross (2p slack)
+}
+
+export interface SteadfastPaymentItemRow {
+  id: number;
+  consignmentId: number | null;
+  invoice: string | null;
+  codAmount: number;
+  deliveryCharge: number | null; // their per-parcel "bill"
+  orderId: number | null;
+  orderNo: string | null;
+  matched: boolean;
+  settled: boolean; // created a COD payment row (or was already reconciled)
+}
+
+// The expandable detail view (GET /api/couriers/steadfast/payments/[id]).
+export type SteadfastPaymentDetailRow = SteadfastPaymentRow & {
+  items: SteadfastPaymentItemRow[];
+};
+
+// ---------- the reconcile identity ----------
+
+// NET collection + the two charge lines must always tie back to GROSS
+// (net + delivery charge + COD charge = amount delivered). 2p slack for their
+// rounding. Used by the verify script and surfaced as a UI warning badge.
+export function paymentReconciles(p: {
+  amountDelivered: number;
+  deliveryCharge: number;
+  codCharge: number;
+  netAmount: number;
+}): boolean {
+  return (
+    Math.abs(p.amountDelivered - (p.netAmount + p.deliveryCharge + p.codCharge)) <=
+    0.02
+  );
+}

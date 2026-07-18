@@ -18,6 +18,11 @@ export const SETTING_KEYS = {
   // CORRECTIONS Orders §7 (C8) — how many days BEFORE an occasion the reminder
   // starts surfacing in the SE follow-up area.
   occasionReminderLeadDays: "occasion_reminder_lead_days",
+  // CORRECTIONS Orders §R8 — the bank wallet Steadfast payouts are deposited
+  // into. A paid payment's COD rows land here (gross in) and its two charge
+  // expenses draw from here (out), so the wallet's running balance moves by
+  // exactly the NET payout.
+  steadfastPayoutWalletId: "steadfast_payout_wallet_id",
 } as const;
 
 // SPEC §10 default onboarding grace: new joiners excluded from team aggregates
@@ -71,6 +76,23 @@ export async function getCourierStuckThresholds(): Promise<StuckThresholds> {
     getNumberSetting(SETTING_KEYS.courierStuckRedDays, DEFAULT_STUCK_RED_DAYS),
   ]);
   return { amberDays, redDays: Math.max(redDaysRaw, amberDays) };
+}
+
+// CORRECTIONS Orders §R8 — the Steadfast payout wallet. Returns null when unset
+// or when the configured wallet was deleted/deactivated — the sync then records
+// COD rows unattributed (they surface as "unassigned collected" on the wallet
+// report) rather than pointing money at a dead wallet.
+export async function getSteadfastPayoutWalletId(): Promise<number | null> {
+  const row = await prisma.setting.findUnique({
+    where: { key: SETTING_KEYS.steadfastPayoutWalletId },
+  });
+  const id = typeof row?.value === "number" ? row.value : null;
+  if (!id) return null;
+  const wallet = await prisma.wallet.findUnique({
+    where: { id },
+    select: { isActive: true },
+  });
+  return wallet?.isActive ? id : null;
 }
 
 // CORRECTIONS Orders §7 (C8) — occasion reminder lead time (days before the

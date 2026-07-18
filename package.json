@@ -11,6 +11,7 @@
     "test:bom": "tsx --test tests/bom.test.ts",
     "verify:stock": "tsx scripts/verify-stock.ts",
     "verify:steadfast": "tsx scripts/verify-steadfast.ts",
+    "verify:steadfast-payments": "tsx scripts/verify-steadfast-payments.ts",
     "verify:courier-cost": "tsx scripts/verify-courier-cost.ts",
     "verify:lifecycle": "tsx scripts/verify-lifecycle.ts",
     "verify:purchase-dues": "tsx scripts/verify-purchase-dues.ts",

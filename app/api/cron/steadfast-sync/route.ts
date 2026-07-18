@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { getSteadfastIntegration } from "@/lib/steadfast-integration";
 import { runSteadfastPoll } from "@/lib/steadfast-sync";
+import {
+  runSteadfastPaymentsSync,
+  PAYMENTS_SYNC_MIN_GAP_MS,
+  type PaymentsSyncSummary,
+} from "@/lib/steadfast-payments";
 import { timingSafeEqual } from "@/lib/crypto";
 import { AuthzError } from "@/lib/authz";
 
@@ -33,7 +38,29 @@ export async function GET(req: Request) {
 
   try {
     const summary = await runSteadfastPoll();
-    return NextResponse.json({ ok: true, ...summary });
+
+    // CORRECTIONS Orders §R8 — the payments sync ("hourly poller") rides this
+    // */15 cron on its own clock: it only runs when the last payments sync is
+    // at least an hour old, so GET /payments is never over-called. A payments
+    // failure must not fail the status poll that already succeeded.
+    let payments: PaymentsSyncSummary | { skipped: string } = {
+      skipped: "ran recently",
+    };
+    const due =
+      integration.lastPaymentsSyncAt == null ||
+      Date.now() - integration.lastPaymentsSyncAt.getTime() >=
+        PAYMENTS_SYNC_MIN_GAP_MS;
+    if (due) {
+      try {
+        payments = await runSteadfastPaymentsSync();
+      } catch (e) {
+        payments = {
+          skipped: e instanceof Error ? e.message : "payments sync failed",
+        };
+      }
+    }
+
+    return NextResponse.json({ ok: true, ...summary, payments });
   } catch (e) {
     if (e instanceof AuthzError) {
       return NextResponse.json({ ok: false, skipped: e.message });

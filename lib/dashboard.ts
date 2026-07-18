@@ -158,9 +158,31 @@ export interface DashboardSnapshot {
   orders: number; // §2 — non-lost, non-draft orders created in range
   delivered: { count: number; amount: number }; // §3 — delivered (shipment.delivered_at) in range
   advanceCollection: { count: number; amount: number }; // §4 — payments type ADVANCE
-  // §5 — total collection split by source (each line = sum of payment types):
-  //   advance = ADVANCE + PARTIAL · cod = COD_COURIER · postMfs = POST_DELIVERY_MFS
+  // §5 — total collection split by source. advance = ADVANCE + PARTIAL ·
+  // postMfs = POST_DELIVERY_MFS. §R8 (owner's NET-collection decision): the
+  // cod line = NET payout from PAID Steadfast payments in range (what actually
+  // reached the bank) + any COD payment rows NOT backed by a payout (manual
+  // reconciles / other couriers, at gross — they carry no charge data).
   collection: { advance: number; cod: number; postMfs: number; total: number };
+  // §R8 — the cod line's breakdown (tooltip): gross COD − delivery charge −
+  // COD charge = net, plus the payout-less manual COD portion. Charges are
+  // COSTS — the page renders the breakdown only for cost-visible viewers.
+  codBreakdown: {
+    grossSf: number;
+    deliveryCharge: number;
+    codCharge: number;
+    netSf: number;
+    manualCod: number;
+    payouts: number; // paid payments in range
+    parcels: number;
+  };
+  // §R8 — the latest paid payout, shown under the Courier balance tile.
+  latestPayout: {
+    invoiceNo: string | null;
+    netAmount: number;
+    date: string; // ISO
+    parcels: number;
+  } | null;
   drafts: { count: number; amount: number }; // §7 — DRAFT (committed-but-unpaid) in range
   courierEnabled: boolean; // §6 — Steadfast integration on → balance widget may fetch
 }
@@ -336,6 +358,9 @@ export async function buildOwnerDashboard(
     draftAgg,
     paymentsByType,
     steadfastIntegration,
+    steadfastPaidAgg,
+    linkedCodAgg,
+    latestPayoutRow,
   ] = await Promise.all([
     buildDailySummary({ from, to }),
     buildDailySummary({ from: monthStart, to: endToday }),
@@ -409,6 +434,43 @@ export async function buildOwnerDashboard(
     // §6 — is the Steadfast integration on? (balance itself is fetched live by
     // the client tile; here we only decide whether it may call out.)
     getSteadfastIntegration(),
+    // §R8 — PAID Steadfast payouts in range: the NET Courier-COD line + its
+    // gross/charge breakdown come straight from the payment invoices.
+    prisma.steadfastPayment.aggregate({
+      where: { status: "PAID", paymentDate: { gte: from, lte: to } },
+      _sum: {
+        amountDelivered: true,
+        deliveryCharge: true,
+        codCharge: true,
+        netAmount: true,
+        parcelCount: true,
+      },
+      _count: true,
+    }),
+    // §R8 — COD payment rows in range that a payout created (linked via
+    // steadfast_payment_items). Total COD minus these = the manual/other-courier
+    // portion, which stays in the line at gross (no payout to net it against).
+    prisma.payment.aggregate({
+      where: {
+        paymentDate: { gte: from, lte: to },
+        type: "COD_COURIER",
+        isRejected: false,
+        order: { deletedAt: null },
+        steadfastPaymentItems: { some: {} },
+      },
+      _sum: { amount: true },
+    }),
+    // §R8 — the latest paid payout (range-independent), for the balance tile.
+    prisma.steadfastPayment.findFirst({
+      where: { status: "PAID" },
+      orderBy: [{ paymentDate: "desc" }, { id: "desc" }],
+      select: {
+        invoiceNo: true,
+        netAmount: true,
+        paymentDate: true,
+        parcelCount: true,
+      },
+    }),
   ]);
 
   // ── CORRECTIONS Dashboard §1–§7 — snapshot KPI strip ──
@@ -422,7 +484,15 @@ export async function buildOwnerDashboard(
   const payOf = (t: string) => payByType.get(t) ?? { amount: 0, count: 0 };
   const advanceType = payOf("ADVANCE"); // §4 — ADVANCE only
   const collAdvance = round2(advanceType.amount + payOf("PARTIAL").amount);
-  const collCod = round2(payOf("COD_COURIER").amount);
+  // §R8 — Courier COD = NET payout (paid Steadfast payments in range) + the
+  // payout-less COD portion at gross. net + charges = gross by construction.
+  const grossSf = round2(Number(steadfastPaidAgg._sum.amountDelivered ?? 0));
+  const sfDeliveryCharge = round2(Number(steadfastPaidAgg._sum.deliveryCharge ?? 0));
+  const sfCodCharge = round2(Number(steadfastPaidAgg._sum.codCharge ?? 0));
+  const netSf = round2(Number(steadfastPaidAgg._sum.netAmount ?? 0));
+  const linkedCod = Number(linkedCodAgg._sum.amount ?? 0);
+  const manualCod = Math.max(0, round2(payOf("COD_COURIER").amount - linkedCod));
+  const collCod = round2(netSf + manualCod);
   const collPostMfs = round2(payOf("POST_DELIVERY_MFS").amount);
   // Combined lead total (§1/§6): detailed leads + bulk daily counts.
   const leadsTotal = leadsDetailed + (leadsBulk._sum.count ?? 0);
@@ -444,6 +514,23 @@ export async function buildOwnerDashboard(
       postMfs: collPostMfs,
       total: round2(collAdvance + collCod + collPostMfs),
     },
+    codBreakdown: {
+      grossSf,
+      deliveryCharge: sfDeliveryCharge,
+      codCharge: sfCodCharge,
+      netSf,
+      manualCod,
+      payouts: steadfastPaidAgg._count,
+      parcels: steadfastPaidAgg._sum.parcelCount ?? 0,
+    },
+    latestPayout: latestPayoutRow
+      ? {
+          invoiceNo: latestPayoutRow.invoiceNo,
+          netAmount: round2(Number(latestPayoutRow.netAmount)),
+          date: latestPayoutRow.paymentDate.toISOString(),
+          parcels: latestPayoutRow.parcelCount,
+        }
+      : null,
     drafts: {
       count: draftAgg._count,
       amount: round2(Number(draftAgg._sum.totalAmount ?? 0)),
