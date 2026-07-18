@@ -5,6 +5,7 @@ import { requirePermissionCtx, apiError, AuthzError } from "@/lib/authz";
 import { orderScopeWhere } from "@/lib/orders";
 import { orderIsInvoiceable } from "@/lib/order-constants";
 import { getCurrencyForCountry } from "@/lib/currency";
+import { getInvoiceBranding } from "@/lib/settings";
 import {
   loadInvoiceOrders,
   renderInvoiceBatchPdf,
@@ -70,7 +71,7 @@ export async function POST(req: Request) {
       version: versionByOrder.get(order.id) ?? 1,
       currency: currencyByCountry.get(order.customer.country),
     }));
-    const pdf = await renderInvoiceBatchPdf(entries);
+    const pdf = await renderInvoiceBatchPdf(entries, await getInvoiceBranding());
 
     return new NextResponse(new Uint8Array(pdf), {
       headers: {

@@ -541,7 +541,7 @@ export function OrderForm({
         : `Request changes to ${initial?.orderNo ?? ""}`;
 
   return (
-    <div className="mx-auto grid max-w-4xl gap-4">
+    <div className="mx-auto grid w-full max-w-5xl gap-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">{heading}</h1>
         {mode !== "create" && initial?.status && (

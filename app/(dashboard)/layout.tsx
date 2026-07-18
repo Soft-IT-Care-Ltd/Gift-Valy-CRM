@@ -7,6 +7,7 @@ import { getEffectivePermissions } from "@/lib/rbac";
 import { ROLE_LABELS, type RoleName } from "@/lib/permissions";
 import { Badge } from "@/components/ui/badge";
 import { SignOutButton } from "@/components/sign-out-button";
+import { MobileNav } from "@/components/mobile-nav";
 import {
   SidebarNav,
   type NavGroup,
@@ -229,6 +230,8 @@ export default async function DashboardLayout({
   const settingsItems: NavLeaf[] = [];
   if (permissions.includes("settings.manage")) {
     settingsItems.push(
+      // CORRECTIONS §R9 — invoice letterhead/footer branding.
+      { href: "/settings/invoice", label: "Business / Invoice" },
       { href: "/settings/pnl", label: "P&L Settings" },
       { href: "/settings/attendance", label: "Attendance Settings" },
       { href: "/settings/whatsapp", label: "WhatsApp Invoice" },
@@ -270,8 +273,10 @@ export default async function DashboardLayout({
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 items-center justify-between border-b bg-background px-4">
-          <div className="flex items-center gap-2 md:hidden">
+        <header className="flex h-14 items-center justify-between gap-2 border-b bg-background px-3 md:px-4">
+          {/* §R11 — phones get a hamburger drawer with the full nav tree. */}
+          <div className="flex items-center gap-1.5 md:hidden">
+            <MobileNav groups={navGroups} />
             <Image
               src="/gift-valy-logo.png"
               alt="Gift Valy"
@@ -280,18 +285,26 @@ export default async function DashboardLayout({
               className="h-7 w-auto"
             />
           </div>
-          <div className="ml-auto flex items-center gap-3">
-            <div className="text-right">
-              <div className="text-sm font-medium leading-tight">{user.name}</div>
-              <div className="text-xs text-muted-foreground leading-tight">
+          <div className="ml-auto flex min-w-0 items-center gap-3">
+            <div className="min-w-0 text-right">
+              <div className="truncate text-sm font-medium leading-tight">
+                {user.name}
+              </div>
+              <div className="hidden truncate text-xs leading-tight text-muted-foreground sm:block">
                 {user.email}
               </div>
             </div>
-            <Badge variant="secondary">{roleLabel}</Badge>
+            <Badge variant="secondary" className="hidden sm:inline-flex">
+              {roleLabel}
+            </Badge>
             <SignOutButton />
           </div>
         </header>
-        <main className="flex-1 bg-muted/30 p-4 md:p-6">{children}</main>
+        {/* §R11 — content uses the full available width, bounded only by a
+            sensible ultra-wide cap; pages no longer pin themselves narrow. */}
+        <main className="flex-1 bg-muted/30 p-4 md:p-6">
+          <div className="mx-auto w-full max-w-[1800px]">{children}</div>
+        </main>
       </div>
     </div>
   );

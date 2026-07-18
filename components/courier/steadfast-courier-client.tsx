@@ -284,7 +284,7 @@ export function SteadfastCourierClient({
   }
 
   return (
-    <div className="mx-auto grid max-w-3xl gap-4">
+    <div className="mx-auto grid w-full max-w-5xl gap-4">
       <div>
         <h1 className="text-2xl font-semibold">Courier — Steadfast</h1>
         <p className="text-sm text-muted-foreground">

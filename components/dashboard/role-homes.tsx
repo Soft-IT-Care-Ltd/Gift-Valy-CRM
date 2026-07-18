@@ -283,7 +283,7 @@ export async function SalesExecutiveHome({
   ]);
 
   return (
-    <div className="mx-auto max-w-4xl space-y-4">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">My dashboard</h1>
         <p className="text-sm text-muted-foreground">
@@ -438,7 +438,7 @@ export async function TeamLeaderHome({
   const teamBoard = leaderboard.filter((r) => memberIds.has(r.userId));
 
   return (
-    <div className="mx-auto max-w-5xl space-y-4">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Team dashboard</h1>
         <p className="text-sm text-muted-foreground">
@@ -599,7 +599,7 @@ export async function PackingHome({ userName }: { userName: string }) {
   ]);
 
   return (
-    <div className="mx-auto max-w-4xl space-y-4">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Packing dashboard</h1>
         <p className="text-sm text-muted-foreground">
@@ -712,7 +712,7 @@ export async function AccountsHome({ userName }: { userName: string }) {
   const pendingAmount = Number(pendingAgg._sum.amount ?? 0);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-4">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Accounts dashboard</h1>
         <p className="text-sm text-muted-foreground">

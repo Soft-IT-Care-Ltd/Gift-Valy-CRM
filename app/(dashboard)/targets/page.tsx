@@ -65,7 +65,7 @@ export default async function TargetsPage({
   const myRewards = myRewardsRaw.map(serializeReward);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-5">
+    <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Targets &amp; Rewards</h1>

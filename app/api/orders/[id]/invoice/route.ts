@@ -11,6 +11,7 @@ import {
   renderInvoicePdf,
 } from "@/lib/invoice";
 import { getCurrencyForCountry } from "@/lib/currency";
+import { getInvoiceBranding } from "@/lib/settings";
 import { orderScopeWhere } from "@/lib/orders";
 import { orderIsInvoiceable } from "@/lib/order-constants";
 
@@ -88,7 +89,8 @@ export async function GET(req: Request, { params }: Params) {
       pdf = await renderInvoicePdf(
         full,
         invoice.version,
-        await getCurrencyForCountry(full.customer.country)
+        await getCurrencyForCountry(full.customer.country),
+        await getInvoiceBranding()
       );
       await mkdir(INVOICE_DIR, { recursive: true });
       await writeFile(path.join(INVOICE_DIR, fileName), pdf);

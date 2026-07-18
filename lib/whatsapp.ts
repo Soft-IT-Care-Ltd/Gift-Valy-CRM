@@ -16,6 +16,7 @@ import {
   type InvoiceOrder,
 } from "./invoice";
 import { getCurrencyForCountry } from "./currency";
+import { getInvoiceBranding } from "./settings";
 import { buildInvoiceMessage } from "./invoice-message";
 
 // ============ WhatsApp invoice send (SPEC §5 / §16 Phase 4) ============
@@ -234,7 +235,12 @@ export async function sendInvoiceViaWhatsApp(
   try {
     pdf = await readFile(path.join(process.cwd(), invoice.pdfUrl));
   } catch {
-    pdf = await renderInvoicePdf(order, invoice.version, currency);
+    pdf = await renderInvoicePdf(
+      order,
+      invoice.version,
+      currency,
+      await getInvoiceBranding()
+    );
   }
   const caption = buildInvoiceMessage(messageOrderInput(order), currency);
 
