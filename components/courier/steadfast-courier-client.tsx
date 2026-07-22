@@ -96,6 +96,7 @@ export function SteadfastCourierClient({
   payoutWalletId,
   paidToday,
   paidThisMonth,
+  canResolveDiscrepancies,
 }: {
   initial: SteadfastSettings;
   logs: StatusLogRow[];
@@ -110,6 +111,8 @@ export function SteadfastCourierClient({
   payoutWalletId: number | null;
   paidToday: PaidSummary;
   paidThisMonth: PaidSummary;
+  // §2.7 — Admin/Accounts (payments.verify) resolve payout discrepancies
+  canResolveDiscrepancies: boolean;
 }) {
   const router = useRouter();
   const [s, setS] = useState(initial);
@@ -549,7 +552,7 @@ export function SteadfastCourierClient({
         </CardContent>
       </Card>
 
-      {/* §R8 — Steadfast payments: payout list + COD reconciliation */}
+      {/* §R8/§2.7 — Steadfast payments: payout list + justification report */}
       <SteadfastPaymentsCard
         payments={payments}
         wallets={wallets}
@@ -558,6 +561,7 @@ export function SteadfastCourierClient({
         paidThisMonth={paidThisMonth}
         lastPaymentsSyncAt={s.lastPaymentsSyncAt}
         enabled={s.isEnabled}
+        canResolve={canResolveDiscrepancies}
       />
 
       {/* Webhook — token management is Admin-only */}

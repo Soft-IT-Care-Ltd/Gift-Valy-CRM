@@ -64,6 +64,7 @@ import { cn } from "@/lib/utils";
 import { DateFilter } from "@/components/ui/date-filter";
 import { detectPreset } from "@/lib/date-filter";
 import { money, formatDate, formatDateTime } from "@/lib/format";
+import { computeNetReceivable } from "@/lib/steadfast-payments-constants";
 import {
   ALLOWED_TRANSITIONS,
   DELIVERY_ZONES,
@@ -355,6 +356,7 @@ export function OrdersListClient({
   steadfastLastSyncAt,
   canCourierOverride,
   overchargeTolerancePct,
+  codFeePercent,
   stuckAmberDays,
   stuckRedDays,
   transitStuckCount,
@@ -385,6 +387,7 @@ export function OrdersListClient({
   steadfastLastSyncAt: string | null; // §R1 — last poll-sync time for the hint
   canCourierOverride: boolean; // §R5 — manual courier overrides + trash-any (Admin)
   overchargeTolerancePct: number; // §R4 — Ours-vs-SF overcharge highlight tolerance
+  codFeePercent: number; // §2.7 — Steadfast COD fee % for the deduction/net columns
   stuckAmberDays: number; // §R6 — Duration badge goes amber past this many days…
   stuckRedDays: number; // …and red past this many (time in current sub-status)
   transitStuckCount: number; // §R6 — In Transit parcels stuck ≥ amber threshold
@@ -924,6 +927,7 @@ export function OrdersListClient({
     (isTransitTab ? 1 : 0) + // Duration (§R6)
     (isTransitTab ? 1 : 0) + // Steadfast Weight (§6l)
     (showChargeCol ? 1 : 0) + // Steadfast Delivery Charge — cost-visible only
+    (showChargeCol ? 2 : 0) + // §2.7 Courier deduction + Net receivable
     (isReturnedTab ? 1 : 0); // Return column (§6n)
 
   return (
@@ -1383,6 +1387,13 @@ export function OrdersListClient({
                   Charge <span className="font-normal text-muted-foreground">(ours / SF)</span>
                 </TableHead>
               )}
+              {/* §2.7 — live payout math: deduction + what Steadfast will remit */}
+              {showChargeCol && (
+                <TableHead className="text-right">Courier deduction</TableHead>
+              )}
+              {showChargeCol && (
+                <TableHead className="text-right">Net receivable</TableHead>
+              )}
               {isTransitTab && (
                 <TableHead className="text-right">
                   Weight <span className="font-normal text-muted-foreground">(ours / SF)</span>
@@ -1662,6 +1673,50 @@ export function OrdersListClient({
                     />
                   </TableCell>
                 )}
+                {/* §2.7 — Courier deduction (delivery charge + COD fee) and the
+                    Net receivable Steadfast will remit, computed live: SF actual
+                    charge when known, else our estimate */}
+                {showChargeCol &&
+                  (() => {
+                    const nr = computeNetReceivable({
+                      codAmount: o.codAmount,
+                      courierCostActual:
+                        o.shipment?.steadfastDeliveryCharge ?? null,
+                      courierCostEstimated:
+                        o.shipment?.courierCostEstimated ?? null,
+                      codFeePercent,
+                    });
+                    return (
+                      <>
+                        <TableCell className="whitespace-nowrap text-right text-xs tabular-nums">
+                          <span
+                            title={`Delivery charge ${money(nr.deliveryCharge)}${
+                              nr.chargeKnown ? " (SF actual)" : " (our estimate)"
+                            } + COD fee ${money(nr.codFee)} (${codFeePercent}%)`}
+                          >
+                            {money(nr.deduction)}
+                            {!nr.chargeKnown && (
+                              <span className="ml-0.5 text-muted-foreground">
+                                ~
+                              </span>
+                            )}
+                          </span>
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap text-right text-xs font-medium tabular-nums">
+                          <span
+                            title={`COD ${money(o.codAmount)} − deduction ${money(nr.deduction)} = what Steadfast remits at final delivery`}
+                          >
+                            {money(nr.netReceivable)}
+                            {!nr.chargeKnown && (
+                              <span className="ml-0.5 font-normal text-muted-foreground">
+                                ~
+                              </span>
+                            )}
+                          </span>
+                        </TableCell>
+                      </>
+                    );
+                  })()}
                 {/* Steadfast Weight (§6l/§R4) — our recorded weight vs Steadfast's
                     counted weight; SF flagged when heavier than ours beyond the
                     tolerance */}

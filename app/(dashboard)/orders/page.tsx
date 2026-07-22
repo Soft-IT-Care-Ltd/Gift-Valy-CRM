@@ -18,6 +18,7 @@ import {
   type ReturnSubTabValue,
 } from "@/lib/courier-constants";
 import { getSteadfastIntegration } from "@/lib/steadfast-integration";
+import { STEADFAST_COURIER_NAME } from "@/lib/steadfast-constants";
 import {
   getCourierOverchargeTolerancePct,
   getCourierStuckThresholds,
@@ -278,6 +279,15 @@ export default async function OrdersPage({
   const canCourierOverride = permissions.includes("orders.courier_override");
   // §R4 — overcharge alert tolerance for the Ours-vs-Steadfast comparison.
   const overchargeTolerancePct = await getCourierOverchargeTolerancePct();
+  // §2.7 — the Steadfast COD fee % feeds the In Transit deduction/net columns.
+  const steadfastCourierRow = await prisma.courier.findUnique({
+    where: { name: STEADFAST_COURIER_NAME },
+    select: { codFeePercent: true },
+  });
+  const codFeePercent =
+    steadfastCourierRow != null && Number(steadfastCourierRow.codFeePercent) > 0
+      ? Number(steadfastCourierRow.codFeePercent)
+      : 1;
 
   // SE filter dropdown only for team/all scopes — an SE never sees other SEs.
   const scopeLevel = orderViewScope(permissions);
@@ -327,6 +337,7 @@ export default async function OrdersPage({
       steadfastLastSyncAt={steadfastLastSyncAt}
       canCourierOverride={canCourierOverride}
       overchargeTolerancePct={overchargeTolerancePct}
+      codFeePercent={codFeePercent}
       stuckAmberDays={stuckThresholds.amberDays}
       stuckRedDays={stuckThresholds.redDays}
       transitStuckCount={transitStuckCount}

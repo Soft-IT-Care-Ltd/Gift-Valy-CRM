@@ -77,7 +77,12 @@ export default async function CourierPage() {
       orderBy: [{ paymentDate: "desc" }, { id: "desc" }],
       take: 15,
       include: {
-        items: { include: { order: { select: { id: true, orderNo: true } } } },
+        items: {
+          include: {
+            order: { select: { id: true, orderNo: true, status: true } },
+            shipment: { select: { codAmount: true } },
+          },
+        },
       },
     }),
     prisma.wallet.findMany({
@@ -142,6 +147,7 @@ export default async function CourierPage() {
       payoutWalletId={payoutWalletId}
       paidToday={paidToday}
       paidThisMonth={paidThisMonth}
+      canResolveDiscrepancies={permissions.includes("payments.verify")}
     />
   );
 }

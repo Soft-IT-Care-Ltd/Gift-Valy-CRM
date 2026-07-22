@@ -20,7 +20,10 @@ export async function GET(_req: Request, { params }: Params) {
       where: { id },
       include: {
         items: {
-          include: { order: { select: { id: true, orderNo: true } } },
+          include: {
+            order: { select: { id: true, orderNo: true, status: true } },
+            shipment: { select: { codAmount: true } },
+          },
           orderBy: { id: "asc" },
         },
       },

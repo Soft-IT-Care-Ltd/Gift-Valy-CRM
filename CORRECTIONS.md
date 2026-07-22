@@ -446,7 +446,7 @@ R11. [FIXED] [UI] **Responsive + full-width layout**: on large screens the dashb
 
 2.6 [FIXED] [BUG] **Delivery/Return Approval Pending stage is skipped**: when the rider delivers, the order jumps straight to the Delivered tab. Correct behavior: rider delivery → courier status **Delivery Approval Pending**, order STAYS In Transit; only when Steadfast finalizes (hub approval — COD added to their wallet, status becomes final `delivered`) does the order move to Delivered. Same for returns (Return Approval Pending → final `cancelled` → Returned). Likely root cause: the webhook sends `delivered` at rider-delivery time while the poll API distinguishes `delivered_approval_pending` — so on any webhook `delivered`/`cancelled`, cross-check the status API; if it reports `*_approval_pending`, hold the order In Transit with that sub-status.
 
-2.7 [CHANGE] **COD payout justification + auto-COMPLETE engine** (extends R8 — the full money trail):
+2.7 [FIXED] [CHANGE] **COD payout justification + auto-COMPLETE engine** (extends R8 — the full money trail):
    - **Per-order math**: `COD − courier delivery charge = subtotal; subtotal − 1% COD fee = NET receivable` (e.g. 5,500 − 215 = 5,285; − 52.85 ≈ 5,232.15). That NET is what Steadfast adds to their wallet at final delivery.
    - **Two new In Transit columns**: (a) **Courier deduction** = delivery charge + 1% COD fee for this order; (b) **Net receivable** = COD − deduction. Computed live (SF actual charge when known, else our estimate).
    - **On payout** (payment request → processing → paid, with per-consignment breakdown):

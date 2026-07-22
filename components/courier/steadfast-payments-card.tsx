@@ -1,10 +1,12 @@
 "use client";
 
-// CORRECTIONS Orders §R8 — the "Steadfast Payments" section on the Courier
-// page: payout list (date, invoice, status, parcels, net) with an expandable
-// detail view mirroring their invoice breakdown (gross COD − delivery charge −
-// COD charge = net + the cleared-consignment list), a paid today/this-month
-// summary, the payout-wallet picker and the manual "Sync payments" button.
+// CORRECTIONS Orders §R8 + Round 2 §2.7 — the "Steadfast Payments" section on
+// the Courier page: payout list (date, invoice, status, parcels, net) with an
+// expandable PAYOUT REPORT: their invoice breakdown (gross COD − delivery
+// charge − COD charge = net), total paid vs Σ our expected nets, and the
+// per-consignment justification table (their figures vs our computed net
+// receivable, verdict badges, and the Admin/Accounts resolve flow for
+// discrepancies — accept their figure with a reason, or mark disputed).
 // Unmatched consignments are the flagged-for-review list; a payout whose
 // numbers don't tie (net + charges ≠ gross) gets a warning badge.
 import { Fragment, useState } from "react";
@@ -23,6 +25,15 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -40,8 +51,10 @@ import {
 import { money, formatDateTime } from "@/lib/format";
 import { WALLET_TYPE_LABELS, type WalletOption } from "@/lib/wallet";
 import {
+  PAYOUT_MATCH_TOLERANCE,
   STEADFAST_PAYMENT_STATUS_LABELS,
   type SteadfastPaymentDetailRow,
+  type SteadfastPaymentItemRow,
   type SteadfastPaymentRow,
 } from "@/lib/steadfast-payments-constants";
 
@@ -74,6 +87,65 @@ function StatusBadge({ status }: { status: SteadfastPaymentRow["status"] }) {
   );
 }
 
+// §2.7 — the per-consignment verdict badge.
+function ReconcileBadge({ item }: { item: SteadfastPaymentItemRow }) {
+  if (!item.matched) {
+    return <Badge className="bg-red-100 text-red-800">Unmatched</Badge>;
+  }
+  switch (item.reconcileStatus) {
+    case "MATCHED":
+      return <Badge className="bg-green-100 text-green-800">Matched ✓</Badge>;
+    case "MISMATCH":
+      return <Badge className="bg-red-100 text-red-800">⚠ Mismatch</Badge>;
+    case "ACCEPTED":
+      return (
+        <Badge
+          className="bg-blue-100 text-blue-800"
+          title={item.resolveNote ?? undefined}
+        >
+          Accepted
+        </Badge>
+      );
+    case "DISPUTED":
+      return (
+        <Badge
+          className="bg-orange-100 text-orange-800"
+          title={item.resolveNote ?? undefined}
+        >
+          Disputed
+        </Badge>
+      );
+    default:
+      return <Badge variant="outline">Pending</Badge>;
+  }
+}
+
+// Signed money difference, red when it exceeds the match tolerance.
+function Diff({ value }: { value: number | null }) {
+  if (value == null) {
+    return <span className="text-muted-foreground">—</span>;
+  }
+  const off = Math.abs(value) > PAYOUT_MATCH_TOLERANCE;
+  return (
+    <span className={off ? "font-medium text-red-600" : "text-muted-foreground"}>
+      {value > 0 ? "+" : ""}
+      {money(value)}
+    </span>
+  );
+}
+
+// §2.7 — per-consignment difference: their net vs our expected when both are
+// known, else their gross vs our recorded COD.
+function itemDifference(item: SteadfastPaymentItemRow): number | null {
+  if (item.paidNet != null && item.expectedNet != null) {
+    return Math.round((item.paidNet - item.expectedNet) * 100) / 100;
+  }
+  if (item.ourGross != null) {
+    return Math.round((item.codAmount - item.ourGross) * 100) / 100;
+  }
+  return null;
+}
+
 export function SteadfastPaymentsCard({
   payments,
   wallets,
@@ -82,6 +154,7 @@ export function SteadfastPaymentsCard({
   paidThisMonth,
   lastPaymentsSyncAt,
   enabled,
+  canResolve,
 }: {
   payments: SteadfastPaymentRow[];
   wallets: WalletOption[];
@@ -90,6 +163,7 @@ export function SteadfastPaymentsCard({
   paidThisMonth: PaidSummary;
   lastPaymentsSyncAt: string | null;
   enabled: boolean;
+  canResolve: boolean; // §2.7 — payments.verify (Admin/Accounts)
 }) {
   const router = useRouter();
   const [syncing, setSyncing] = useState(false);
@@ -99,6 +173,56 @@ export function SteadfastPaymentsCard({
   const [expanded, setExpanded] = useState<number | null>(null);
   const [detail, setDetail] = useState<SteadfastPaymentDetailRow | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  // §2.7 resolve dialog state
+  const [resolveItem, setResolveItem] = useState<SteadfastPaymentItemRow | null>(
+    null
+  );
+  const [resolveNote, setResolveNote] = useState("");
+  const [resolving, setResolving] = useState<"ACCEPT" | "DISPUTE" | null>(null);
+
+  async function refreshDetail(paymentId: number) {
+    const res = await fetch(`/api/couriers/steadfast/payments/${paymentId}`, {
+      cache: "no-store",
+    }).catch(() => null);
+    const data = await res?.json().catch(() => null);
+    if (res?.ok) setDetail(data);
+  }
+
+  async function submitResolve(action: "ACCEPT" | "DISPUTE") {
+    if (!resolveItem || expanded == null) return;
+    if (action === "ACCEPT" && !resolveNote.trim()) {
+      toast.error("A reason is required to accept their figure");
+      return;
+    }
+    setResolving(action);
+    const res = await fetch(
+      `/api/couriers/steadfast/payments/${expanded}/resolve`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          itemId: resolveItem.id,
+          action,
+          note: resolveNote.trim() || null,
+        }),
+      }
+    ).catch(() => null);
+    const data = await res?.json().catch(() => null);
+    setResolving(null);
+    if (!res?.ok) {
+      toast.error(data?.error ?? "Failed to resolve the discrepancy");
+      return;
+    }
+    toast.success(
+      action === "ACCEPT"
+        ? `Accepted — their figure recorded${data.completed ? ", order completed" : ""}${data.paymentReconciled ? ", payout reconciled" : ""}`
+        : "Marked disputed"
+    );
+    setResolveItem(null);
+    setResolveNote("");
+    await refreshDetail(expanded);
+    router.refresh();
+  }
 
   async function syncPayments() {
     setSyncing(true);
@@ -111,13 +235,17 @@ export function SteadfastPaymentsCard({
       toast.error(data?.error ?? "Payments sync failed");
       return;
     }
-    const unmatched = data.unmatched
-      ? ` · ${data.unmatched} unmatched flagged`
-      : "";
+    const extras = [
+      data.completed ? `${data.completed} auto-completed` : null,
+      data.discrepancies ? `${data.discrepancies} discrepancy flagged` : null,
+      data.unmatched ? `${data.unmatched} unmatched` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
     toast.success(
       `Payments synced — ${data.payments} checked, ${data.ordersSettled} order${
         data.ordersSettled === 1 ? "" : "s"
-      } reconciled${unmatched}`
+      } reconciled${extras ? ` · ${extras}` : ""}`
     );
     setExpanded(null);
     setDetail(null);
@@ -281,6 +409,16 @@ export function SteadfastPaymentsCard({
                         ({p.unmatchedCount} unmatched)
                       </span>
                     )}
+                    {p.discrepancyCount > 0 && (
+                      <span
+                        className="ml-1 text-xs font-medium text-red-600"
+                        title={`${p.discrepancyCount} consignment${
+                          p.discrepancyCount === 1 ? "" : "s"
+                        } with a payout discrepancy — resolve below`}
+                      >
+                        ⚠ {p.discrepancyCount}
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell className="text-right font-medium tabular-nums">
                     {money(p.netAmount)}
@@ -328,15 +466,67 @@ export function SteadfastPaymentsCard({
                               </span>
                             )}
                           </div>
+                          {/* §2.7 payout report roll-up: total paid vs Σ our
+                              expected nets + discrepancy count */}
+                          {detail.expectedNetSum != null && (
+                            <div className="flex flex-wrap gap-x-6 gap-y-1 rounded-md border bg-background px-3 py-2 text-sm">
+                              <span>
+                                Σ our expected nets:{" "}
+                                <strong className="tabular-nums">
+                                  {money(detail.expectedNetSum)}
+                                </strong>
+                              </span>
+                              <span>
+                                Their total paid:{" "}
+                                <strong className="tabular-nums">
+                                  {money(detail.netAmount)}
+                                </strong>
+                              </span>
+                              <span>
+                                Paid vs expected:{" "}
+                                <Diff value={detail.paidVsExpectedDiff} />
+                              </span>
+                              <span>
+                                Discrepancies:{" "}
+                                <strong
+                                  className={
+                                    detail.discrepancyCount > 0
+                                      ? "text-red-600"
+                                      : undefined
+                                  }
+                                >
+                                  {detail.discrepancyCount}
+                                </strong>
+                              </span>
+                              {detail.reconciledAt && (
+                                <span className="text-muted-foreground">
+                                  reconciled {formatDateTime(detail.reconciledAt)}
+                                </span>
+                              )}
+                            </div>
+                          )}
                           {detail.items.length > 0 ? (
                             <Table>
                               <TableHeader>
                                 <TableRow>
                                   <TableHead>Consignment</TableHead>
                                   <TableHead>Order</TableHead>
-                                  <TableHead className="text-right">COD</TableHead>
-                                  <TableHead className="text-right">Bill</TableHead>
-                                  <TableHead>Reconciled</TableHead>
+                                  <TableHead className="text-right">
+                                    Their COD
+                                  </TableHead>
+                                  <TableHead className="text-right">
+                                    Our COD
+                                  </TableHead>
+                                  <TableHead className="text-right">
+                                    Our net recv.
+                                  </TableHead>
+                                  <TableHead className="text-right">
+                                    Their net
+                                  </TableHead>
+                                  <TableHead className="text-right">
+                                    Diff
+                                  </TableHead>
+                                  <TableHead>Verdict</TableHead>
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
@@ -347,12 +537,22 @@ export function SteadfastPaymentsCard({
                                     </TableCell>
                                     <TableCell>
                                       {it.orderId ? (
-                                        <Link
-                                          href={`/orders/${it.orderId}`}
-                                          className="font-mono text-xs underline"
-                                        >
-                                          {it.orderNo}
-                                        </Link>
+                                        <span className="flex items-center gap-1.5">
+                                          <Link
+                                            href={`/orders/${it.orderId}`}
+                                            className="font-mono text-xs underline"
+                                          >
+                                            {it.orderNo}
+                                          </Link>
+                                          {it.orderStatus === "COMPLETED" && (
+                                            <Badge
+                                              variant="outline"
+                                              className="bg-green-50 text-[10px] text-green-700"
+                                            >
+                                              Completed
+                                            </Badge>
+                                          )}
+                                        </span>
                                       ) : (
                                         <Badge className="bg-red-100 text-red-800">
                                           Unmatched
@@ -364,26 +564,52 @@ export function SteadfastPaymentsCard({
                                       {money(it.codAmount)}
                                     </TableCell>
                                     <TableCell className="text-right tabular-nums">
-                                      {it.deliveryCharge != null
-                                        ? money(it.deliveryCharge)
+                                      {it.ourGross != null
+                                        ? money(it.ourGross)
                                         : "—"}
                                     </TableCell>
+                                    <TableCell className="text-right tabular-nums">
+                                      {it.expectedNet != null
+                                        ? money(it.expectedNet)
+                                        : "—"}
+                                    </TableCell>
+                                    <TableCell className="text-right tabular-nums">
+                                      {it.paidNet != null
+                                        ? money(it.paidNet)
+                                        : "—"}
+                                    </TableCell>
+                                    <TableCell className="text-right tabular-nums">
+                                      <Diff value={itemDifference(it)} />
+                                    </TableCell>
                                     <TableCell>
-                                      {it.settled ? (
-                                        <Badge className="bg-green-100 text-green-800">
-                                          COD recorded
-                                        </Badge>
-                                      ) : it.matched ? (
-                                        <span className="text-xs text-muted-foreground">
-                                          {detail.status === "PAID"
-                                            ? "already reconciled"
-                                            : "awaiting paid"}
-                                        </span>
-                                      ) : (
-                                        <span className="text-xs text-red-600">
-                                          review manually
-                                        </span>
-                                      )}
+                                      <span className="flex items-center gap-1.5">
+                                        <ReconcileBadge item={it} />
+                                        {it.settled && (
+                                          <span
+                                            className="text-xs text-green-700"
+                                            title="COD payment recorded on the order"
+                                          >
+                                            ✓ COD
+                                          </span>
+                                        )}
+                                        {canResolve &&
+                                          detail.status === "PAID" &&
+                                          (it.reconcileStatus === "MISMATCH" ||
+                                            it.reconcileStatus ===
+                                              "DISPUTED") && (
+                                            <Button
+                                              variant="outline"
+                                              size="sm"
+                                              className="h-6 px-2 text-xs"
+                                              onClick={() => {
+                                                setResolveItem(it);
+                                                setResolveNote("");
+                                              }}
+                                            >
+                                              Resolve
+                                            </Button>
+                                          )}
+                                      </span>
                                     </TableCell>
                                   </TableRow>
                                 ))}
@@ -417,6 +643,71 @@ export function SteadfastPaymentsCard({
           </TableBody>
         </Table>
       </CardContent>
+
+      {/* §2.7 — resolve a payout discrepancy (Admin/Accounts) */}
+      <Dialog
+        open={resolveItem != null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setResolveItem(null);
+            setResolveNote("");
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Resolve payout discrepancy</DialogTitle>
+            <DialogDescription>
+              {resolveItem && (
+                <>
+                  Order{" "}
+                  <span className="font-mono">{resolveItem.orderNo ?? "—"}</span>
+                  : their COD {money(resolveItem.codAmount)}
+                  {resolveItem.ourGross != null &&
+                    ` vs ours ${money(resolveItem.ourGross)}`}
+                  {resolveItem.expectedNet != null &&
+                    ` · our net receivable ${money(resolveItem.expectedNet)}`}
+                  {resolveItem.paidNet != null &&
+                    ` · their net ${money(resolveItem.paidNet)}`}
+                  . Accepting records THEIR figure as the COD payment and lets
+                  the order complete; disputing holds everything until it is
+                  settled with Steadfast.
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-1.5">
+            <Label htmlFor="resolve-note">
+              Reason{" "}
+              <span className="text-muted-foreground">
+                (required to accept)
+              </span>
+            </Label>
+            <Textarea
+              id="resolve-note"
+              value={resolveNote}
+              onChange={(e) => setResolveNote(e.target.value)}
+              placeholder="e.g. COD reduced at delivery — customer paid the rest by bKash"
+              rows={3}
+            />
+          </div>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => void submitResolve("DISPUTE")}
+              disabled={resolving != null}
+            >
+              {resolving === "DISPUTE" ? "Saving…" : "Mark disputed"}
+            </Button>
+            <Button
+              onClick={() => void submitResolve("ACCEPT")}
+              disabled={resolving != null || !resolveNote.trim()}
+            >
+              {resolving === "ACCEPT" ? "Saving…" : "Accept their figure"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

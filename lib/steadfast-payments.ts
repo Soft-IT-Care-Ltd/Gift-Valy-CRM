@@ -1,6 +1,8 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./db";
-import { recomputeDue, dhakaDateBound } from "./orders";
+import { recomputeDue, dhakaDateBound, applyStatusTransition } from "./orders";
+import type { OrderStatusValue } from "./order-constants";
+import { AuthzError } from "./authz";
 import { getSystemUserId } from "./system-user";
 import { requireEnabledSteadfast } from "./steadfast-integration";
 import { getPayments, getPaymentDetail } from "./steadfast";
@@ -13,10 +15,13 @@ import {
   COURIER_DELIVERY_CHARGE_EXPENSE_CATEGORY,
   COD_CHARGE_EXPENSE_CATEGORY,
 } from "./courier-constants";
+import { STEADFAST_COURIER_NAME } from "./steadfast-constants";
 import {
+  computeNetReceivable,
   parsePaymentsList,
   parsePaymentDetail,
   round2,
+  PAYOUT_MATCH_TOLERANCE,
   type ParsedPaymentConsignment,
   type ParsedSteadfastPayment,
   type SteadfastPaymentDetailRow,
@@ -77,6 +82,8 @@ export interface PaymentIngestOutcome {
   matched: number; // consignments matched to our shipments
   unmatched: number; // consignments we don't recognize (flagged list)
   estimatesReplaced: number; // per-shipment estimated COD-fee expenses removed
+  discrepancies: number; // §2.7 — consignments judged MISMATCH this ingest
+  completed: number; // §2.7 — orders auto-moved DELIVERED → COMPLETED
 }
 
 export interface PaymentsSyncSummary {
@@ -86,6 +93,8 @@ export interface PaymentsSyncSummary {
   ordersSettled: number;
   codRecorded: number;
   unmatched: number;
+  discrepancies: number; // §2.7 — mismatches flagged this run
+  completed: number; // §2.7 — orders auto-completed this run
   detailsFetched: number;
   pageProbes: number; // §2.1 — GET /payments calls this run (tail hunt)
   note?: string; // e.g. "no Steadfast shipments yet — nothing to reconcile"
@@ -175,6 +184,8 @@ export async function ingestSteadfastPayment(
     detailRaw?: unknown;
     walletId: number | null;
     userId: number;
+    // §2.7 — the Steadfast courier row's COD fee % (default 1).
+    codFeePercent?: number | null;
     now?: Date;
   }
 ): Promise<PaymentIngestOutcome> {
@@ -245,6 +256,8 @@ export async function ingestSteadfastPayment(
     matched: 0,
     unmatched: 0,
     estimatesReplaced: 0,
+    discrepancies: 0,
+    completed: 0,
   };
 
   // ---- consignment items (only when a detail payload is on hand) ----
@@ -301,9 +314,11 @@ export async function ingestSteadfastPayment(
     });
   }
 
-  // ---- paid-side effects (idempotent, re-checked on every PAID ingest so a
-  // late-matched consignment still reconciles) ----
+  // ---- paid-side effects — the §2.7 justification engine (idempotent,
+  // re-run on every PAID ingest so late-matched consignments still judge) ----
   if (status === "PAID") {
+    const feePct =
+      args.codFeePercent != null ? Number(args.codFeePercent) : 1;
     const items = await tx.steadfastPaymentItem.findMany({
       where: { paymentId: record.id },
       include: {
@@ -314,7 +329,11 @@ export async function ingestSteadfastPayment(
             codFeeExpenseId: true,
             status: true,
             codAmount: true,
-            order: { select: { id: true, orderNo: true, dueAmount: true } },
+            courierCostActual: true,
+            courierCostEstimated: true,
+            order: {
+              select: { id: true, orderNo: true, dueAmount: true, status: true },
+            },
           },
         },
       },
@@ -323,33 +342,77 @@ export async function ingestSteadfastPayment(
     outcome.unmatched = items.length - outcome.matched;
 
     const receivedDate = record.paymentDate ?? now;
+    const label = amounts.invoiceNo ?? `#${parsed.steadfastPaymentId}`;
     for (const item of items) {
       const shipment = item.shipment;
       if (!shipment) continue;
 
       // The invoice's per-parcel bill is the authoritative delivery charge —
       // it replaces webhook/tracking-page estimates in courier_cost_actual.
-      if (item.deliveryCharge != null && Number(item.deliveryCharge) > 0) {
+      const billNum =
+        item.deliveryCharge != null && Number(item.deliveryCharge) > 0
+          ? round2(Number(item.deliveryCharge))
+          : null;
+      if (billNum != null) {
         await tx.shipment.update({
           where: { id: shipment.id },
-          data: {
-            courierCostActual: round2(Number(item.deliveryCharge)),
-            updatedBy: args.userId,
-          },
+          data: { courierCostActual: billNum, updatedBy: args.userId },
         });
       }
 
-      if (!shipment.codReceived) {
-        // GROSS due settlement: the per-parcel COD from the payload (fallback:
-        // the shipment's recorded COD), capped at the outstanding due so a
-        // stray payload figure can never drive a due negative.
-        const gross = round2(
-          item.codAmount != null && Number(item.codAmount) > 0
-            ? Number(item.codAmount)
-            : Number(shipment.codAmount)
-        );
+      // §2.7 verdict — their figures vs OUR computed net receivable.
+      // theirGross is the payload's per-parcel COD verbatim; theirNet is only
+      // derivable when their per-parcel bill is on hand or the payout has a
+      // single consignment (then the payout's own net IS this parcel's net) —
+      // the real payloads carry no per-parcel bill, so multi-parcel payouts
+      // are judged at gross level here and at payout level in the report.
+      const theirGross = round2(Number(item.codAmount));
+      const expected = computeNetReceivable({
+        codAmount: Number(shipment.codAmount),
+        courierCostActual:
+          billNum ??
+          (shipment.courierCostActual != null
+            ? Number(shipment.courierCostActual)
+            : null),
+        courierCostEstimated:
+          shipment.courierCostEstimated != null
+            ? Number(shipment.courierCostEstimated)
+            : null,
+        codFeePercent: feePct,
+      });
+      let theirNet: number | null = null;
+      if (billNum != null) {
+        const feeOnTheirs = round2(((theirGross - billNum) * feePct) / 100);
+        theirNet = round2(theirGross - billNum - feeOnTheirs);
+      } else if (items.length === 1 && amounts.amountDelivered > 0) {
+        theirNet = round2(amounts.netAmount);
+      }
+
+      const alreadySettled = shipment.codReceived || item.orderPaymentId != null;
+      const priorStatus = item.reconcileStatus;
+      let verdict = priorStatus;
+      if (priorStatus === "PENDING" || priorStatus === "MISMATCH") {
+        if (alreadySettled) {
+          // Manually/pre-§2.7 reconciled — the money question is closed.
+          verdict = "MATCHED";
+        } else {
+          const grossOk =
+            Math.abs(theirGross - round2(Number(shipment.codAmount))) <=
+            PAYOUT_MATCH_TOLERANCE;
+          const netOk =
+            theirNet == null ||
+            Math.abs(theirNet - expected.netReceivable) <=
+              PAYOUT_MATCH_TOLERANCE;
+          verdict = grossOk && netOk ? "MATCHED" : "MISMATCH";
+        }
+      }
+
+      if (verdict === "MATCHED" && !alreadySettled) {
+        // GROSS due settlement at THEIR verified figure (equals ours within
+        // tolerance), capped at the outstanding due so a stray payload figure
+        // can never drive a due negative.
         const due = Number(shipment.order.dueAmount);
-        const payAmount = round2(Math.min(gross, Math.max(due, 0)));
+        const payAmount = round2(Math.min(theirGross, Math.max(due, 0)));
         let orderPaymentId: number | null = null;
         if (payAmount > 0) {
           const payment = await tx.payment.create({
@@ -383,117 +446,379 @@ export async function ingestSteadfastPayment(
         });
         await tx.steadfastPaymentItem.update({
           where: { id: item.id },
-          data: { orderPaymentId },
+          data: {
+            orderPaymentId,
+            reconcileStatus: "MATCHED",
+            expectedNet: expected.netReceivable,
+            paidNet: theirNet,
+          },
         });
         outcome.ordersSettled += 1;
         outcome.codRecorded = round2(outcome.codRecorded + payAmount);
-      } else if (item.orderPaymentId == null) {
+        // §2.7 auto-COMPLETE: the payout justified this order's money —
+        // DELIVERED with a zero due moves on to COMPLETED.
+        if (
+          await autoCompleteOrder(
+            tx,
+            shipment.order.id,
+            args.userId,
+            `Steadfast payout ${label} reconciled — auto-completed`
+          )
+        ) {
+          outcome.completed += 1;
+        }
+      } else if (verdict === "MATCHED" && alreadySettled) {
         // Manually pre-reconciled parcel now covered by a real payout — the
         // skip keeps it idempotent, but two corrections make the books true:
         // 1. adopt the existing manual COD row as this item's payment link, so
         //    the dashboard's payout-vs-manual split counts the parcel ONCE
         //    (as net, via the payout) instead of net + manual gross;
-        // 2. the payment-level COD Charge below carries its REAL fee, so the
-        //    manual flow's ESTIMATED per-shipment fee expense would double-
-        //    count — replace the estimate with the invoice's number by
-        //    removing it.
-        const manualRow = await tx.payment.findFirst({
-          where: {
-            orderId: shipment.order.id,
-            type: "COD_COURIER",
-            isRejected: false,
-          },
-          orderBy: { id: "desc" },
-          select: { id: true },
-        });
-        if (manualRow) {
+        // 2. the payment-level COD Charge carries its REAL fee, so the manual
+        //    flow's ESTIMATED per-shipment fee expense would double-count —
+        //    replace the estimate with the invoice's number by removing it.
+        if (item.orderPaymentId == null) {
+          const manualRow = await tx.payment.findFirst({
+            where: {
+              orderId: shipment.order.id,
+              type: "COD_COURIER",
+              isRejected: false,
+            },
+            orderBy: { id: "desc" },
+            select: { id: true },
+          });
+          if (manualRow) {
+            await tx.steadfastPaymentItem.update({
+              where: { id: item.id },
+              data: { orderPaymentId: manualRow.id },
+            });
+          }
+          if (shipment.codFeeExpenseId != null) {
+            await tx.expense.delete({ where: { id: shipment.codFeeExpenseId } });
+            await tx.shipment.update({
+              where: { id: shipment.id },
+              data: { codFeeExpenseId: null, updatedBy: args.userId },
+            });
+            outcome.estimatesReplaced += 1;
+          }
+        }
+        if (priorStatus !== "MATCHED") {
           await tx.steadfastPaymentItem.update({
             where: { id: item.id },
-            data: { orderPaymentId: manualRow.id },
+            data: {
+              reconcileStatus: "MATCHED",
+              expectedNet: expected.netReceivable,
+              paidNet: theirNet,
+            },
           });
         }
-        if (shipment.codFeeExpenseId != null) {
-          await tx.expense.delete({ where: { id: shipment.codFeeExpenseId } });
-          await tx.shipment.update({
-            where: { id: shipment.id },
-            data: { codFeeExpenseId: null, updatedBy: args.userId },
-          });
-          outcome.estimatesReplaced += 1;
+        if (
+          await autoCompleteOrder(
+            tx,
+            shipment.order.id,
+            args.userId,
+            `Steadfast payout ${label} reconciled — auto-completed`
+          )
+        ) {
+          outcome.completed += 1;
+        }
+      } else if (verdict === "MISMATCH") {
+        // §2.7 discrepancy: NO money moves, the order does NOT complete — it
+        // joins the discrepancy list (⚠ on the shipment) until Admin/Accounts
+        // accepts their figure (with a reason) or marks it disputed.
+        await tx.steadfastPaymentItem.update({
+          where: { id: item.id },
+          data: {
+            reconcileStatus: "MISMATCH",
+            expectedNet: expected.netReceivable,
+            paidNet: theirNet,
+          },
+        });
+        await tx.shipment.update({
+          where: { id: shipment.id },
+          data: { needsAttention: true, updatedBy: args.userId },
+        });
+        outcome.discrepancies += 1;
+      } else if (verdict === "ACCEPTED") {
+        // Resolved earlier — just retry the auto-complete (the due may have
+        // cleared since, e.g. a later partial payment).
+        if (
+          await autoCompleteOrder(
+            tx,
+            shipment.order.id,
+            args.userId,
+            `Steadfast payout ${label} discrepancy accepted — auto-completed`
+          )
+        ) {
+          outcome.completed += 1;
         }
       }
+      // DISPUTED items stay put until a human changes their mind.
     }
 
-    // Payment-level real-number expenses — once per payout, guarded by the id
-    // columns. Both draw from the payout wallet so the wallet nets to NET.
-    //
-    // §2.1 — but ONLY for a payout whose consignments are ALL ours. The live
-    // account still receives payouts covering panel-sent parcels the system
-    // never saw; posting a payment-level charge total for those would book
-    // expenses against income that never enters the software. A partially or
-    // wholly foreign payout still settles its matched orders above, but its
-    // charges (and reconciled_at) wait — the Courier page shows the unmatched
-    // count, and the §2.7 justification engine is the designed resolution.
-    const fullyMatched = items.length > 0 && outcome.unmatched === 0;
-    if (!fullyMatched) {
-      await tx.steadfastPayment.update({
-        where: { id: record.id },
-        data: { walletId: record.walletId ?? args.walletId },
-      });
-      return outcome;
-    }
-    const expenseDate = dhakaDateBound(receivedDate);
-    const label = amounts.invoiceNo ?? `#${parsed.steadfastPaymentId}`;
-    let deliveryChargeExpenseId = record.deliveryChargeExpenseId;
-    if (deliveryChargeExpenseId == null && amounts.deliveryCharge > 0) {
-      const expense = await tx.expense.create({
-        data: {
-          expenseDate,
-          categoryId: await expenseCategoryId(
-            tx,
-            COURIER_DELIVERY_CHARGE_EXPENSE_CATEGORY
-          ),
-          amount: round2(amounts.deliveryCharge),
-          walletId: args.walletId,
-          notes: `Steadfast payout ${label} — delivery charge`,
-          refTable: "steadfast_payments",
-          refId: record.id,
-          createdBy: args.userId,
-          updatedBy: args.userId,
-        },
-      });
-      deliveryChargeExpenseId = expense.id;
-    }
-    let codChargeExpenseId = record.codChargeExpenseId;
-    if (codChargeExpenseId == null && amounts.codCharge > 0) {
-      const expense = await tx.expense.create({
-        data: {
-          expenseDate,
-          categoryId: await expenseCategoryId(tx, COD_CHARGE_EXPENSE_CATEGORY),
-          amount: round2(amounts.codCharge),
-          walletId: args.walletId,
-          notes: `Steadfast payout ${label} — COD charge`,
-          refTable: "steadfast_payments",
-          refId: record.id,
-          createdBy: args.userId,
-          updatedBy: args.userId,
-        },
-      });
-      codChargeExpenseId = expense.id;
-    }
-
-    outcome.reconciledNow = record.reconciledAt == null;
-    await tx.steadfastPayment.update({
-      where: { id: record.id },
-      data: {
-        deliveryChargeExpenseId,
-        codChargeExpenseId,
-        reconciledAt: record.reconciledAt ?? now,
-        walletId: record.walletId ?? args.walletId,
-      },
+    outcome.reconciledNow = await finalizeSteadfastPayment(tx, record.id, {
+      walletId: args.walletId,
+      userId: args.userId,
+      now,
     });
   }
 
   return outcome;
+}
+
+// §2.7 auto-COMPLETE — a payout-justified order moves DELIVERED → COMPLETED
+// once its due is zero, through the SAME shared transition as a manual move
+// (order_status_history + stock hook). Any other state is left for a human.
+async function autoCompleteOrder(
+  tx: Prisma.TransactionClient,
+  orderId: number,
+  userId: number,
+  note: string
+): Promise<boolean> {
+  const order = await tx.order.findUnique({
+    where: { id: orderId },
+    select: { id: true, status: true, cancelReason: true, dueAmount: true },
+  });
+  if (!order || order.status !== "DELIVERED" || Number(order.dueAmount) !== 0) {
+    return false;
+  }
+  await applyStatusTransition(
+    tx,
+    {
+      id: order.id,
+      status: order.status as OrderStatusValue,
+      cancelReason: order.cancelReason,
+    },
+    "COMPLETED",
+    userId,
+    note
+  );
+  return true;
+}
+
+// Payment-level real-number expenses + reconciled_at — once per payout,
+// guarded by the id columns, and ONLY when every consignment is ours AND in a
+// justified state (MATCHED/ACCEPTED). A payout with foreign parcels or open
+// discrepancies keeps its charges (and reconciled_at) on hold — §2.1/§2.7:
+// booking their charge totals would pit expenses against income the system
+// never sees. Called from the PAID ingest and again after each resolve.
+// Returns true when the payout became reconciled on THIS call.
+export async function finalizeSteadfastPayment(
+  tx: Prisma.TransactionClient,
+  paymentRecordId: number,
+  args: { walletId: number | null; userId: number; now?: Date }
+): Promise<boolean> {
+  const now = args.now ?? new Date();
+  const record = await tx.steadfastPayment.findUnique({
+    where: { id: paymentRecordId },
+    include: {
+      items: { select: { shipmentId: true, reconcileStatus: true } },
+    },
+  });
+  if (!record || record.status !== "PAID") return false;
+
+  const allJustified =
+    record.items.length > 0 &&
+    record.items.every(
+      (i) =>
+        i.shipmentId != null &&
+        (i.reconcileStatus === "MATCHED" || i.reconcileStatus === "ACCEPTED")
+    );
+  if (!allJustified) {
+    await tx.steadfastPayment.update({
+      where: { id: record.id },
+      data: { walletId: record.walletId ?? args.walletId },
+    });
+    return false;
+  }
+
+  const label = record.invoiceNo ?? `#${record.steadfastPaymentId}`;
+  const expenseDate = dhakaDateBound(record.paymentDate ?? now);
+  let deliveryChargeExpenseId = record.deliveryChargeExpenseId;
+  if (deliveryChargeExpenseId == null && Number(record.deliveryCharge) > 0) {
+    const expense = await tx.expense.create({
+      data: {
+        expenseDate,
+        categoryId: await expenseCategoryId(
+          tx,
+          COURIER_DELIVERY_CHARGE_EXPENSE_CATEGORY
+        ),
+        amount: round2(Number(record.deliveryCharge)),
+        walletId: args.walletId,
+        notes: `Steadfast payout ${label} — delivery charge`,
+        refTable: "steadfast_payments",
+        refId: record.id,
+        createdBy: args.userId,
+        updatedBy: args.userId,
+      },
+    });
+    deliveryChargeExpenseId = expense.id;
+  }
+  let codChargeExpenseId = record.codChargeExpenseId;
+  if (codChargeExpenseId == null && Number(record.codCharge) > 0) {
+    const expense = await tx.expense.create({
+      data: {
+        expenseDate,
+        categoryId: await expenseCategoryId(tx, COD_CHARGE_EXPENSE_CATEGORY),
+        amount: round2(Number(record.codCharge)),
+        walletId: args.walletId,
+        notes: `Steadfast payout ${label} — COD charge`,
+        refTable: "steadfast_payments",
+        refId: record.id,
+        createdBy: args.userId,
+        updatedBy: args.userId,
+      },
+    });
+    codChargeExpenseId = expense.id;
+  }
+
+  const reconciledNow = record.reconciledAt == null;
+  await tx.steadfastPayment.update({
+    where: { id: record.id },
+    data: {
+      deliveryChargeExpenseId,
+      codChargeExpenseId,
+      reconciledAt: record.reconciledAt ?? now,
+      walletId: record.walletId ?? args.walletId,
+    },
+  });
+  return reconciledNow;
+}
+
+// ---------- §2.7 — resolving a discrepancy (Admin/Accounts) ----------
+
+export interface ResolveOutcome {
+  reconcileStatus: "ACCEPTED" | "DISPUTED";
+  settled: boolean; // a COD payment row was created now
+  completed: boolean; // the order auto-completed now
+  paymentReconciled: boolean; // the payout finalized (expenses posted) now
+}
+
+// Accept: Steadfast's figure becomes the recorded truth — their gross posts as
+// the COD payment (capped at due), the shipment closes its COD wait, and the
+// order auto-completes when the due reaches zero. A remaining due (their gross
+// below our COD) stays visible on the order for the usual follow-up flows.
+// Dispute: the item is marked DISPUTED with the note; nothing moves — the
+// payout can never finalize around a disputed parcel.
+export async function resolveSteadfastPaymentItem(
+  tx: Prisma.TransactionClient,
+  args: {
+    itemId: number;
+    action: "ACCEPT" | "DISPUTE";
+    note: string | null;
+    userId: number;
+    walletId: number | null;
+    now?: Date;
+  }
+): Promise<ResolveOutcome> {
+  const now = args.now ?? new Date();
+  const item = await tx.steadfastPaymentItem.findUnique({
+    where: { id: args.itemId },
+    include: {
+      payment: { select: { id: true, status: true, paymentDate: true, invoiceNo: true, steadfastPaymentId: true } },
+      shipment: {
+        select: {
+          id: true,
+          codReceived: true,
+          status: true,
+          order: { select: { id: true, dueAmount: true } },
+        },
+      },
+    },
+  });
+  if (!item) throw new AuthzError(404, "Payment item not found");
+  if (!item.shipment) {
+    throw new AuthzError(400, "This consignment is not matched to an order");
+  }
+  if (item.payment.status !== "PAID") {
+    throw new AuthzError(400, "The payout is not paid yet");
+  }
+  if (item.reconcileStatus !== "MISMATCH" && item.reconcileStatus !== "DISPUTED") {
+    throw new AuthzError(400, "No open discrepancy on this consignment");
+  }
+
+  const note = args.note?.trim() || null;
+  if (args.action === "DISPUTE") {
+    await tx.steadfastPaymentItem.update({
+      where: { id: item.id },
+      data: {
+        reconcileStatus: "DISPUTED",
+        resolvedBy: args.userId,
+        resolvedAt: now,
+        resolveNote: note,
+      },
+    });
+    return {
+      reconcileStatus: "DISPUTED",
+      settled: false,
+      completed: false,
+      paymentReconciled: false,
+    };
+  }
+
+  // ACCEPT — the reason is the justification trail; never optional.
+  if (!note) {
+    throw new AuthzError(400, "A reason is required to accept their figure");
+  }
+  const label =
+    item.payment.invoiceNo ?? `#${item.payment.steadfastPaymentId}`;
+  const receivedDate = item.payment.paymentDate ?? now;
+  const theirGross = round2(Number(item.codAmount));
+  let settled = false;
+  let orderPaymentId: number | null = item.orderPaymentId;
+  if (!item.shipment.codReceived) {
+    const due = Number(item.shipment.order.dueAmount);
+    const payAmount = round2(Math.min(theirGross, Math.max(due, 0)));
+    if (payAmount > 0) {
+      const payment = await tx.payment.create({
+        data: {
+          orderId: item.shipment.order.id,
+          paymentDate: receivedDate,
+          type: "COD_COURIER",
+          method: "COURIER_COD",
+          amount: payAmount,
+          walletId: args.walletId,
+          isVerified: true,
+          verifiedBy: args.userId,
+          createdBy: args.userId,
+          updatedBy: args.userId,
+        },
+      });
+      orderPaymentId = payment.id;
+      await recomputeDue(tx, item.shipment.order.id);
+      settled = true;
+    }
+    await tx.shipment.update({
+      where: { id: item.shipment.id },
+      data: {
+        codReceived: true,
+        codReceivedAt: receivedDate,
+        needsAttention: false, // the ⚠ was this discrepancy — it is resolved
+        updatedBy: args.userId,
+      },
+    });
+  }
+  await tx.steadfastPaymentItem.update({
+    where: { id: item.id },
+    data: {
+      orderPaymentId,
+      reconcileStatus: "ACCEPTED",
+      resolvedBy: args.userId,
+      resolvedAt: now,
+      resolveNote: note,
+    },
+  });
+  const completed = await autoCompleteOrder(
+    tx,
+    item.shipment.order.id,
+    args.userId,
+    `Steadfast payout ${label} discrepancy accepted — auto-completed`
+  );
+  const paymentReconciled = await finalizeSteadfastPayment(tx, item.payment.id, {
+    walletId: args.walletId,
+    userId: args.userId,
+    now,
+  });
+  return { reconcileStatus: "ACCEPTED", settled, completed, paymentReconciled };
 }
 
 // ---------- the poll: GET /payments (+ details) → ingest ----------
@@ -504,6 +829,15 @@ export async function runSteadfastPaymentsSync(opts?: {
   const { integration, creds } = await requireEnabledSteadfast();
   const walletId = await getSteadfastPayoutWalletId();
   const userId = opts?.userId ?? (await getSystemUserId(prisma));
+  // §2.7 — the COD fee % lives on the Steadfast courier row (default 1%).
+  const courier = await prisma.courier.findUnique({
+    where: { name: STEADFAST_COURIER_NAME },
+    select: { codFeePercent: true },
+  });
+  const codFeePercent =
+    courier != null && Number(courier.codFeePercent) > 0
+      ? Number(courier.codFeePercent)
+      : 1;
 
   const summary: PaymentsSyncSummary = {
     payments: 0,
@@ -512,6 +846,8 @@ export async function runSteadfastPaymentsSync(opts?: {
     ordersSettled: 0,
     codRecorded: 0,
     unmatched: 0,
+    discrepancies: 0,
+    completed: 0,
     detailsFetched: 0,
     pageProbes: 0,
     errors: [],
@@ -663,6 +999,7 @@ export async function runSteadfastPaymentsSync(opts?: {
           detailRaw,
           walletId,
           userId,
+          codFeePercent,
         })
       );
       if (outcome.created) summary.created += 1;
@@ -670,6 +1007,8 @@ export async function runSteadfastPaymentsSync(opts?: {
       summary.ordersSettled += outcome.ordersSettled;
       summary.codRecorded = round2(summary.codRecorded + outcome.codRecorded);
       summary.unmatched += outcome.unmatched;
+      summary.discrepancies += outcome.discrepancies;
+      summary.completed += outcome.completed;
 
       await new Promise((r) => setTimeout(r, 150)); // §5 gentle pacing
     } catch (e) {
@@ -693,7 +1032,10 @@ export async function runSteadfastPaymentsSync(opts?: {
 export type SteadfastPaymentWithItems = Prisma.SteadfastPaymentGetPayload<{
   include: {
     items: {
-      include: { order: { select: { id: true; orderNo: true } } };
+      include: {
+        order: { select: { id: true; orderNo: true; status: true } };
+        shipment: { select: { codAmount: true } };
+      };
     };
   };
 }>;
@@ -706,6 +1048,22 @@ export function serializeSteadfastPayment(
   const cod = Number(p.codCharge);
   const net = Number(p.netAmount);
   const matchedCount = p.items.filter((i) => i.shipmentId != null).length;
+  // §2.7 payout report roll-up: Σ our expected nets vs their total paid —
+  // only meaningful once every consignment is ours and judged.
+  const judged = p.items.filter((i) => i.expectedNet != null);
+  const expectedNetSum =
+    judged.length > 0
+      ? round2(judged.reduce((s, i) => s + Number(i.expectedNet), 0))
+      : null;
+  const paidVsExpectedDiff =
+    expectedNetSum != null &&
+    judged.length === p.items.length &&
+    matchedCount === p.items.length
+      ? round2(net - expectedNetSum)
+      : null;
+  const discrepancyCount = p.items.filter(
+    (i) => i.reconcileStatus === "MISMATCH" || i.reconcileStatus === "DISPUTED"
+  ).length;
   return {
     id: p.id,
     steadfastPaymentId: Number(p.steadfastPaymentId),
@@ -720,6 +1078,10 @@ export function serializeSteadfastPayment(
     matchedCount,
     unmatchedCount: p.items.length - matchedCount,
     reconciles: Math.abs(gross - (net + delivery + cod)) <= 0.02,
+    expectedNetSum,
+    paidVsExpectedDiff,
+    discrepancyCount,
+    reconciledAt: p.reconciledAt ? p.reconciledAt.toISOString() : null,
     items: p.items.map((i) => ({
       id: i.id,
       consignmentId: i.consignmentId != null ? Number(i.consignmentId) : null,
@@ -728,8 +1090,16 @@ export function serializeSteadfastPayment(
       deliveryCharge: i.deliveryCharge != null ? Number(i.deliveryCharge) : null,
       orderId: i.order?.id ?? null,
       orderNo: i.order?.orderNo ?? null,
+      orderStatus: i.order?.status ?? null,
       matched: i.shipmentId != null,
       settled: i.orderPaymentId != null,
+      // §2.7 justification columns
+      ourGross: i.shipment != null ? Number(i.shipment.codAmount) : null,
+      expectedNet: i.expectedNet != null ? Number(i.expectedNet) : null,
+      paidNet: i.paidNet != null ? Number(i.paidNet) : null,
+      reconcileStatus: i.reconcileStatus,
+      resolvedAt: i.resolvedAt ? i.resolvedAt.toISOString() : null,
+      resolveNote: i.resolveNote,
     })),
   };
 }

@@ -393,23 +393,109 @@ export interface SteadfastPaymentRow {
   matchedCount: number;
   unmatchedCount: number;
   reconciles: boolean; // net + charges = gross (2p slack)
+  discrepancyCount: number; // §2.7 — open MISMATCH/DISPUTED consignments
 }
 
 export interface SteadfastPaymentItemRow {
   id: number;
   consignmentId: number | null;
   invoice: string | null;
-  codAmount: number;
+  codAmount: number; // THEIR per-parcel gross COD (verbatim)
   deliveryCharge: number | null; // their per-parcel "bill"
   orderId: number | null;
   orderNo: string | null;
+  orderStatus: string | null;
   matched: boolean;
   settled: boolean; // created a COD payment row (or was already reconciled)
+  // §2.7 justification columns
+  ourGross: number | null; // the shipment's recorded COD
+  expectedNet: number | null; // OUR computed net receivable (frozen at judge time)
+  paidNet: number | null; // their per-parcel net when derivable
+  reconcileStatus: SteadfastReconcileStatusValue;
+  resolvedAt: string | null;
+  resolveNote: string | null;
 }
 
-// The expandable detail view (GET /api/couriers/steadfast/payments/[id]).
+// The expandable detail view (GET /api/couriers/steadfast/payments/[id]) —
+// §2.7: this IS the payout report (total paid vs Σ our expected nets, the
+// per-consignment comparison table and the discrepancy count).
 export type SteadfastPaymentDetailRow = SteadfastPaymentRow & {
+  expectedNetSum: number | null; // Σ our expected nets (judged items)
+  paidVsExpectedDiff: number | null; // their net − Σ expected (fully judged only)
+  reconciledAt: string | null;
   items: SteadfastPaymentItemRow[];
+};
+
+// ---------- Round 2 §2.7 — per-order net receivable ----------
+
+// The payout math, per the spec and verified against real invoices:
+//   subtotal = COD − courier delivery charge
+//   COD fee  = feePct% of the SUBTOTAL (not of the raw COD — their real
+//              invoices bear this out: 2200 − 135 = 2065 → 1% ≈ 21 ✓)
+//   net receivable = COD − delivery charge − COD fee
+// Delivery charge: Steadfast's ACTUAL when known (webhook/invoice), else our
+// zone+weight estimate — `chargeKnown` says which one the figure is built on.
+export interface NetReceivable {
+  deliveryCharge: number; // the charge used (0 when neither actual nor estimate)
+  codFee: number;
+  deduction: number; // delivery charge + COD fee
+  netReceivable: number; // COD − deduction
+  chargeKnown: boolean; // true = actual SF charge; false = estimate/none
+}
+
+export function computeNetReceivable(args: {
+  codAmount: number;
+  courierCostActual?: number | null;
+  courierCostEstimated?: number | null;
+  codFeePercent?: number | null; // Steadfast courier row's fee %, default 1
+}): NetReceivable {
+  const cod = round2(Math.max(args.codAmount, 0));
+  const actual =
+    args.courierCostActual != null && args.courierCostActual > 0
+      ? args.courierCostActual
+      : null;
+  const estimate =
+    args.courierCostEstimated != null && args.courierCostEstimated > 0
+      ? args.courierCostEstimated
+      : null;
+  const charge = round2(actual ?? estimate ?? 0);
+  const feePct = args.codFeePercent != null ? Number(args.codFeePercent) : 1;
+  const codFee = round2(((cod - charge) * feePct) / 100);
+  const deduction = round2(charge + codFee);
+  return {
+    deliveryCharge: charge,
+    codFee,
+    deduction,
+    netReceivable: round2(cod - deduction),
+    chargeKnown: actual != null,
+  };
+}
+
+// Slack for the payout match verdict (their per-parcel fee rounding drifts by
+// a taka or two — e.g. a real 6530-subtotal payout carried a 64tk fee where
+// 1% is 65.30).
+export const PAYOUT_MATCH_TOLERANCE = 2;
+
+// §2.7 — the per-consignment reconcile verdict lifecycle. PENDING until the
+// payout is PAID with a detail on hand; then MATCHED (auto-completed) or
+// MISMATCH (discrepancy list) → resolved to ACCEPTED / DISPUTED by
+// Admin/Accounts.
+export type SteadfastReconcileStatusValue =
+  | "PENDING"
+  | "MATCHED"
+  | "MISMATCH"
+  | "ACCEPTED"
+  | "DISPUTED";
+
+export const STEADFAST_RECONCILE_STATUS_LABELS: Record<
+  SteadfastReconcileStatusValue,
+  string
+> = {
+  PENDING: "Pending",
+  MATCHED: "Matched",
+  MISMATCH: "Mismatch",
+  ACCEPTED: "Accepted",
+  DISPUTED: "Disputed",
 };
 
 // ---------- the reconcile identity ----------

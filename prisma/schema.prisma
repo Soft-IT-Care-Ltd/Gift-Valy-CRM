@@ -1221,6 +1221,17 @@ model SteadfastPayment {
 // surfaced as a flagged list for manual review. order_payment_id links the
 // COD_COURIER payment row this item auto-created — the guard that makes replays
 // idempotent AND lets the dashboard separate payout-backed COD from manual COD.
+// Round 2 §2.7 — per-consignment payout justification verdict.
+enum SteadfastReconcileStatus {
+  PENDING // payout not paid yet / no detail on hand
+  MATCHED // their figures ≈ our net receivable → auto-settled + completed
+  MISMATCH // discrepancy — held for Admin/Accounts
+  ACCEPTED // resolved: their figure accepted with a reason
+  DISPUTED // resolved: marked disputed
+
+  @@map("steadfast_reconcile_status")
+}
+
 model SteadfastPaymentItem {
   id             Int      @id @default(autoincrement())
   paymentId      Int      @map("payment_id")
@@ -1236,6 +1247,16 @@ model SteadfastPaymentItem {
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
+  // §2.7 — the justification verdict: our expected net receivable (frozen at
+  // reconcile time), their per-parcel net when derivable (single-parcel payout
+  // or per-parcel bill on hand), and the resolve trail for discrepancies.
+  reconcileStatus SteadfastReconcileStatus @default(PENDING) @map("reconcile_status")
+  expectedNet     Decimal?                 @map("expected_net") @db.Decimal(12, 2)
+  paidNet         Decimal?                 @map("paid_net") @db.Decimal(12, 2)
+  resolvedBy      Int?                     @map("resolved_by")
+  resolvedAt      DateTime?                @map("resolved_at")
+  resolveNote     String?                  @map("resolve_note")
+
   payment      SteadfastPayment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
   shipment     Shipment?        @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
   order        Order?           @relation(fields: [orderId], references: [id], onDelete: SetNull)
@@ -1244,6 +1265,7 @@ model SteadfastPaymentItem {
   @@unique([paymentId, consignmentId])
   @@index([shipmentId])
   @@index([consignmentId])
+  @@index([reconcileStatus])
   @@map("steadfast_payment_items")
 }
 

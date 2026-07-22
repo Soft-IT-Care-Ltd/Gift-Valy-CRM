@@ -15,8 +15,12 @@
 
 import { prisma } from "../lib/db";
 import { applyCodReceived } from "../lib/courier";
-import { ingestSteadfastPayment } from "../lib/steadfast-payments";
 import {
+  ingestSteadfastPayment,
+  resolveSteadfastPaymentItem,
+} from "../lib/steadfast-payments";
+import {
+  computeNetReceivable,
   findNextPage,
   normalizeSteadfastPaymentStatus,
   parsePaymentDetail,
@@ -50,6 +54,9 @@ const USER_ID = 1;
 const SF_PAYMENT_1 = 88_000_001;
 const SF_PAYMENT_2 = 88_000_002;
 const SF_PAYMENT_3 = 88_000_003;
+const SF_PAYMENT_4 = 88_000_004;
+const SF_PAYMENT_5 = 88_000_005;
+const SF_PAYMENT_6 = 88_000_006;
 const CID_BASE = 990_000_000;
 
 async function main() {
@@ -283,6 +290,57 @@ async function main() {
     check("paymentIdNumber(30820783) → 30820783", paymentIdNumber(30820783) === 30820783);
     check("paymentIdNumber('no digits') → null", paymentIdNumber("no digits") === null);
     check("paymentIdNumber(null) → null", paymentIdNumber(null) === null);
+  }
+
+  console.log("\nA3. Round 2 §2.7 — net receivable math:");
+  {
+    // The spec's own example: 5,500 − 215 = 5,285; − 1% (52.85) = 5,232.15.
+    const specExample = computeNetReceivable({
+      codAmount: 5500,
+      courierCostActual: 215,
+      codFeePercent: 1,
+    });
+    check(
+      "spec example: COD 5500 − 215 → fee 52.85 → net 5232.15",
+      specExample.codFee === 52.85 &&
+        specExample.deduction === 267.85 &&
+        specExample.netReceivable === 5232.15 &&
+        specExample.chargeKnown
+    );
+    // Real payout SFC-30820783: 2200 − 135 = 2065 → 1% = 20.65 ≈ their 21tk.
+    const real = computeNetReceivable({
+      codAmount: 2200,
+      courierCostActual: 135,
+      codFeePercent: 1,
+    });
+    check(
+      "real payout math: 2200 − 135 − 20.65 = 2044.35 (≈ their 2044 within tolerance)",
+      real.netReceivable === 2044.35 && Math.abs(real.netReceivable - 2044) <= 2
+    );
+    const estimated = computeNetReceivable({
+      codAmount: 2000,
+      courierCostActual: null,
+      courierCostEstimated: 135,
+      codFeePercent: 1,
+    });
+    check(
+      "estimate fallback when SF actual unknown (marked as such)",
+      estimated.deliveryCharge === 135 && !estimated.chargeKnown
+    );
+    const bare = computeNetReceivable({ codAmount: 1000, codFeePercent: 1 });
+    check(
+      "no charge data → deduction is the fee alone",
+      bare.deliveryCharge === 0 && bare.codFee === 10 && bare.netReceivable === 990
+    );
+    const halfPct = computeNetReceivable({
+      codAmount: 1000,
+      courierCostActual: 100,
+      codFeePercent: 0.5,
+    });
+    check(
+      "courier row's fee % honored (0.5% → 4.50)",
+      halfPct.codFee === 4.5 && halfPct.netReceivable === 895.5
+    );
   }
 
   console.log("\nB. Ingest scenarios on mocked payloads (rolled back):");
@@ -655,6 +713,306 @@ async function main() {
               Number(sfAgg._sum.deliveryCharge ?? 0) -
               Number(sfAgg._sum.codCharge ?? 0)
           ) === netSf
+        );
+
+        // ══ Round 2 §2.7 — the justification + auto-COMPLETE engine ══
+        console.log("\n  §2.7 payout justification (match / mismatch / resolve):");
+        const customer27 = await tx.customer.findFirstOrThrow({
+          select: { id: true },
+        });
+        const mkOrder = (orderNo: string, amount: number, due = amount) =>
+          tx.order.create({
+            data: {
+              orderNo,
+              customerId: customer27.id,
+              recipientName: "Verify §2.7",
+              recipientPhoneBd: "01712345678",
+              deliveryAddress: "House 1, Road 2",
+              district: "Dhaka",
+              thana: "Dhanmondi",
+              subtotal: amount,
+              totalAmount: amount,
+              dueAmount: due,
+              codAmount: due,
+              status: "DELIVERED",
+              salesExecutiveId: USER_ID,
+            },
+          });
+        const mk27Shipment = (
+          orderId: number,
+          cid: number,
+          cod: number,
+          actual: number | null
+        ) =>
+          tx.shipment.create({
+            data: {
+              orderId,
+              courierId: courier.id,
+              handoverDate: now,
+              codAmount: cod,
+              status: "DELIVERED",
+              deliveredAt: now,
+              consignmentId: BigInt(cid),
+              ...(actual != null ? { courierCostActual: actual } : {}),
+              createdBy: USER_ID,
+              updatedBy: USER_ID,
+            },
+          });
+
+        // ── D1: MATCH → auto-COMPLETE (the spec's own example numbers) ──
+        const o4 = await mkOrder("GV-SFP27-0001", 5500);
+        await mk27Shipment(o4.id, CID_BASE + 4, 5500, 215);
+        const r6 = await ingestSteadfastPayment(tx, {
+          parsed: {
+            steadfastPaymentId: SF_PAYMENT_4,
+            invoiceNo: "SFC-VERIFY-4",
+            statusRaw: "paid",
+            status: "PAID",
+            paymentDate: now,
+            amountDelivered: 5500,
+            deliveryCharge: 215,
+            codCharge: 52.85,
+            netAmount: 5232.15,
+            availableBalance: null,
+            parcelCount: 1,
+            raw: {},
+          },
+          consignments: [
+            { consignmentId: CID_BASE + 4, invoice: null, codAmount: 5500, deliveryCharge: null, statusRaw: "delivered", raw: {} },
+          ],
+          walletId: wallet.id,
+          userId: USER_ID,
+          codFeePercent: 1,
+          now,
+        });
+        const o4After = await tx.order.findUniqueOrThrow({ where: { id: o4.id } });
+        const p4Item = await tx.steadfastPaymentItem.findFirstOrThrow({
+          where: { payment: { steadfastPaymentId: BigInt(SF_PAYMENT_4) } },
+        });
+        const p4Record = await tx.steadfastPayment.findUniqueOrThrow({
+          where: { steadfastPaymentId: BigInt(SF_PAYMENT_4) },
+        });
+        check(
+          "match: order settled at gross + auto-COMPLETED (due 0)",
+          r6.ordersSettled === 1 &&
+            r6.completed === 1 &&
+            o4After.status === "COMPLETED" &&
+            Number(o4After.dueAmount) === 0
+        );
+        check(
+          "match: verdict MATCHED, expected net 5232.15 = paid net (spec math)",
+          p4Item.reconcileStatus === "MATCHED" &&
+            Number(p4Item.expectedNet) === 5232.15 &&
+            Number(p4Item.paidNet) === 5232.15
+        );
+        check(
+          "match: auto-complete wrote order_status_history",
+          (await tx.orderStatusHistory.count({
+            where: { orderId: o4.id, toStatus: "COMPLETED" },
+          })) === 1
+        );
+        check(
+          "match: payout finalized — expenses posted + reconciled",
+          r6.reconciledNow &&
+            p4Record.reconciledAt != null &&
+            p4Record.deliveryChargeExpenseId != null &&
+            p4Record.codChargeExpenseId != null
+        );
+
+        // ── D2: MISMATCH (their 3000 vs our 5000) → discrepancy → resolve ──
+        const o5 = await mkOrder("GV-SFP27-0002", 5000);
+        const s5 = await mk27Shipment(o5.id, CID_BASE + 5, 5000, 135);
+        const parsed5 = {
+          steadfastPaymentId: SF_PAYMENT_5,
+          invoiceNo: "SFC-VERIFY-5",
+          statusRaw: "paid",
+          status: "PAID" as const,
+          paymentDate: now,
+          amountDelivered: 3000,
+          deliveryCharge: 135,
+          codCharge: 28.65,
+          netAmount: 2836.35,
+          availableBalance: null,
+          parcelCount: 1,
+          raw: {},
+        };
+        const consignments5 = [
+          { consignmentId: CID_BASE + 5, invoice: null, codAmount: 3000, deliveryCharge: null, statusRaw: "delivered", raw: {} },
+        ];
+        const r7 = await ingestSteadfastPayment(tx, {
+          parsed: parsed5,
+          consignments: consignments5,
+          walletId: wallet.id,
+          userId: USER_ID,
+          codFeePercent: 1,
+          now,
+        });
+        const p5ItemQ = () =>
+          tx.steadfastPaymentItem.findFirstOrThrow({
+            where: { payment: { steadfastPaymentId: BigInt(SF_PAYMENT_5) } },
+          });
+        const p5RecordQ = () =>
+          tx.steadfastPayment.findUniqueOrThrow({
+            where: { steadfastPaymentId: BigInt(SF_PAYMENT_5) },
+          });
+        let p5 = await p5ItemQ();
+        const o5Mid = await tx.order.findUniqueOrThrow({ where: { id: o5.id } });
+        const s5Mid = await tx.shipment.findUniqueOrThrow({ where: { id: s5.id } });
+        check(
+          "mismatch: flagged MISMATCH, nothing settles",
+          r7.discrepancies === 1 &&
+            r7.ordersSettled === 0 &&
+            p5.reconcileStatus === "MISMATCH" &&
+            p5.orderPaymentId == null
+        );
+        check(
+          "mismatch: order stays DELIVERED with full due, shipment ⚠, COD open",
+          o5Mid.status === "DELIVERED" &&
+            Number(o5Mid.dueAmount) === 5000 &&
+            s5Mid.needsAttention &&
+            !s5Mid.codReceived
+        );
+        check(
+          "mismatch: payout NOT finalized (no expenses, not reconciled)",
+          (await p5RecordQ()).reconciledAt == null &&
+            (await tx.expense.count({
+              where: { refTable: "steadfast_payments", refId: r7.paymentRecordId },
+            })) === 0
+        );
+
+        const r8 = await ingestSteadfastPayment(tx, {
+          parsed: parsed5,
+          consignments: consignments5,
+          walletId: wallet.id,
+          userId: USER_ID,
+          codFeePercent: 1,
+          now,
+        });
+        check(
+          "mismatch replay: idempotent (still no money moved)",
+          r8.ordersSettled === 0 &&
+            (await tx.payment.count({
+              where: { orderId: o5.id, type: "COD_COURIER" },
+            })) === 0
+        );
+
+        let acceptNoNoteBlocked = false;
+        try {
+          await resolveSteadfastPaymentItem(tx, {
+            itemId: p5.id,
+            action: "ACCEPT",
+            note: "   ",
+            userId: USER_ID,
+            walletId: wallet.id,
+            now,
+          });
+        } catch {
+          acceptNoNoteBlocked = true;
+        }
+        check("resolve: accept WITHOUT a reason → blocked", acceptNoNoteBlocked);
+
+        const disputeOutcome = await resolveSteadfastPaymentItem(tx, {
+          itemId: p5.id,
+          action: "DISPUTE",
+          note: "raised with SF support",
+          userId: USER_ID,
+          walletId: wallet.id,
+          now,
+        });
+        p5 = await p5ItemQ();
+        check(
+          "resolve: dispute → DISPUTED with note, no money",
+          disputeOutcome.reconcileStatus === "DISPUTED" &&
+            p5.reconcileStatus === "DISPUTED" &&
+            p5.resolveNote === "raised with SF support" &&
+            (await tx.payment.count({
+              where: { orderId: o5.id, type: "COD_COURIER" },
+            })) === 0
+        );
+
+        const acceptOutcome = await resolveSteadfastPaymentItem(tx, {
+          itemId: p5.id,
+          action: "ACCEPT",
+          note: "partial delivery — SF collected 3000",
+          userId: USER_ID,
+          walletId: wallet.id,
+          now,
+        });
+        p5 = await p5ItemQ();
+        const o5After = await tx.order.findUniqueOrThrow({ where: { id: o5.id } });
+        const s5After = await tx.shipment.findUniqueOrThrow({ where: { id: s5.id } });
+        check(
+          "resolve: accept → THEIR 3000 posts, due 2000 remains",
+          acceptOutcome.settled &&
+            Number(o5After.dueAmount) === 2000 &&
+            p5.reconcileStatus === "ACCEPTED" &&
+            p5.orderPaymentId != null
+        );
+        check(
+          "resolve: shipment COD closed + ⚠ cleared; order NOT completed (due left)",
+          s5After.codReceived &&
+            !s5After.needsAttention &&
+            !acceptOutcome.completed &&
+            o5After.status === "DELIVERED"
+        );
+        check(
+          "resolve: payout finalizes once every consignment is justified",
+          acceptOutcome.paymentReconciled && (await p5RecordQ()).reconciledAt != null
+        );
+
+        const r9 = await ingestSteadfastPayment(tx, {
+          parsed: parsed5,
+          consignments: consignments5,
+          walletId: wallet.id,
+          userId: USER_ID,
+          codFeePercent: 1,
+          now,
+        });
+        p5 = await p5ItemQ();
+        check(
+          "post-accept replay: ACCEPTED sticks, no duplicate payment rows",
+          r9.ordersSettled === 0 &&
+            r9.discrepancies === 0 &&
+            p5.reconcileStatus === "ACCEPTED" &&
+            (await tx.payment.count({
+              where: { orderId: o5.id, type: "COD_COURIER" },
+            })) === 1
+        );
+
+        // ── D3: COD edited to 0 (customer paid bKash) — the real prod case ──
+        const o6 = await mkOrder("GV-SFP27-0003", 4000, 0);
+        await mk27Shipment(o6.id, CID_BASE + 6, 0, 135);
+        const r10 = await ingestSteadfastPayment(tx, {
+          parsed: {
+            steadfastPaymentId: SF_PAYMENT_6,
+            invoiceNo: "SFC-VERIFY-6",
+            statusRaw: "paid",
+            status: "PAID",
+            paymentDate: now,
+            amountDelivered: 0,
+            deliveryCharge: 135,
+            codCharge: 0,
+            netAmount: -135,
+            availableBalance: null,
+            parcelCount: 1,
+            raw: {},
+          },
+          consignments: [
+            { consignmentId: CID_BASE + 6, invoice: null, codAmount: 0, deliveryCharge: null, statusRaw: "delivered", raw: {} },
+          ],
+          walletId: wallet.id,
+          userId: USER_ID,
+          codFeePercent: 1,
+          now,
+        });
+        const o6After = await tx.order.findUniqueOrThrow({ where: { id: o6.id } });
+        check(
+          "zero-COD parcel (bKash-paid): MATCHED, no payment row, still auto-COMPLETED",
+          r10.completed === 1 &&
+            o6After.status === "COMPLETED" &&
+            (await tx.payment.count({
+              where: { orderId: o6.id, type: "COD_COURIER" },
+            })) === 0
         );
 
         throw new Rollback();
