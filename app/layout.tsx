@@ -8,6 +8,7 @@ import {
 } from "next/font/google";
 import "./globals.css";
 import { cn } from "@/lib/utils";
+import { LEGACY_POLYFILLS } from "@/lib/legacy-polyfills";
 import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/theme-provider";
 import { PwaRegister } from "@/components/pwa-register";
@@ -93,6 +94,8 @@ export default function RootLayout({
       )}
     >
       <body className="min-h-full flex flex-col">
+        {/* Must run before any bundle chunk — see lib/legacy-polyfills.ts */}
+        <script dangerouslySetInnerHTML={{ __html: LEGACY_POLYFILLS }} />
         <ThemeProvider
           attribute="class"
           defaultTheme="light"
