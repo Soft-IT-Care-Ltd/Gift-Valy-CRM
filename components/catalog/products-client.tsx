@@ -114,6 +114,8 @@ export function ProductsClient({
   const [typeFilter, setTypeFilter] = useState<"ALL" | "SELLABLE" | "COMPONENT">(
     "ALL"
   );
+  // §2.3 — live name/SKU filter on the list.
+  const [search, setSearch] = useState("");
 
   const [name, setName] = useState("");
   const [productType, setProductType] = useState<"SELLABLE" | "COMPONENT">(
@@ -243,8 +245,13 @@ export function ProductsClient({
     router.refresh();
   }
 
+  const q = search.trim().toLowerCase();
   const visible = products.filter(
-    (p) => typeFilter === "ALL" || p.productType === typeFilter
+    (p) =>
+      (typeFilter === "ALL" || p.productType === typeFilter) &&
+      (q === "" ||
+        p.name.toLowerCase().includes(q) ||
+        p.sku.toLowerCase().includes(q))
   );
 
   return (
@@ -257,7 +264,13 @@ export function ProductsClient({
             (cartons, safety boxes) consumed by BOMs.
           </CardDescription>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <Input
+            className="w-48"
+            placeholder="Search name / SKU…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
           <div className="flex rounded-md border p-0.5">
             {(
               [
@@ -400,7 +413,9 @@ export function ProductsClient({
                   colSpan={showCosts ? 10 : 9}
                   className="text-center text-muted-foreground"
                 >
-                  No products yet.
+                  {q || typeFilter !== "ALL"
+                    ? "No products match the search/filter."
+                    : "No products yet."}
                 </TableCell>
               </TableRow>
             )}

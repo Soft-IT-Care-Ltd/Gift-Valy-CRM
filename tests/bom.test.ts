@@ -9,6 +9,8 @@ import {
   collectChoiceGroups,
   explodePackage,
   explodeProduct,
+  packageContentsTree,
+  productContentsTree,
   packageAvailability,
   packageCost,
   packageWeightKg,
@@ -340,6 +342,78 @@ describe("choice groups", () => {
     assert.equal(map.size, 1);
     assert.equal(selectionsFromJson(null).size, 0);
     assert.equal(selectionsFromJson({ 500: 5 }).size, 0); // not an array
+  });
+});
+
+// ---------- contents tree (packing view / invoice, CORRECTIONS §2.2) ----------
+
+describe("contents tree (§2.2)", () => {
+  test("package tree keeps nesting: sub-packages, choices, materials", () => {
+    const c = demoCatalog();
+    const tree = packageContentsTree(c, 102);
+    assert.equal(tree.kind, "PACKAGE");
+    assert.equal(tree.name, "Probashi Combo");
+    assert.deepEqual(
+      tree.children.map((n) => [n.kind, n.name]),
+      [
+        ["PACKAGE", "Chocolate Box (package)"],
+        ["PACKAGE", "Saree Box"],
+        ["PRODUCT", "Red Teddy"], // default choice resolved
+        ["MATERIAL", "Big Carton"], // package-level COMPONENT product
+      ]
+    );
+    // The chosen variant carries its group label for the packing view.
+    assert.equal(tree.children[2].choiceLabel, "Teddy colour");
+    // Inside the sub-package: the choc-box product with its OWN packing
+    // material as a MATERIAL child (never re-listed at package level).
+    const chocBox = tree.children[0];
+    assert.deepEqual(
+      chocBox.children.map((n) => [n.kind, n.name, n.qty]),
+      [
+        ["PRODUCT", "Chocolate Box (product)", 1],
+        ["PRODUCT", "Dairy Milk", 5],
+        ["PRODUCT", "KitKat", 6],
+        ["PRODUCT", "Wishing Card", 1],
+      ]
+    );
+    assert.deepEqual(
+      chocBox.children[0].children.map((n) => [n.kind, n.name]),
+      [["MATERIAL", "Safety Box"]]
+    );
+  });
+
+  test("selections route the choice node; qty scales the whole tree", () => {
+    const c = demoCatalog();
+    const tree = packageContentsTree(c, 102, 2, new Map([[GROUP_TEDDY, 5]]));
+    const teddy = tree.children[2];
+    assert.equal(teddy.name, "Pink Teddy");
+    assert.equal(teddy.qty, 2);
+    // Dairy Milk sits two levels deep: 5 per package × 2 packages.
+    assert.equal(tree.children[0].children[1].qty, 10);
+    // Saree's own Combo Box material also scales.
+    assert.deepEqual(
+      tree.children[1].children[0].children.map((n) => [n.kind, n.qty]),
+      [["MATERIAL", 2]]
+    );
+  });
+
+  test("product tree = the product with its materials as children", () => {
+    const c = demoCatalog();
+    const tree = productContentsTree(c, 8, 3);
+    assert.equal(tree.kind, "PRODUCT");
+    assert.equal(tree.qty, 3);
+    assert.deepEqual(
+      tree.children.map((n) => [n.kind, n.name, n.qty]),
+      [["MATERIAL", "Safety Box", 3]]
+    );
+  });
+
+  test("tree walk enforces cycles and the depth cap like the explosion", () => {
+    const cyc = catalogOf(
+      [product(1, "X")],
+      [pkg(200, "Self", [line({ kind: "PACKAGE", childPackageId: 200 })])]
+    );
+    assert.throws(() => packageContentsTree(cyc, 200), BomError);
   });
 });
 

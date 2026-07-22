@@ -436,9 +436,9 @@ R11. [FIXED] [UI] **Responsive + full-width layout**: on large screens the dashb
 
 2.1 [FIXED] [BUG] **Courier COD receive gives no update in the software**: when the courier's COD payment is received, nothing updates in our system. Diagnose the whole R8 payments-sync path in production: is the hourly poller calling GET /payments? Are the API keys entered/valid? Is the real response shape different from the parser's assumption (log the raw response)? Fix so received COD payouts actually flow in (see 2.7 for the full completion behavior).
 
-2.2 [BUG] **Package (group product) component details missing on Invoice + Packing view**: when a package/combo is ordered, the invoice and the packing team's screen show only the package name — not the inner products. Fix: the Packing Queue/pack dialog must show the FULL BOM explosion (each component product + qty, chosen variants, packing materials) as the pick list; the Invoice shows the package name plus an indented list of its included items (customer-friendly names, qty only, no costs).
+2.2 [FIXED] [BUG] **Package (group product) component details missing on Invoice + Packing view**: when a package/combo is ordered, the invoice and the packing team's screen show only the package name — not the inner products. Fix: the Packing Queue/pack dialog must show the FULL BOM explosion (each component product + qty, chosen variants, packing materials) as the pick list; the Invoice shows the package name plus an indented list of its included items (customer-friendly names, qty only, no costs).
 
-2.3 [CHANGE] **Product search box**: add search (name/SKU) to the product/catalog list AND the order form's item picker (type-ahead). Packages searchable too.
+2.3 [FIXED] [CHANGE] **Product search box**: add search (name/SKU) to the product/catalog list AND the order form's item picker (type-ahead). Packages searchable too.
 
 2.4 [FIXED] [BUG] **Rider Info never appears in the In Transit tab** (production): rider name/phone stay empty even after riders are assigned. Diagnose the tracking-page scraper against REAL production tracking pages (fetch a live parcel's page; check the current HTML for the "Assigned To" block — markup may have changed or the section may be JS-rendered). Fix the parser; if the data is genuinely not obtainable, show "—" with a "view tracking page" link instead of silently empty.
 

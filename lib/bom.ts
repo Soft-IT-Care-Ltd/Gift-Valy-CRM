@@ -372,6 +372,148 @@ export function productAvailability(
   return min;
 }
 
+// ---------- structured contents tree (packing view / invoice, §2.2) ----------
+
+/** One node of an item's exploded contents, structure preserved: which
+ *  component sits inside which package, which choice group a variant came
+ *  from, and which lines are packing materials. The flat Explosion drives
+ *  stock math; this tree drives what humans read. */
+export interface BomTreeNode {
+  kind: "PRODUCT" | "PACKAGE" | "MATERIAL";
+  productId: number | null;
+  packageId: number | null;
+  name: string;
+  /** Total quantity for the qty passed to the root call. */
+  qty: number;
+  /** Label of the CHOICE group this product was resolved from, if any. */
+  choiceLabel: string | null;
+  children: BomTreeNode[];
+}
+
+function productTreeNode(
+  catalog: BomCatalog,
+  productId: number,
+  qty: number,
+  asMaterial: boolean,
+  choiceLabel: string | null,
+  chain: number[]
+): BomTreeNode {
+  if (chain.includes(productId)) {
+    const p = catalog.products.get(productId);
+    throw new BomError(
+      `Component cycle detected at product "${p?.name ?? productId}"`
+    );
+  }
+  const product = productOrThrow(catalog, productId);
+  return {
+    kind: asMaterial ? "MATERIAL" : "PRODUCT",
+    productId,
+    packageId: null,
+    name: product.name,
+    qty,
+    choiceLabel,
+    children: product.components.map((c) =>
+      productTreeNode(catalog, c.componentId, qty * c.qty, true, null, [
+        ...chain,
+        productId,
+      ])
+    ),
+  };
+}
+
+function packageTreeNode(
+  catalog: BomCatalog,
+  packageId: number,
+  qty: number,
+  selections: ChoiceSelections | undefined,
+  chain: number[]
+): BomTreeNode {
+  if (chain.includes(packageId)) {
+    const p = catalog.packages.get(packageId);
+    throw new BomError(
+      `Package cycle detected: "${p?.name ?? packageId}" contains itself (directly or via a sub-package)`
+    );
+  }
+  if (chain.length + 1 > MAX_PACKAGE_DEPTH) {
+    throw new BomError(
+      `Package nesting exceeds the maximum of ${MAX_PACKAGE_DEPTH} levels`
+    );
+  }
+  const pkg = packageOrThrow(catalog, packageId);
+  const nextChain = [...chain, packageId];
+  const children: BomTreeNode[] = [];
+  for (const line of pkg.items) {
+    if (line.kind === "PRODUCT") {
+      // A COMPONENT-type product on a package BOM is a package-level packing
+      // material (big carton, wrap) — mark it so views can badge/hide it.
+      const isMaterial =
+        productOrThrow(catalog, line.productId!).productType === "COMPONENT";
+      children.push(
+        productTreeNode(
+          catalog,
+          line.productId!,
+          qty * line.qty,
+          isMaterial,
+          null,
+          []
+        )
+      );
+    } else if (line.kind === "PACKAGE") {
+      children.push(
+        packageTreeNode(
+          catalog,
+          line.childPackageId!,
+          qty * line.qty,
+          selections,
+          nextChain
+        )
+      );
+    } else {
+      children.push(
+        productTreeNode(
+          catalog,
+          resolveChoice(line, selections),
+          qty * line.qty,
+          false,
+          line.choiceLabel ?? "Choose one",
+          []
+        )
+      );
+    }
+  }
+  return {
+    kind: "PACKAGE",
+    productId: null,
+    packageId,
+    name: pkg.name,
+    qty,
+    choiceLabel: null,
+    children,
+  };
+}
+
+/** Contents tree for `qty` units of a standalone product — the product with
+ *  its packing materials as MATERIAL children. */
+export function productContentsTree(
+  catalog: BomCatalog,
+  productId: number,
+  qty = 1
+): BomTreeNode {
+  return productTreeNode(catalog, productId, qty, false, null, []);
+}
+
+/** Contents tree for `qty` units of a package, honouring the order's choice
+ *  selections (defaults when absent). Same walk as explodePackage, keeping
+ *  the nesting instead of flattening. */
+export function packageContentsTree(
+  catalog: BomCatalog,
+  packageId: number,
+  qty = 1,
+  selections?: ChoiceSelections
+): BomTreeNode {
+  return packageTreeNode(catalog, packageId, qty, selections, []);
+}
+
 // ---------- choice groups of a package tree (order form / detail) ----------
 
 export interface ChoiceGroupInfo {

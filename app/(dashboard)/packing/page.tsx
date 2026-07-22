@@ -4,7 +4,10 @@ import {
   BomError,
   explodePackage,
   explodeProduct,
+  packageContentsTree,
+  productContentsTree,
   selectionsFromJson,
+  type BomTreeNode,
   type Explosion,
   type StoredChoiceSelection,
 } from "@/lib/bom";
@@ -12,6 +15,7 @@ import { loadBomCatalog } from "@/lib/bom-db";
 import { dhakaTomorrow } from "@/lib/delivery-schedule";
 import {
   PackingQueueClient,
+  type BreakdownLine,
   type PackingOrder,
   type PickLine,
 } from "@/components/packing/packing-queue-client";
@@ -92,6 +96,54 @@ export default async function PackingQueuePage() {
         if (!(e instanceof BomError)) throw e; // broken BOM — skip its pick lines
       }
     }
+
+    // §2.2 — per-item structured breakdown: the SAME walk as the pick list but
+    // with nesting kept, so the packer sees what goes INSIDE each package
+    // (components + qty, the chosen variant of every choice group, packing
+    // materials) instead of only the aggregated leaf totals.
+    const flattenTree = (
+      node: BomTreeNode,
+      depth: number,
+      out: BreakdownLine[]
+    ) => {
+      for (const child of node.children) {
+        const meta =
+          child.productId != null ? productMeta.get(child.productId) : undefined;
+        out.push({
+          depth,
+          kind: child.kind,
+          name: child.name,
+          sku: meta?.sku ?? null,
+          qty: child.qty,
+          unit: meta?.unit ?? "pcs",
+          choiceLabel: child.choiceLabel,
+        });
+        flattenTree(child, depth + 1, out);
+      }
+    };
+    const breakdownFor = (it: (typeof o.items)[number]): BreakdownLine[] => {
+      const out: BreakdownLine[] = [];
+      try {
+        if (it.itemType === "PRODUCT" && it.productId != null) {
+          flattenTree(productContentsTree(catalog, it.productId, it.qty), 0, out);
+        } else if (it.itemType === "PACKAGE" && it.packageId != null) {
+          flattenTree(
+            packageContentsTree(
+              catalog,
+              it.packageId,
+              it.qty,
+              selectionsFromJson(it.choiceSelections)
+            ),
+            0,
+            out
+          );
+        }
+      } catch (e) {
+        if (!(e instanceof BomError)) throw e; // broken BOM — item shows plain
+        return [];
+      }
+      return out;
+    };
     return {
       id: o.id,
       orderNo: o.orderNo,
@@ -123,6 +175,7 @@ export default async function PackingQueuePage() {
               : name,
           isPackage: it.itemType === "PACKAGE",
           qty: it.qty,
+          breakdown: breakdownFor(it),
         };
       }),
       pickList: [...pick.values()].sort((a, b) => a.name.localeCompare(b.name)),

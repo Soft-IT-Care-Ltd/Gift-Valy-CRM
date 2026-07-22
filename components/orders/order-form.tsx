@@ -23,6 +23,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { PhotoField } from "@/components/catalog/photo-field";
+import {
+  ItemCombobox,
+  type ComboOption,
+} from "@/components/orders/item-combobox";
 import { money } from "@/lib/format";
 import {
   CUSTOMER_COUNTRIES,
@@ -303,6 +307,32 @@ export function OrderForm({
   );
   const packageById = useMemo(
     () => new Map(packages.map((p) => [String(p.id), p])),
+    [packages]
+  );
+
+  // §2.3 — type-ahead options: searchable by name AND SKU/code.
+  const productComboOptions = useMemo<ComboOption[]>(
+    () =>
+      products.map((p) => ({
+        value: String(p.id),
+        label: p.name,
+        code: p.sku,
+        hint: money(p.sellingPrice),
+      })),
+    [products]
+  );
+  const packageComboOptions = useMemo<ComboOption[]>(
+    () =>
+      packages.map((p) => ({
+        value: String(p.id),
+        label: p.name,
+        code: p.code,
+        hint:
+          money(p.sellingPrice) +
+          (p.availableToSell != null
+            ? ` · can build ${p.availableToSell}`
+            : ""),
+      })),
     [packages]
   );
 
@@ -816,8 +846,6 @@ export function OrderForm({
             const floor = lineFloor(line);
             const below =
               floor != null && line.itemId && Number(line.unitPrice) < floor;
-            const options =
-              line.itemType === "PRODUCT" ? products : packages;
             return (
               <div key={line.key} className="grid gap-1">
                 <div className="grid grid-cols-[110px_1fr_70px_110px_36px] items-end gap-2">
@@ -849,25 +877,21 @@ export function OrderForm({
                     {line.key === lines[0].key && (
                       <Label className="text-xs">Item</Label>
                     )}
-                    <Select
+                    {/* §2.3 — type-ahead search by name or SKU/code */}
+                    <ItemCombobox
+                      options={
+                        line.itemType === "PRODUCT"
+                          ? productComboOptions
+                          : packageComboOptions
+                      }
                       value={line.itemId}
-                      onValueChange={(v) => selectItem(line, v)}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Pick an item" />
-                      </SelectTrigger>
-                      <SelectContent className="max-h-64">
-                        {options.map((o) => (
-                          <SelectItem key={o.id} value={String(o.id)}>
-                            {o.name} — {money(o.sellingPrice)}
-                            {"availableToSell" in o &&
-                            o.availableToSell != null
-                              ? ` (can build ${o.availableToSell})`
-                              : ""}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                      onSelect={(v) => selectItem(line, v)}
+                      placeholder={
+                        line.itemType === "PRODUCT"
+                          ? "Search product — name / SKU…"
+                          : "Search package — name / code…"
+                      }
+                    />
                   </div>
                   <div className="grid gap-1">
                     {line.key === lines[0].key && (

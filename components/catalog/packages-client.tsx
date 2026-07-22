@@ -149,6 +149,8 @@ export function PackagesClient({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<PackageRow | null>(null);
   const [saving, setSaving] = useState(false);
+  // §2.3 — live name/code filter on the list.
+  const [search, setSearch] = useState("");
 
   const [name, setName] = useState("");
   const [sellingPrice, setSellingPrice] = useState("");
@@ -361,6 +363,14 @@ export function PackagesClient({
     router.refresh();
   }
 
+  const pkgQuery = search.trim().toLowerCase();
+  const visiblePackages = packages.filter(
+    (p) =>
+      pkgQuery === "" ||
+      p.name.toLowerCase().includes(pkgQuery) ||
+      p.code.toLowerCase().includes(pkgQuery)
+  );
+
   const contentsLabel = (pkg: PackageRow) =>
     pkg.items
       .map((it) =>
@@ -383,7 +393,15 @@ export function PackagesClient({
             current stock, full explosion included.
           </CardDescription>
         </div>
-        {canManage && <Button onClick={openCreate}>New package</Button>}
+        <div className="flex flex-wrap items-center gap-3">
+          <Input
+            className="w-48"
+            placeholder="Search name / code…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          {canManage && <Button onClick={openCreate}>New package</Button>}
+        </div>
       </CardHeader>
       <CardContent>
         <Table>
@@ -402,7 +420,7 @@ export function PackagesClient({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {packages.map((pkg) => (
+            {visiblePackages.map((pkg) => (
               <TableRow key={pkg.id}>
                 <TableCell className="font-mono text-xs">{pkg.code}</TableCell>
                 <TableCell className="font-medium">
@@ -492,13 +510,15 @@ export function PackagesClient({
                 )}
               </TableRow>
             ))}
-            {packages.length === 0 && (
+            {visiblePackages.length === 0 && (
               <TableRow>
                 <TableCell
                   colSpan={showCosts ? 10 : 8}
                   className="text-center text-muted-foreground"
                 >
-                  No packages yet.
+                  {search.trim()
+                    ? "No packages match the search."
+                    : "No packages yet."}
                 </TableCell>
               </TableRow>
             )}

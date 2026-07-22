@@ -30,6 +30,19 @@ export interface PickLine {
   onHand: number | null; // null = per-order product (not stock-tracked)
 }
 
+// §2.2 — one line of an item's full BOM explosion, nesting preserved via
+// depth: components with qty, chosen variants (choiceLabel set), packing
+// materials (kind MATERIAL). Quantities are order totals (item qty included).
+export interface BreakdownLine {
+  depth: number;
+  kind: "PRODUCT" | "PACKAGE" | "MATERIAL";
+  name: string;
+  sku: string | null;
+  qty: number;
+  unit: string;
+  choiceLabel: string | null;
+}
+
 export interface PackingOrder {
   id: number;
   orderNo: string;
@@ -44,7 +57,12 @@ export interface PackingOrder {
   lateRisk: boolean; // §3 — fixed date due today/tomorrow, still un-packed
   notes: string | null;
   courierNote: string | null;
-  items: { name: string; isPackage: boolean; qty: number }[];
+  items: {
+    name: string;
+    isPackage: boolean;
+    qty: number;
+    breakdown: BreakdownLine[];
+  }[];
   pickList: PickLine[];
   perOrderItems: PickLine[];
 }
@@ -125,11 +143,68 @@ export function PackingQueueClient({ queue }: { queue: PackingOrder[] }) {
               </Button>
             </CardHeader>
             <CardContent className="space-y-3">
-              <div className="text-sm">
-                <span className="font-medium">Order:</span>{" "}
-                {o.items
-                  .map((it) => `${it.qty} × ${it.name}${it.isPackage ? " (package)" : ""}`)
-                  .join(", ")}
+              {/* §2.2 — each item with its FULL BOM explosion: what goes
+                  inside each package (components, chosen variants, packing
+                  materials), indented by nesting level. The table below stays
+                  the aggregated pick list with stock checks. */}
+              <div className="grid gap-2 text-sm">
+                {o.items.map((it, i) => (
+                  <div key={i}>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium">
+                        {it.qty} × {it.name}
+                      </span>
+                      {it.isPackage && (
+                        <Badge variant="outline">package</Badge>
+                      )}
+                    </div>
+                    {it.breakdown.length > 0 && (
+                      <div className="mt-1 grid gap-0.5">
+                        {it.breakdown.map((l, j) => (
+                          <div
+                            key={j}
+                            className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground"
+                            style={{ paddingLeft: `${16 + l.depth * 16}px` }}
+                          >
+                            <span
+                              className={
+                                l.kind === "MATERIAL" ? "" : "text-foreground"
+                              }
+                            >
+                              {l.qty} × {l.name}
+                            </span>
+                            {l.sku && (
+                              <span className="font-mono text-[10px]">
+                                {l.sku}
+                              </span>
+                            )}
+                            {l.choiceLabel && (
+                              <Badge className="bg-violet-100 text-[10px] text-violet-800 hover:bg-violet-100 dark:bg-violet-950 dark:text-violet-300">
+                                {l.choiceLabel}: chosen
+                              </Badge>
+                            )}
+                            {l.kind === "MATERIAL" && (
+                              <Badge
+                                variant="outline"
+                                className="text-[10px]"
+                              >
+                                packing material
+                              </Badge>
+                            )}
+                            {l.kind === "PACKAGE" && (
+                              <Badge
+                                variant="secondary"
+                                className="text-[10px]"
+                              >
+                                sub-package
+                              </Badge>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
               {o.notes && (
                 <div className="rounded-md bg-muted px-3 py-2 text-sm">
@@ -145,6 +220,9 @@ export function PackingQueueClient({ queue }: { queue: PackingOrder[] }) {
 
               {o.pickList.length > 0 && (
                 <Table>
+                  <caption className="mb-1 caption-top text-left text-xs font-medium text-muted-foreground">
+                    Pick list — totals across the whole order
+                  </caption>
                   <TableHeader>
                     <TableRow>
                       <TableHead>SKU</TableHead>

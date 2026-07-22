@@ -18,6 +18,13 @@ import {
   brandingContactLine,
   type InvoiceBranding,
 } from "./invoice-branding-constants";
+import {
+  BomError,
+  packageContentsTree,
+  selectionsFromJson,
+  type BomTreeNode,
+} from "./bom";
+import { loadBomCatalog } from "./bom-db";
 
 // ============ SPEC §5 — Invoice PDF generation & versioning ============
 // Auto-generated on order confirmation; regenerated (version N+1) when an
@@ -92,6 +99,57 @@ const invoiceOrderInclude = {
 export type InvoiceOrder = Prisma.OrderGetPayload<{
   include: typeof invoiceOrderInclude;
 }>;
+
+// ============ CORRECTIONS §2.2 — package contents on the invoice ============
+// A package row prints with an indented list of what's inside — customer-
+// friendly names + per-package quantity only, never costs. Lines come from the
+// same BOM walk as packing (packageContentsTree), with packing materials
+// filtered out (the customer cares about the gift, not the carton).
+
+export interface PackageContentLine {
+  depth: number; // 0 = directly inside the package, 1 = inside a sub-package…
+  name: string;
+  qty: number; // per ONE package (the row already carries the item qty)
+}
+
+export type InvoiceOrderItem = InvoiceOrder["items"][number] & {
+  contents?: PackageContentLine[];
+};
+
+function flattenContents(node: BomTreeNode, depth = 0): PackageContentLine[] {
+  const out: PackageContentLine[] = [];
+  for (const child of node.children) {
+    if (child.kind === "MATERIAL") continue;
+    out.push({ depth, name: child.name, qty: child.qty });
+    out.push(...flattenContents(child, depth + 1));
+  }
+  return out;
+}
+
+// Enriches loaded orders in place. A broken/edited BOM must never block an
+// invoice — those items simply print without a contents list.
+async function attachPackageContents(orders: InvoiceOrder[]): Promise<void> {
+  if (!orders.some((o) => o.items.some((it) => it.itemType === "PACKAGE"))) {
+    return;
+  }
+  const catalog = await loadBomCatalog(prisma);
+  for (const order of orders) {
+    for (const it of order.items) {
+      if (it.itemType !== "PACKAGE" || it.packageId == null) continue;
+      try {
+        const tree = packageContentsTree(
+          catalog,
+          it.packageId,
+          1,
+          selectionsFromJson(it.choiceSelections)
+        );
+        (it as InvoiceOrderItem).contents = flattenContents(tree);
+      } catch (e) {
+        if (!(e instanceof BomError)) throw e;
+      }
+    }
+  }
+}
 
 type Doc = PDFKit.PDFDocument;
 
@@ -305,14 +363,27 @@ function drawInvoiceHalf(
 
   // The totals/footer block needs this much of the slot — items get the rest.
   const reservedBottom = (currency ? 116 : 100) + 18;
-  const maxRows = Math.max(
-    1,
-    Math.floor((slotBottom - reservedBottom - y) / ROW_H)
+  const availH = slotBottom - reservedBottom - y;
+
+  // §2.2 — a package row prints an indented list of its contents (names +
+  // per-package qty, no costs). Contents print only when the whole table —
+  // every item row plus every contents line — fits the half-A4 slot;
+  // otherwise the table falls back to plain item rows so nothing overflows.
+  const CONTENT_ROW_H = 9.5;
+  const contentsOf = (
+    it: (typeof order.items)[number]
+  ): PackageContentLine[] => (it as InvoiceOrderItem).contents ?? [];
+  const fullH = order.items.reduce(
+    (s, it) => s + ROW_H + contentsOf(it).length * CONTENT_ROW_H,
+    0
   );
+  const showContents = fullH <= availH;
+
+  const maxRows = Math.max(1, Math.floor(availH / ROW_H));
   // All items fit? Every row prints. Otherwise the last visible row condenses
   // the remainder into "+N more items" — totals always cover everything.
   const visible =
-    order.items.length <= maxRows
+    showContents || order.items.length <= maxRows
       ? order.items
       : order.items.slice(0, maxRows - 1);
   const rest = order.items.slice(visible.length);
@@ -323,7 +394,8 @@ function drawInvoiceHalf(
     qty: string,
     unit: string,
     amount: string,
-    muted = false
+    muted = false,
+    border = true
   ) => {
     if (i % 2 === 1) doc.rect(x0, y, W, ROW_H).fill(ZEBRA);
     const ty = y + 2.5;
@@ -340,7 +412,30 @@ function drawInvoiceHalf(
     doc.text(unit, col.unit.x, ty, { width: col.unit.w - pad, align: "right" });
     doc.text(amount, col.total.x, ty, { width: col.total.w - pad, align: "right" });
     y += ROW_H;
-    doc.moveTo(x0, y).lineTo(x1, y).lineWidth(0.4).stroke(BORDER);
+    if (border) doc.moveTo(x0, y).lineTo(x1, y).lineWidth(0.4).stroke(BORDER);
+  };
+
+  // "·  1 × Teddy Bear" under the package row, indented one step further per
+  // sub-package level. Shares the parent row's zebra fill; the row border
+  // moves to the last contents line so the block reads as one item.
+  const drawContentRow = (
+    parentIdx: number,
+    line: PackageContentLine,
+    border: boolean
+  ) => {
+    if (parentIdx % 2 === 1) doc.rect(x0, y, W, CONTENT_ROW_H).fill(ZEBRA);
+    const indent = 8 + line.depth * 10;
+    doc
+      .font("bn")
+      .fontSize(6.5)
+      .fillColor(MUTED)
+      .text(`·  ${line.qty} × ${pdfSafe(line.name)}`, col.item.x + indent, y + 1.5, {
+        width: col.item.w - pad - indent,
+        height: 8,
+        ellipsis: true,
+      });
+    y += CONTENT_ROW_H;
+    if (border) doc.moveTo(x0, y).lineTo(x1, y).lineWidth(0.4).stroke(BORDER);
   };
 
   visible.forEach((it, i) => {
@@ -350,7 +445,19 @@ function drawInvoiceHalf(
       pdfSafe(name) +
       (it.itemType === "PACKAGE" ? "  [Package]" : "") +
       (code ? `  ·  ${code}` : "");
-    drawRow(i, label, String(it.qty), bdt(Number(it.unitPrice)), bdt(Number(it.lineTotal)));
+    const contents = showContents ? contentsOf(it) : [];
+    drawRow(
+      i,
+      label,
+      String(it.qty),
+      bdt(Number(it.unitPrice)),
+      bdt(Number(it.lineTotal)),
+      false,
+      contents.length === 0
+    );
+    contents.forEach((line, j) =>
+      drawContentRow(i, line, j === contents.length - 1)
+    );
   });
   if (rest.length > 0) {
     const qtySum = rest.reduce((s, it) => s + it.qty, 0);
@@ -581,20 +688,24 @@ export async function renderInvoiceBatchPdf(
 // ---------- generation + versioning ----------
 
 export async function loadInvoiceOrder(orderId: number): Promise<InvoiceOrder> {
-  return prisma.order.findUniqueOrThrow({
+  const order = await prisma.order.findUniqueOrThrow({
     where: { id: orderId },
     include: invoiceOrderInclude,
   });
+  await attachPackageContents([order]);
+  return order;
 }
 
 // Bulk print (§6h) — ordered by order number so the printed stack is sorted.
 // The lib/db.ts trash auto-filter silently drops trashed ids.
 export async function loadInvoiceOrders(orderIds: number[]): Promise<InvoiceOrder[]> {
-  return prisma.order.findMany({
+  const orders = await prisma.order.findMany({
     where: { id: { in: orderIds } },
     include: invoiceOrderInclude,
     orderBy: { orderNo: "asc" },
   });
+  await attachPackageContents(orders);
+  return orders;
 }
 
 export function invoiceFileName(orderNo: string, version: number): string {
