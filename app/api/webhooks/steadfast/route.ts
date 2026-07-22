@@ -3,9 +3,16 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import {
   getSteadfastIntegration,
+  credsFromIntegration,
   verifyWebhookToken,
   bearerFromHeader,
 } from "@/lib/steadfast-integration";
+import {
+  mapSteadfastStatus,
+  parseSteadfastTimestamp,
+  resolveFinalWebhookStatus,
+} from "@/lib/steadfast-constants";
+import { statusByCid, statusByInvoice } from "@/lib/steadfast";
 import {
   ingestDeliveryStatus,
   ingestTrackingUpdate,
@@ -95,12 +102,47 @@ export async function POST(req: Request) {
         payload.delivery_charge != null && !Number.isNaN(Number(payload.delivery_charge))
           ? Number(payload.delivery_charge)
           : null;
+
+      // Round 2 §2.6 — Steadfast's webhook says "delivered"/"cancelled" the
+      // moment the RIDER marks the parcel, while hub approval (when the COD
+      // actually enters our balance) can still be pending — and the status API
+      // is the source that distinguishes the two. Cross-check it BEFORE the
+      // transaction (network never inside a tx, §5): an *_approval_pending
+      // answer holds the order In Transit under the matching approval sub-tab;
+      // agreement, an older status, or an unreachable API trusts the webhook.
+      const webhookStatus = String(payload.status ?? "");
+      let effectiveStatus = webhookStatus;
+      let crossChecked: string | null = null;
+      const mapped = mapSteadfastStatus(webhookStatus);
+      if (mapped.to === "DELIVERED" || mapped.to === "RETURNED") {
+        try {
+          const creds = credsFromIntegration(integration);
+          const cid = (shipment as { consignmentId?: bigint | null }).consignmentId;
+          const res =
+            cid != null
+              ? await statusByCid(creds, cid)
+              : await statusByInvoice(
+                  creds,
+                  String(payload.invoice ?? "").trim()
+                );
+          crossChecked = res.deliveryStatus;
+          effectiveStatus = resolveFinalWebhookStatus(webhookStatus, crossChecked);
+        } catch {
+          // Keys unset / API down — behave exactly as before the cross-check.
+        }
+      }
+
       await prisma.$transaction((tx) =>
         ingestDeliveryStatus(tx, {
           shipment,
-          rawStatus: String(payload.status ?? ""),
+          rawStatus: effectiveStatus,
           source: "WEBHOOK",
-          rawPayload: payload,
+          // Keep the audit honest: the payload is logged verbatim, plus what
+          // the status API said when it overruled the webhook's status.
+          rawPayload:
+            crossChecked != null && effectiveStatus !== webhookStatus
+              ? { ...payload, status_api_cross_check: crossChecked }
+              : payload,
           deliveryCharge,
         })
       );
@@ -118,8 +160,10 @@ export async function POST(req: Request) {
         );
         return NextResponse.json(OK, { status: 200 });
       }
-      const rawAt = payload.updated_at ? new Date(String(payload.updated_at)) : new Date();
-      const eventAt = Number.isNaN(rawAt.getTime()) ? new Date() : rawAt;
+      // Round 2 §2.5 — updated_at is Asia/Dhaka local with no zone marker
+      // (verified in production: it runs exactly +6h ahead of arrival when
+      // read as UTC). Parse it as Dhaka; store UTC.
+      const eventAt = parseSteadfastTimestamp(payload.updated_at) ?? new Date();
       await prisma.$transaction((tx) =>
         ingestTrackingUpdate(tx, {
           shipmentId: shipment.id,

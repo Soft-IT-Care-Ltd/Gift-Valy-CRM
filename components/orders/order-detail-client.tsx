@@ -784,7 +784,19 @@ export function OrderDetailClient({
                         )}
                       </div>
                     ) : (
-                      <div className="text-muted-foreground">Unassigned</div>
+                      <div className="text-muted-foreground">
+                        —
+                        {order.shipment.trackingUrl && (
+                          <a
+                            href={order.shipment.trackingUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="ml-2 text-xs text-primary underline-offset-2 hover:underline"
+                          >
+                            view tracking page
+                          </a>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}

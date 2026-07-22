@@ -28,6 +28,10 @@ export const SETTING_KEYS = {
   // expenses draw from here (out), so the wallet's running balance moves by
   // exactly the NET payout.
   steadfastPayoutWalletId: "steadfast_payout_wallet_id",
+  // Round 2 §2.1 — GET /payments pages oldest-first with no pagination
+  // metadata, so the sync remembers the last non-empty page (the tail, where
+  // new payouts appear) and resumes there instead of re-walking 60+ pages.
+  steadfastPaymentsLastPage: "steadfast_payments_last_page",
 } as const;
 
 // SPEC §10 default onboarding grace: new joiners excluded from team aggregates
@@ -108,6 +112,21 @@ export async function getSteadfastPayoutWalletId(): Promise<number | null> {
     select: { isActive: true },
   });
   return wallet?.isActive ? id : null;
+}
+
+// Round 2 §2.1 — the payments-sync page cursor (see SETTING_KEYS note).
+export async function getSteadfastPaymentsLastPage(): Promise<number> {
+  const page = await getNumberSetting(SETTING_KEYS.steadfastPaymentsLastPage, 1);
+  return Math.max(1, Math.floor(page));
+}
+
+export async function setSteadfastPaymentsLastPage(page: number): Promise<void> {
+  const value = Math.max(1, Math.floor(page));
+  await prisma.setting.upsert({
+    where: { key: SETTING_KEYS.steadfastPaymentsLastPage },
+    update: { value },
+    create: { key: SETTING_KEYS.steadfastPaymentsLastPage, value },
+  });
 }
 
 // CORRECTIONS Orders §7 (C8) — occasion reminder lead time (days before the

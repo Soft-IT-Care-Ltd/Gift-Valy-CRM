@@ -1,6 +1,8 @@
 // Steadfast payments parsing — CORRECTIONS Orders §R8. Client-safe: no
 // Prisma/server imports (shared by the sync engine, the API routes, the UI and
 // the verify script).
+
+import { parseSteadfastTimestamp } from "./steadfast-constants";
 //
 // The GET /payments and GET /payments/{payment_id} response shapes are NOT
 // fully documented in the V1 API doc — only the invoice's business fields are
@@ -13,6 +15,24 @@
 // other two sides are present. The sync engine stores the first real raw
 // list/detail payloads on the payment row (raw_payload / raw_detail_payload)
 // so the actual shape is captured in the DB the first time it is seen.
+//
+// Round 2 §2.1 — the REAL production envelope (captured 2026-07-22):
+//   { status: 1, alertClass, message, payments: [ {
+//       payment_id: "SFC-30820783",      // the invoice STRING, not a number
+//       amount: 2200,                    // GROSS delivered COD
+//       method: "Bank",
+//       due_bills: 135, paid_bills: 0,   // delivery charges deducted at source
+//       charges: 21,                     // the ~1% COD fee
+//       total: 2044,                     // NET paid out (amount − due_bills − charges)
+//       status_label: "paid",
+//       created_at / ready_at / paid_at: "YYYY-MM-DD HH:MM:SS"  // Asia/Dhaka local!
+//   } ] }
+// 10 per page, OLDEST first, no pagination metadata; past-the-end pages answer
+// an empty list. GET /payments/{id} accepts the numeric tail of payment_id and
+// wraps the same fields under `payment` plus its `consignments` array
+// (consignment_id, invoice, tracking_code, cod_amount, status — no per-parcel
+// bill). The pre-fix parser dropped every row because pickNumber(payment_id)
+// choked on the "SFC-…" string — hence the perpetual `payments: 0` sync.
 
 export const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -116,8 +136,26 @@ function pickDate(obj: unknown, keyPatterns: RegExp[]): Date | null {
   for (const pattern of keyPatterns) {
     const v = pick(obj, pattern, 0);
     if (typeof v !== "string" && typeof v !== "number") continue;
-    const d = new Date(v);
-    if (!Number.isNaN(d.getTime())) return d;
+    // §2.5 — their zone-less "YYYY-MM-DD HH:MM:SS" stamps are Asia/Dhaka local.
+    const d = parseSteadfastTimestamp(v);
+    if (d) return d;
+  }
+  return null;
+}
+
+// §2.1 — payment_id arrives as the invoice string "SFC-30820783"; its numeric
+// tail is the id the detail endpoint accepts (GET /payments/30820783 and
+// /payments/SFC-30820783 answer identically — verified in production).
+export function paymentIdNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const m = value.trim().match(/(\d+)\s*$/);
+    if (m) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
   }
   return null;
 }
@@ -127,7 +165,9 @@ function pickDate(obj: unknown, keyPatterns: RegExp[]): Date | null {
 // A payment-shaped object: has an id AND at least one of status / an invoice-ish
 // code / a money field. Loose on purpose — the envelope shape is unknown.
 const PAYMENT_ID_KEY = /^(id|payment_id|paymentid)$/i;
-const STATUS_KEY = /^(status|payment_status|state)$/i;
+// status_label is the real list rows' key (§2.1); bare `status` is the
+// envelope's own success flag there, but consignments still use it.
+const STATUS_KEY = /^(status|payment_status|status_label|state)$/i;
 const INVOICE_NO_KEY = /^(invoice|invoice_no|invoice_number|invoice_code|payment_invoice)$/i;
 const MONEYISH_KEY =
   /^(amount|amount_delivered|net_amount|total_amount|payable_amount|cod_amount)$/i;
@@ -179,20 +219,25 @@ export function findNextPage(raw: unknown): number | null {
 
 // ---------- list-item / detail parsing ----------
 
+// §2.5 — paid_at is the actual payout moment; ready_at (invoice ready) beats
+// the request-time created_at when paid_at is absent (an unpaid invoice).
 const PAYMENT_DATE_KEYS = [
-  /^payment_date$/i,
   /^paid_at$/i,
+  /^payment_date$/i,
+  /^ready_at$/i,
   /^date$/i,
   /^created_at$/i,
 ];
+// §2.1 real keys first (amount / due_bills / charges / total), the older
+// documented/guessed spellings kept as fallbacks.
 const AMOUNT_DELIVERED_KEY =
-  /^(amount_delivered|total_amount_delivered|total_delivered_amount|delivered_amount|cod_amount|total_cod_amount|total_cod|collected_amount|total_collected_amount)$/i;
+  /^(amount|amount_delivered|total_amount_delivered|total_delivered_amount|delivered_amount|cod_amount|total_cod_amount|total_cod|collected_amount|total_collected_amount)$/i;
 const PAYABLE_DELIVERY_CHARGE_KEY =
-  /^(payable_delivery_charge|total_delivery_charge|delivery_charge|delivery_fee|total_delivery_fee)$/i;
+  /^(due_bills|payable_delivery_charge|total_delivery_charge|delivery_charge|delivery_fee|total_delivery_fee)$/i;
 const COD_CHARGE_KEY =
-  /^(cod_charge|total_cod_charge|cod_fee|total_cod_fee|cod_percentage_amount)$/i;
+  /^(charges|cod_charge|total_cod_charge|cod_fee|total_cod_fee|cod_percentage_amount)$/i;
 const NET_AMOUNT_KEY =
-  /^(net_amount|net_payable|net_paid|net_payable_amount|payable_amount|total_paid|paid_amount)$/i;
+  /^(total|net_amount|net_payable|net_paid|net_payable_amount|payable_amount|total_paid|paid_amount)$/i;
 const AVAILABLE_BALANCE_KEY = /^(available_balance|current_balance)$/i;
 const PARCEL_COUNT_KEY =
   /^(total_parcels?|parcels?_count|parcels?|consignments?_count|total_consignments?|number_of_parcels?)$/i;
@@ -210,11 +255,14 @@ function deriveAmounts(p: ParsedSteadfastPayment): ParsedSteadfastPayment {
 }
 
 export function parsePaymentListItem(item: unknown): ParsedSteadfastPayment | null {
-  const id = pickNumber(item, PAYMENT_ID_KEY, 1);
+  // §2.1 — the real rows carry payment_id as the "SFC-…" invoice string; take
+  // its numeric tail (which the detail endpoint accepts) as the id.
+  const id = paymentIdNumber(pick(item, PAYMENT_ID_KEY, 1));
   if (id == null || id <= 0) return null;
 
   let invoiceNo = pickString(item, INVOICE_NO_KEY, 1);
-  // Fallback: any own string value shaped like their SFC- invoice code.
+  // Fallback: any own string value shaped like their SFC- invoice code (the
+  // real payment_id itself is exactly that, so the invoice is never lost).
   if (!invoiceNo && item != null && typeof item === "object" && !Array.isArray(item)) {
     for (const value of Object.values(item as Record<string, unknown>)) {
       if (typeof value === "string" && /^SFC-\d+$/i.test(value.trim())) {

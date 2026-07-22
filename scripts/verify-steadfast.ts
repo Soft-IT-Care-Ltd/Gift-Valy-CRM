@@ -19,6 +19,8 @@ import {
   realRider,
   findRiderInfo,
   findNumericField,
+  parseSteadfastTimestamp,
+  resolveFinalWebhookStatus,
   DELIVERY_CHARGE_KEY,
   STEADFAST_COURIER_NAME,
 } from "../lib/steadfast-constants";
@@ -137,6 +139,88 @@ function unitTests() {
   check("cod_charge is NOT matched as delivery charge", findNumericField({ cod_charge: 20 }, DELIVERY_CHARGE_KEY) === null);
 
   // §R4 — overcharge alert fires only past the tolerance.
+  // ---- Round 2 regressions — payload shapes captured from PRODUCTION ----
+  console.log("\nRound 2 §2.4 — placeholder riders (real tracking-page shapes):");
+  // An unassigned parcel's rider block, exactly as steadfast.com.bd/tl/… sent
+  // it (this shape reached the production DB as a fake ASSIGNED).
+  check(
+    'rider {name:"Unassigned", phone:"0"} → NOT a real rider',
+    realRider({ name: "Unassigned", phone: "0" }) === null
+  );
+  check(
+    "an assigned parcel's real rider block → accepted",
+    realRider({ name: "Munna Hossen", phone: "01321045503" }) != null
+  );
+  check('name "N/A" → rejected', realRider({ name: "N/A", phone: "01711111111" }) === null);
+  check('name "not assigned" → rejected', realRider({ name: "Not Assigned", phone: "01711111111" }) === null);
+  check('phone "000-000" (all zeros) → rejected', realRider({ name: "Karim", phone: "000-000-0000" }) === null);
+  check('phone "12345" (too short) → rejected', realRider({ name: "Karim", phone: "12345" }) === null);
+  check(
+    "findRiderInfo + placeholder gate end-to-end",
+    realRider(findRiderInfo({ result: { rider: { name: "Unassigned", phone: "0" } } })) === null
+  );
+
+  console.log("\nRound 2 §2.5 — Steadfast timestamps are Asia/Dhaka local:");
+  // Real webhook: updated_at "2026-07-22 05:46:25" arrived 23:46:25 UTC.
+  check(
+    'webhook "2026-07-22 05:46:25" → 2026-07-21T23:46:25Z',
+    parseSteadfastTimestamp("2026-07-22 05:46:25")?.toISOString() ===
+      "2026-07-21T23:46:25.000Z"
+  );
+  check(
+    'payments "2026-07-21 10:52:53" (paid_at) → 04:52:53Z',
+    parseSteadfastTimestamp("2026-07-21 10:52:53")?.toISOString() ===
+      "2026-07-21T04:52:53.000Z"
+  );
+  check(
+    'ISO "2026-07-18T14:01:57.000000Z" passes through unshifted',
+    parseSteadfastTimestamp("2026-07-18T14:01:57.000000Z")?.toISOString() ===
+      "2026-07-18T14:01:57.000Z"
+  );
+  check("garbage → null", parseSteadfastTimestamp("not a date") === null);
+  check("empty → null", parseSteadfastTimestamp("") === null);
+  check("null → null", parseSteadfastTimestamp(null) === null);
+
+  console.log("\nRound 2 §2.6 — final webhook cross-checked against the status API:");
+  check(
+    'webhook delivered + API delivered_approval_pending → hold (API wins)',
+    resolveFinalWebhookStatus("delivered", "delivered_approval_pending") ===
+      "delivered_approval_pending"
+  );
+  check(
+    "webhook cancelled + API cancelled_approval_pending → hold",
+    resolveFinalWebhookStatus("cancelled", "cancelled_approval_pending") ===
+      "cancelled_approval_pending"
+  );
+  check(
+    "webhook delivered + API delivered (hub already approved) → delivered",
+    resolveFinalWebhookStatus("delivered", "delivered") === "delivered"
+  );
+  check(
+    "webhook delivered + no API answer → trust the webhook",
+    resolveFinalWebhookStatus("delivered", null) === "delivered"
+  );
+  check(
+    'webhook delivered + lagging API "pending" → never downgraded',
+    resolveFinalWebhookStatus("delivered", "pending") === "delivered"
+  );
+  check(
+    "non-final webhook (pending) never cross-overridden",
+    resolveFinalWebhookStatus("pending", "delivered_approval_pending") === "pending"
+  );
+  check(
+    "hold maps to IN_TRANSIT + DELIVERY_APPROVAL_PENDING sub-state",
+    mapSteadfastStatus("delivered_approval_pending").to === "IN_TRANSIT" &&
+      mapSteadfastStatus("delivered_approval_pending").courierStatus ===
+        "DELIVERY_APPROVAL_PENDING"
+  );
+  check(
+    "return hold maps to IN_TRANSIT + RETURN_APPROVAL_PENDING",
+    mapSteadfastStatus("cancelled_approval_pending").to === "IN_TRANSIT" &&
+      mapSteadfastStatus("cancelled_approval_pending").courierStatus ===
+        "RETURN_APPROVAL_PENDING"
+  );
+
   console.log("\n§R4 overcharge tolerance:");
   check("SF 10% over, tol 10% → not flagged (within)", isOvercharged(100, 110, 10) === false);
   check("SF >10% over, tol 10% → flagged", isOvercharged(100, 110.01, 10) === true);
@@ -320,6 +404,73 @@ async function integrationTests() {
         sR2 = await load(shipR2.id);
         check("§R2 later pending (no rider) → ASSIGNED not downgraded", sR2.courierStatus === "ASSIGNED");
         check("§R2 rider on record is kept", sR2.riderName === "Karim Rider");
+
+        // ---- B3. Round 2 §2.6 — approval-pending holds the order In Transit ----
+        console.log("\nB3. §2.6 delivery/return approval-pending stage (production flow):");
+        const oAp = await makePackedOrder("GV-SFTEST-AP1", 2200);
+        const shipAp = await sendViaSteadfast(oAp.id, 1000095, 2200);
+        await ingestDeliveryStatus(tx, {
+          shipment: asSync(await load(shipAp.id)),
+          rawStatus: "pending",
+          source: "WEBHOOK",
+          rawPayload: { notification_type: "delivery_status", consignment_id: 1000095, status: "pending" },
+        });
+        // The rider marks delivered → webhook says "delivered", the status API
+        // still says delivered_approval_pending → the route ingests the API's
+        // status (resolveFinalWebhookStatus). Replicate that resolved ingest.
+        await ingestDeliveryStatus(tx, {
+          shipment: asSync(await load(shipAp.id)),
+          rawStatus: resolveFinalWebhookStatus("delivered", "delivered_approval_pending"),
+          source: "WEBHOOK",
+          rawPayload: {
+            notification_type: "delivery_status",
+            consignment_id: 1000095,
+            status: "delivered",
+            status_api_cross_check: "delivered_approval_pending",
+            delivery_charge: 135,
+          },
+          deliveryCharge: 135,
+        });
+        let sAp = await load(shipAp.id);
+        check("§2.6 rider-delivered → order STAYS IN_TRANSIT", (await orderStatus(oAp.id)) === "IN_TRANSIT");
+        check("§2.6 sub-state → DELIVERY_APPROVAL_PENDING", sAp.courierStatus === "DELIVERY_APPROVAL_PENDING");
+        check("§2.6 webhook delivery_charge still captured on hold", Number(sAp.courierCostActual) === 135);
+        check("§2.6 approval-pending is NOT final (polling continues)", !isFinalSteadfastStatus("delivered_approval_pending"));
+        // Hub approves → the poll (or a later webhook) sees the true final status.
+        await ingestDeliveryStatus(tx, {
+          shipment: asSync(await load(shipAp.id)),
+          rawStatus: "delivered",
+          source: "POLL",
+          rawPayload: { consignment_id: 1000095, delivery_status: "delivered" },
+        });
+        sAp = await load(shipAp.id);
+        check("§2.6 hub approval (final delivered) → order DELIVERED", (await orderStatus(oAp.id)) === "DELIVERED");
+        check("§2.6 delivered is final (polling stops)", isFinalSteadfastStatus("delivered"));
+
+        // Return side: rider returns → cancelled webhook + approval-pending API.
+        const oAp2 = await makePackedOrder("GV-SFTEST-AP2", 900);
+        const shipAp2 = await sendViaSteadfast(oAp2.id, 1000096, 900);
+        await ingestDeliveryStatus(tx, {
+          shipment: asSync(await load(shipAp2.id)),
+          rawStatus: "pending",
+          source: "WEBHOOK",
+          rawPayload: { notification_type: "delivery_status", consignment_id: 1000096, status: "pending" },
+        });
+        await ingestDeliveryStatus(tx, {
+          shipment: asSync(await load(shipAp2.id)),
+          rawStatus: resolveFinalWebhookStatus("cancelled", "cancelled_approval_pending"),
+          source: "WEBHOOK",
+          rawPayload: { notification_type: "delivery_status", consignment_id: 1000096, status: "cancelled" },
+        });
+        check("§2.6 rider-returned → order STAYS IN_TRANSIT", (await orderStatus(oAp2.id)) === "IN_TRANSIT");
+        check("§2.6 sub-state → RETURN_APPROVAL_PENDING", (await load(shipAp2.id)).courierStatus === "RETURN_APPROVAL_PENDING");
+        await ingestDeliveryStatus(tx, {
+          shipment: asSync(await load(shipAp2.id)),
+          rawStatus: "cancelled",
+          source: "POLL",
+          rawPayload: { consignment_id: 1000096, delivery_status: "cancelled" },
+        });
+        check("§2.6 final cancelled → order RETURNED", (await orderStatus(oAp2.id)) === "RETURNED");
 
         // ---- C. idempotency: replayed webhook (§3A step 5 / acceptance #7) ----
         console.log("\nC. Duplicate webhook is idempotent:");

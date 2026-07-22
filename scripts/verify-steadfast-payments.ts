@@ -21,6 +21,7 @@ import {
   normalizeSteadfastPaymentStatus,
   parsePaymentDetail,
   parsePaymentsList,
+  paymentIdNumber,
   paymentReconciles,
   round2,
 } from "../lib/steadfast-payments-constants";
@@ -151,6 +152,137 @@ async function main() {
       "reconcile identity fails on a broken invoice",
       !paymentReconciles({ amountDelivered: 18300, deliveryCharge: 955, codCharge: 173, netAmount: 17000 })
     );
+  }
+
+  console.log("\nA2. Round 2 §2.1 — the REAL production envelope (captured 2026-07-22):");
+  {
+    // GET /payments exactly as portal.packzy.com answered it (trimmed to 2 rows).
+    const realList = {
+      status: 1,
+      alertClass: "success",
+      message: "Fetched successfully!",
+      payments: [
+        {
+          payment_id: "SFC-30803488",
+          amount: 7000,
+          method: "Bank",
+          due_bills: 470,
+          paid_bills: 0,
+          charges: 159,
+          total: 6371,
+          status_label: "paid",
+          created_at: "2026-07-20 05:20:49",
+          ready_at: "2026-07-20 10:41:12",
+          paid_at: "2026-07-20 10:53:50",
+        },
+        {
+          payment_id: "SFC-30820783",
+          amount: 2200,
+          method: "Bank",
+          due_bills: 135,
+          paid_bills: 0,
+          charges: 21,
+          total: 2044,
+          status_label: "paid",
+          created_at: "2026-07-21 01:03:22",
+          ready_at: "2026-07-21 10:40:20",
+          paid_at: "2026-07-21 10:52:53",
+        },
+      ],
+    };
+    const real = parsePaymentsList(realList);
+    check("real envelope: both rows parsed (was 0 before the fix)", real.length === 2);
+    const r = real[1];
+    check(
+      'payment_id "SFC-30820783" → numeric id 30820783',
+      r?.steadfastPaymentId === 30820783
+    );
+    check('invoice preserved as "SFC-30820783"', r?.invoiceNo === "SFC-30820783");
+    check('status_label "paid" → PAID', r?.status === "PAID");
+    check(
+      "amount/due_bills/charges/total → gross/delivery/cod/net",
+      r?.amountDelivered === 2200 &&
+        r?.deliveryCharge === 135 &&
+        r?.codCharge === 21 &&
+        r?.netAmount === 2044
+    );
+    check(
+      "real reconcile identity: 2044 + 135 + 21 = 2200",
+      paymentReconciles({
+        amountDelivered: 2200,
+        deliveryCharge: 135,
+        codCharge: 21,
+        netAmount: 2044,
+      })
+    );
+    check(
+      '§2.5 paid_at "2026-07-21 10:52:53" parsed as Dhaka → 04:52:53Z',
+      r?.paymentDate?.toISOString() === "2026-07-21T04:52:53.000Z"
+    );
+    check("real envelope advertises no next page", findNextPage(realList) === null);
+
+    // GET /payments/{id} exactly as answered (one consignment kept).
+    const realDetail = {
+      status: 1,
+      alertClass: "success",
+      message: "Fetched successfully!",
+      payment: {
+        payment_id: "SFC-30820783",
+        amount: 2200,
+        method: "Bank",
+        due_bills: 135,
+        paid_bills: 0,
+        charges: 21,
+        total: 2044,
+        status_label: "paid",
+        created_at: "2026-07-21 01:03:22",
+        ready_at: "2026-07-21 10:40:20",
+        paid_at: "2026-07-21 10:52:53",
+        consignments: [
+          {
+            consignment_id: 272145178,
+            invoice: "",
+            tracking_code: "SFR260716STE18E2F9BD",
+            tracking_link:
+              "https://steadfast.com.bd/tl/c1PGYDPqPPiOQ1PqvcFjIhtErmo4mbzO",
+            recipient_name: "মহিমা",
+            recipient_phone: "01882489534",
+            recipient_address: "জেলা : লক্ষ্মীপুর, থানা: চন্দ্রগঞ্জ",
+            recipient_email: null,
+            alternative_phone: "01863508205",
+            item_description: null,
+            total_lot: 1,
+            cod_amount: 2200,
+            status: "delivered",
+            note: "Katan silk sharee sky blue",
+            created_at: "2026-07-16T14:34:17.000000Z",
+            updated_at: "2026-07-20T19:03:22.000000Z",
+          },
+        ],
+      },
+    };
+    const detail = parsePaymentDetail(realDetail);
+    check(
+      "real detail: payment found under `payment`",
+      detail.payment?.steadfastPaymentId === 30820783 &&
+        detail.payment?.netAmount === 2044
+    );
+    check(
+      "real detail: consignment id + per-parcel COD + status parsed",
+      detail.consignments.length === 1 &&
+        detail.consignments[0]?.consignmentId === 272145178 &&
+        detail.consignments[0]?.codAmount === 2200 &&
+        detail.consignments[0]?.statusRaw === "delivered"
+    );
+    check(
+      "real detail: blank invoice → null (panel-sent parcel)",
+      detail.consignments[0]?.invoice === null
+    );
+
+    check("paymentIdNumber('SFC-30820783') → 30820783", paymentIdNumber("SFC-30820783") === 30820783);
+    check("paymentIdNumber(30820783) → 30820783", paymentIdNumber(30820783) === 30820783);
+    check("paymentIdNumber('no digits') → null", paymentIdNumber("no digits") === null);
+    check("paymentIdNumber(null) → null", paymentIdNumber(null) === null);
   }
 
   console.log("\nB. Ingest scenarios on mocked payloads (rolled back):");
@@ -392,6 +524,24 @@ async function main() {
           r4.unmatched === 1 && r4.matched === 0 && p2Items.length === 1 && p2Items[0].shipmentId == null
         );
         check("unmatched: no order settled, no COD recorded", r4.ordersSettled === 0 && r4.codRecorded === 0);
+        // Round 2 §2.1 — a payout whose consignments aren't (all) ours must NOT
+        // post the payment-level charge expenses: the live account still gets
+        // payouts for panel-sent parcels the software never saw, and booking
+        // their charges would pit expenses against income that never arrives.
+        const p2Record = await tx.steadfastPayment.findUniqueOrThrow({
+          where: { steadfastPaymentId: BigInt(SF_PAYMENT_2) },
+        });
+        const p2Expenses = await tx.expense.count({
+          where: { refTable: "steadfast_payments", refId: p2Record.id },
+        });
+        check(
+          "§2.1 foreign payout: NO charge expenses, not reconciled",
+          !r4.reconciledNow &&
+            p2Expenses === 0 &&
+            p2Record.reconciledAt == null &&
+            p2Record.deliveryChargeExpenseId == null &&
+            p2Record.codChargeExpenseId == null
+        );
 
         // ── manual-reconcile overlap: estimate replaced, counted once ──
         await tx.courier.update({

@@ -1572,7 +1572,9 @@ export function OrdersListClient({
                     />
                   </TableCell>
                 )}
-                {/* Rider Info (§6m) — "Unassigned" until Steadfast assigns */}
+                {/* Rider Info (§6m/§2.4) — "—" until Steadfast reports a REAL
+                    rider; the tracking page link covers the gap when the data
+                    isn't obtainable from here */}
                 {isTransitTab && (
                   <TableCell>
                     {o.shipment?.riderName ? (
@@ -1585,9 +1587,19 @@ export function OrdersListClient({
                         )}
                       </>
                     ) : (
-                      <span className="text-xs text-muted-foreground">
-                        Unassigned
-                      </span>
+                      <div onClick={(e) => e.stopPropagation()}>
+                        <span className="text-xs text-muted-foreground">—</span>
+                        {o.shipment?.trackingUrl && (
+                          <a
+                            href={o.shipment.trackingUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="ml-2 text-xs text-primary underline-offset-2 hover:underline"
+                          >
+                            view tracking page
+                          </a>
+                        )}
+                      </div>
                     )}
                   </TableCell>
                 )}

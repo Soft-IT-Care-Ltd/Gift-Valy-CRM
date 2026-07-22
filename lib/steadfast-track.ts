@@ -53,6 +53,14 @@ function str(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+// Like str(), but keeps numeric values (production pages send e.g. phone: 0 as
+// a bare number) — realRider() then decides whether the digits are a real
+// contact, so a numeric placeholder can never sneak past as an assignment.
+function strOrNum(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return str(value);
+}
+
 // A finite non-null number, else null (blank strings / null / NaN all drop out).
 function numeric(value: unknown): number | null {
   if (value == null || value === "") return null;
@@ -108,7 +116,10 @@ export async function fetchPublicTracking(
     const assigned = realRider({
       name: str(rider?.name) ?? "",
       phone:
-        str(rider?.phone) ?? str(rider?.contact) ?? str(rider?.mobile) ?? null,
+        strOrNum(rider?.phone) ??
+        strOrNum(rider?.contact) ??
+        strOrNum(rider?.mobile) ??
+        null,
     });
     // §R3 — the counted delivery charge. Prefer an explicit field on `result`,
     // else mine the whole payload for any delivery-charge-shaped key.

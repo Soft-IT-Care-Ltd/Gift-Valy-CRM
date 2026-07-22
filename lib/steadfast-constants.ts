@@ -91,6 +91,70 @@ export function isFinalSteadfastStatus(normalized: string): boolean {
   return n === "delivered" || n === "cancelled" || n === "partial_delivered";
 }
 
+// CORRECTIONS Round 2 §2.6 — Steadfast fires the webhook's "delivered" /
+// "cancelled" the moment the RIDER marks the parcel (verified in production:
+// the delivered webhook lands the same second as the tracking page's
+// "marked as delivered by rider" event), while hub approval — the moment the
+// COD actually enters our Steadfast balance — may still be pending. The status
+// API distinguishes the two (delivered_approval_pending vs delivered), so on a
+// final-looking webhook the caller cross-checks the API and this helper picks
+// which status to ingest: the API's approval-wait wins (the order holds
+// In Transit under the approval sub-tab); anything else — agreement, a lagging
+// earlier status, or no API answer — trusts the webhook as before.
+export function resolveFinalWebhookStatus(
+  webhookStatus: string,
+  apiStatus: string | null | undefined
+): string {
+  if (!apiStatus) return webhookStatus;
+  const hook = mapSteadfastStatus(webhookStatus);
+  if (hook.to !== "DELIVERED" && hook.to !== "RETURNED") return webhookStatus;
+  const api = mapSteadfastStatus(apiStatus);
+  return api.courierStatus === "DELIVERY_APPROVAL_PENDING" ||
+    api.courierStatus === "RETURN_APPROVAL_PENDING"
+    ? apiStatus
+    : webhookStatus;
+}
+
+// ---------- Steadfast timestamps (CORRECTIONS Round 2 §2.5) ----------
+
+// Dhaka is UTC+6 year-round (no DST), so the offset is a constant.
+export const DHAKA_UTC_OFFSET_MS = 6 * 60 * 60 * 1000;
+
+// Steadfast's zone-less "YYYY-MM-DD HH:MM:SS" strings (webhook updated_at,
+// /payments created_at/ready_at/paid_at) are Asia/Dhaka LOCAL time — verified
+// in production, where every webhook's updated_at ran exactly +6h ahead of its
+// arrival clock. `new Date()` would read them in the server's zone (UTC on the
+// VPS), skewing every stored time +6h. Parse them as Dhaka → real UTC Date.
+// Strings that carry an explicit zone (the consignment payloads' ISO "…Z")
+// and epoch numbers pass through unchanged. Returns null when unparseable.
+export function parseSteadfastTimestamp(
+  value: unknown
+): Date | null {
+  if (value == null) return null;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof value !== "string") return null;
+  const s = value.trim();
+  if (!s) return null;
+  const m =
+    /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?$/.exec(s);
+  if (m) {
+    const utcAsWritten = Date.UTC(
+      Number(m[1]),
+      Number(m[2]) - 1,
+      Number(m[3]),
+      Number(m[4]),
+      Number(m[5]),
+      Number(m[6] ?? 0)
+    );
+    return new Date(utcAsWritten - DHAKA_UTC_OFFSET_MS);
+  }
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 // Normalize a phone to an 11-digit Bangladesh number 01XXXXXXXXX (§2 mapping
 // rule): strip a leading 00 / 88 country prefix and all non-digits. Returns null
 // when it is not a valid BD mobile number — the caller blocks the send (§2, and
@@ -264,9 +328,20 @@ export function findRiderInfo(raw: unknown): RiderInfo | null {
 // a bare name with no contact is a hub/placeholder, not an assignment, and must
 // NOT flip the status to Assigned. This is the single gate every capture path
 // (webhook, status API, tracking page) runs through.
+//
+// Round 2 §2.4 — the gate also rejects PLACEHOLDERS: production tracking pages
+// answer rider {name: "Unassigned", phone: "0"} before a real assignment, and
+// both fields are truthy strings, so a name-and-phone check alone stored
+// "Unassigned"/"0" as a rider and faked ASSIGNED. A real contact must contain
+// an actual dialable number, and the name must not be an unassigned marker.
+const RIDER_PLACEHOLDER_NAME = /^(unassigned|not[ _-]?assigned|n\/?a|none|-+)$/i;
+
 export function realRider(rider: RiderInfo | null | undefined): RiderInfo | null {
   if (!rider) return null;
   const name = rider.name?.trim();
   const phone = rider.phone?.trim();
-  return name && phone ? { name, phone } : null;
+  if (!name || !phone || RIDER_PLACEHOLDER_NAME.test(name)) return null;
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length < 7 || /^0+$/.test(digits)) return null;
+  return { name, phone };
 }

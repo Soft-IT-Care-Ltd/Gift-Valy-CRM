@@ -4,13 +4,16 @@ import { recomputeDue, dhakaDateBound } from "./orders";
 import { getSystemUserId } from "./system-user";
 import { requireEnabledSteadfast } from "./steadfast-integration";
 import { getPayments, getPaymentDetail } from "./steadfast";
-import { getSteadfastPayoutWalletId } from "./settings";
+import {
+  getSteadfastPayoutWalletId,
+  getSteadfastPaymentsLastPage,
+  setSteadfastPaymentsLastPage,
+} from "./settings";
 import {
   COURIER_DELIVERY_CHARGE_EXPENSE_CATEGORY,
   COD_CHARGE_EXPENSE_CATEGORY,
 } from "./courier-constants";
 import {
-  findNextPage,
   parsePaymentsList,
   parsePaymentDetail,
   round2,
@@ -46,7 +49,20 @@ import {
 // side effects exactly once.
 
 const DETAIL_FETCHES_PER_RUN = 10; // stay gentle on their API
-const MAX_PAYMENT_PAGES = 3;
+// §2.1 — GET /payments pages are oldest-first with NO pagination metadata
+// (verified in production: 60+ pages of 10, empty list past the end), so the
+// sync hunts the TAIL (where new payouts land) instead of following
+// advertised pages. Probes per run are capped so a wildly stale cursor can
+// never turn one cron tick into an unbounded crawl.
+const MAX_PAGE_PROBES_PER_RUN = 40;
+// Only payouts dated after our first real Steadfast shipment (minus slack) are
+// ingested — the merchant account predates this software by years, and pulling
+// 2023-era payouts in would flood the books with money the system never saw.
+const PAYMENTS_ANCHOR_SLACK_MS = 3 * 24 * 60 * 60 * 1000;
+// A paid payout with unmatched/unreconciled items retries its detail fetch on
+// later runs, but only while it is recent — permanently foreign consignments
+// (panel-sent parcels) must not re-fetch hourly forever.
+const DETAIL_RETRY_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 // The §R8 "hourly poller" — the */15 status cron hosts the payments sync but
 // only runs it when the last one is at least this old.
 export const PAYMENTS_SYNC_MIN_GAP_MS = 60 * 60 * 1000;
@@ -71,6 +87,8 @@ export interface PaymentsSyncSummary {
   codRecorded: number;
   unmatched: number;
   detailsFetched: number;
+  pageProbes: number; // §2.1 — GET /payments calls this run (tail hunt)
+  note?: string; // e.g. "no Steadfast shipments yet — nothing to reconcile"
   errors: { steadfastPaymentId: number | null; error: string }[];
 }
 
@@ -186,6 +204,8 @@ export async function ingestSteadfastPayment(
       (existing?.availableBalance != null ? Number(existing.availableBalance) : null),
   };
 
+  // §2.5 — prefer the invoice's own paid_at (Dhaka-parsed) over our clock.
+  const paidAtValue = parsed.paymentDate ?? now;
   const record = existing
     ? await tx.steadfastPayment.update({
         where: { id: existing.id },
@@ -193,7 +213,7 @@ export async function ingestSteadfastPayment(
           ...amounts,
           status,
           paymentDate: parsed.paymentDate ?? existing.paymentDate,
-          paidAt: existing.paidAt ?? (status === "PAID" ? now : null),
+          paidAt: existing.paidAt ?? (status === "PAID" ? paidAtValue : null),
           // First-seen payloads are kept verbatim (shape discovery); only fill
           // the detail once.
           ...(existing.rawDetailPayload == null && args.detailRaw !== undefined
@@ -207,7 +227,7 @@ export async function ingestSteadfastPayment(
           ...amounts,
           status,
           paymentDate: parsed.paymentDate ?? now,
-          paidAt: status === "PAID" ? now : null,
+          paidAt: status === "PAID" ? paidAtValue : null,
           rawPayload: (parsed.raw ?? {}) as Prisma.InputJsonValue,
           ...(args.detailRaw !== undefined
             ? { rawDetailPayload: args.detailRaw as Prisma.InputJsonValue }
@@ -405,6 +425,22 @@ export async function ingestSteadfastPayment(
 
     // Payment-level real-number expenses — once per payout, guarded by the id
     // columns. Both draw from the payout wallet so the wallet nets to NET.
+    //
+    // §2.1 — but ONLY for a payout whose consignments are ALL ours. The live
+    // account still receives payouts covering panel-sent parcels the system
+    // never saw; posting a payment-level charge total for those would book
+    // expenses against income that never enters the software. A partially or
+    // wholly foreign payout still settles its matched orders above, but its
+    // charges (and reconciled_at) wait — the Courier page shows the unmatched
+    // count, and the §2.7 justification engine is the designed resolution.
+    const fullyMatched = items.length > 0 && outcome.unmatched === 0;
+    if (!fullyMatched) {
+      await tx.steadfastPayment.update({
+        where: { id: record.id },
+        data: { walletId: record.walletId ?? args.walletId },
+      });
+      return outcome;
+    }
     const expenseDate = dhakaDateBound(receivedDate);
     const label = amounts.invoiceNo ?? `#${parsed.steadfastPaymentId}`;
     let deliveryChargeExpenseId = record.deliveryChargeExpenseId;
@@ -477,29 +513,92 @@ export async function runSteadfastPaymentsSync(opts?: {
     codRecorded: 0,
     unmatched: 0,
     detailsFetched: 0,
+    pageProbes: 0,
     errors: [],
   };
 
-  // Page 1 always; follow advertised pagination a couple of pages at most
-  // (payouts are weekly-ish — the recent window is what reconciliation needs).
-  const parsed: ParsedSteadfastPayment[] = [];
-  let page = 1;
-  for (let i = 0; i < MAX_PAYMENT_PAGES; i++) {
-    let raw: unknown;
-    try {
-      raw = await getPayments(creds, page);
-    } catch (e) {
-      summary.errors.push({
-        steadfastPaymentId: null,
-        error: e instanceof Error ? e.message : "GET /payments failed",
-      });
-      break;
-    }
+  // §2.1 anchor — payouts can only concern us from our first API-sent shipment
+  // on; everything earlier belongs to the merchant's pre-software history.
+  const firstShipment = await prisma.shipment.aggregate({
+    _min: { createdAt: true },
+    where: { consignmentId: { not: null } },
+  });
+  if (!firstShipment._min.createdAt) {
+    summary.note = "no Steadfast shipments yet — nothing to reconcile";
+    return summary;
+  }
+  const anchor = new Date(
+    firstShipment._min.createdAt.getTime() - PAYMENTS_ANCHOR_SLACK_MS
+  );
+
+  // §2.1 tail hunt — the list is oldest-first with no pagination metadata, so
+  // resume from the remembered tail page, gallop forward until the first empty
+  // page, then bisect the exact tail. Steady state costs 2 probes; a first run
+  // (or a long gap) costs ~a dozen instead of a 60-page crawl.
+  const pageCache = new Map<number, ParsedSteadfastPayment[]>();
+  const getPage = async (page: number): Promise<ParsedSteadfastPayment[]> => {
+    const cached = pageCache.get(page);
+    if (cached) return cached;
+    summary.pageProbes += 1;
+    const raw = await getPayments(creds, page);
     const batch = parsePaymentsList(raw);
-    parsed.push(...batch);
-    const next = findNextPage(raw);
-    if (!next || batch.length === 0) break;
-    page = next;
+    pageCache.set(page, batch);
+    await new Promise((r) => setTimeout(r, 150)); // §5 gentle pacing
+    return batch;
+  };
+
+  const parsed: ParsedSteadfastPayment[] = [];
+  try {
+    // Land the cursor on a non-empty page (halving down if the stored cursor
+    // overshoots — e.g. after a restore from backup).
+    let lo = await getSteadfastPaymentsLastPage();
+    while (lo > 1 && (await getPage(lo)).length === 0) {
+      lo = Math.max(1, Math.floor(lo / 2));
+    }
+    if ((await getPage(lo)).length > 0) {
+      // Gallop forward to bracket the tail, then bisect.
+      let step = 1;
+      let hi: number | null = null;
+      while (summary.pageProbes < MAX_PAGE_PROBES_PER_RUN) {
+        const probe = lo + step;
+        if ((await getPage(probe)).length > 0) {
+          lo = probe;
+          step *= 2;
+        } else {
+          hi = probe;
+          break;
+        }
+      }
+      if (hi != null) {
+        while (hi - lo > 1) {
+          const mid = Math.floor((lo + hi) / 2);
+          if ((await getPage(mid)).length > 0) lo = mid;
+          else hi = mid;
+        }
+      }
+      const tail = lo;
+
+      // Collect payouts from the tail backwards until a page that is entirely
+      // pre-anchor — earlier pages can only be older still.
+      for (let p = tail; p >= 1; p--) {
+        const batch = await getPage(p);
+        if (batch.length === 0) break;
+        parsed.unshift(
+          ...batch.filter(
+            (x) => x.paymentDate == null || x.paymentDate >= anchor
+          )
+        );
+        const oldest = batch[0]?.paymentDate;
+        if (oldest != null && oldest < anchor) break;
+      }
+
+      await setSteadfastPaymentsLastPage(tail);
+    }
+  } catch (e) {
+    summary.errors.push({
+      steadfastPaymentId: null,
+      error: e instanceof Error ? e.message : "GET /payments failed",
+    });
   }
   summary.payments = parsed.length;
 
@@ -517,13 +616,19 @@ export async function runSteadfastPaymentsSync(opts?: {
       });
 
       // Fetch the invoice detail when we've never seen it, the status moved,
-      // or a paid payout still has unreconciled/unmatched work — capped per run.
+      // or a paid payout still has unreconciled/unmatched work — capped per
+      // run, and (§2.1) retried only while the payout is recent: a payout of
+      // panel-sent parcels will never match, and must not re-fetch forever.
       const statusMoved = existing != null && existing.status !== p.status;
+      const recentEnough =
+        p.paymentDate == null ||
+        Date.now() - p.paymentDate.getTime() <= DETAIL_RETRY_WINDOW_MS;
       const wantsDetail =
         !existing ||
         existing.rawDetailPayload == null ||
         statusMoved ||
         (p.status === "PAID" &&
+          recentEnough &&
           (existing.reconciledAt == null || existing.items.length > 0));
       let detailRaw: unknown;
       let consignments: ParsedPaymentConsignment[] | null = null;
