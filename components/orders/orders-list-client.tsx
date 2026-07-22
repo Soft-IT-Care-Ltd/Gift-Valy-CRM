@@ -1382,6 +1382,11 @@ export function OrdersListClient({
               {/* Courier-stage columns (§6k/§6l) */}
               {showCourierCols && <TableHead>Consignment ID</TableHead>}
               {showCourierCols && <TableHead>Tracking</TableHead>}
+              {isTransitTab && (
+                <TableHead className="text-right">
+                  Weight <span className="font-normal text-muted-foreground">(ours / SF)</span>
+                </TableHead>
+              )}
               {showChargeCol && (
                 <TableHead className="text-right">
                   Charge <span className="font-normal text-muted-foreground">(ours / SF)</span>
@@ -1393,11 +1398,6 @@ export function OrdersListClient({
               )}
               {showChargeCol && (
                 <TableHead className="text-right">Net receivable</TableHead>
-              )}
-              {isTransitTab && (
-                <TableHead className="text-right">
-                  Weight <span className="font-normal text-muted-foreground">(ours / SF)</span>
-                </TableHead>
               )}
               {/* §6n: Returned sub-state + receive action */}
               {isReturnedTab && <TableHead>Return</TableHead>}
@@ -1655,6 +1655,24 @@ export function OrdersListClient({
                     )}
                   </TableCell>
                 )}
+                {/* Steadfast Weight (§6l/§R4) — our recorded weight vs Steadfast's
+                    counted weight; SF flagged when heavier than ours beyond the
+                    tolerance */}
+                {isTransitTab && (
+                  <TableCell className="whitespace-nowrap text-right text-xs">
+                    <OursVsSf
+                      ours={o.shipment?.weightKg ?? null}
+                      sf={o.shipment?.steadfastWeightKg ?? null}
+                      tolerancePct={overchargeTolerancePct}
+                      format={(n) => `${n} kg`}
+                      hint={
+                        o.shipment?.weightKg != null
+                          ? `এই parcel-এর weight ${o.shipment.weightKg} kg হওয়ার কথা (from the order items)`
+                          : "No recorded weight for this order"
+                      }
+                    />
+                  </TableCell>
+                )}
                 {/* Steadfast Delivery Charge (§6l/§R4) — our zone+weight estimate
                     vs the actual charge Steadfast counted; SF flagged when it
                     exceeds ours beyond the tolerance */}
@@ -1717,24 +1735,6 @@ export function OrdersListClient({
                       </>
                     );
                   })()}
-                {/* Steadfast Weight (§6l/§R4) — our recorded weight vs Steadfast's
-                    counted weight; SF flagged when heavier than ours beyond the
-                    tolerance */}
-                {isTransitTab && (
-                  <TableCell className="whitespace-nowrap text-right text-xs">
-                    <OursVsSf
-                      ours={o.shipment?.weightKg ?? null}
-                      sf={o.shipment?.steadfastWeightKg ?? null}
-                      tolerancePct={overchargeTolerancePct}
-                      format={(n) => `${n} kg`}
-                      hint={
-                        o.shipment?.weightKg != null
-                          ? `এই parcel-এর weight ${o.shipment.weightKg} kg হওয়ার কথা (from the order items)`
-                          : "No recorded weight for this order"
-                      }
-                    />
-                  </TableCell>
-                )}
                 {/* Return (§6n): receive action while pending, stamp once done */}
                 {isReturnedTab && (
                   <TableCell onClick={(e) => e.stopPropagation()}>

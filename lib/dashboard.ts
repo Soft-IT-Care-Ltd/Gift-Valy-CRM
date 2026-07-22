@@ -22,6 +22,7 @@ import {
 import { buildLeaderboard, buildTeamGauge } from "./targets";
 import { whoIsInToday, type WhoIsInToday } from "./attendance";
 import { getSteadfastIntegration } from "./steadfast-integration";
+import type { SteadfastPaymentStatusValue } from "./steadfast-payments-constants";
 import { round2 } from "./pnl-constants";
 import type { Gauge, LeaderboardRow } from "./targets-constants";
 import {
@@ -176,12 +177,14 @@ export interface DashboardSnapshot {
     payouts: number; // paid payments in range
     parcels: number;
   };
-  // §R8 — the latest paid payout, shown under the Courier balance tile.
+  // §R8 — the latest payout invoice regardless of status, shown under the
+  // Courier balance tile with its live Processing/Paid state.
   latestPayout: {
     invoiceNo: string | null;
     netAmount: number;
     date: string; // ISO
     parcels: number;
+    status: SteadfastPaymentStatusValue;
   } | null;
   drafts: { count: number; amount: number }; // §7 — DRAFT (committed-but-unpaid) in range
   courierEnabled: boolean; // §6 — Steadfast integration on → balance widget may fetch
@@ -460,15 +463,17 @@ export async function buildOwnerDashboard(
       },
       _sum: { amount: true },
     }),
-    // §R8 — the latest paid payout (range-independent), for the balance tile.
+    // §R8 — the latest payout invoice regardless of status (range-independent),
+    // for the balance tile: a fresh payment request stays visible as
+    // Processing until Steadfast pays it out.
     prisma.steadfastPayment.findFirst({
-      where: { status: "PAID" },
       orderBy: [{ paymentDate: "desc" }, { id: "desc" }],
       select: {
         invoiceNo: true,
         netAmount: true,
         paymentDate: true,
         parcelCount: true,
+        status: true,
       },
     }),
   ]);
@@ -529,6 +534,7 @@ export async function buildOwnerDashboard(
           netAmount: round2(Number(latestPayoutRow.netAmount)),
           date: latestPayoutRow.paymentDate.toISOString(),
           parcels: latestPayoutRow.parcelCount,
+          status: latestPayoutRow.status,
         }
       : null,
     drafts: {

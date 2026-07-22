@@ -6,17 +6,22 @@
 // off or the viewer has no courier access. Kept client-side so a slow/failing
 // courier API never blocks the dashboard render.
 //
-// CORRECTIONS Orders §R8 — two additions: the latest paid payout renders as a
-// sub-line (server-provided), and a "Request payment" deep link into the
-// Steadfast merchant panel appears while the balance is > 0 (their V1 API has
-// no payment-request endpoint — the request is made in their panel, and the
-// /payments sync picks up the resulting processing → paid record).
+// CORRECTIONS Orders §R8 — two additions: the latest payout invoice renders as
+// a sub-line (server-provided, any status — a fresh payment request shows as
+// Processing until Steadfast pays it), and a "Request payment" deep link into
+// the Steadfast merchant panel appears while the balance is > 0 (their V1 API
+// has no payment-request endpoint — the request is made in their panel, and
+// the /payments sync picks up the resulting processing → paid record).
 import { useEffect, useState } from "react";
 import { ExternalLink, RefreshCw } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { money } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { STEADFAST_PANEL_PAYMENT_REQUEST_URL } from "@/lib/steadfast-payments-constants";
+import {
+  STEADFAST_PANEL_PAYMENT_REQUEST_URL,
+  STEADFAST_PAYMENT_STATUS_LABELS,
+  type SteadfastPaymentStatusValue,
+} from "@/lib/steadfast-payments-constants";
 
 type Status = "idle" | "loading" | "ok" | "error";
 type BalanceResult = { ok: true; balance: number } | { ok: false };
@@ -26,6 +31,7 @@ export interface LatestPayout {
   netAmount: number;
   date: string; // ISO
   parcels: number;
+  status: SteadfastPaymentStatusValue;
 }
 
 // Pure fetch/parse — no React state, so both the mount effect and the refresh
@@ -144,7 +150,17 @@ export function CourierBalanceTile({
           >
             Latest payout {money(latestPayout.netAmount)} · {latestPayout.parcels}{" "}
             parcel{latestPayout.parcels === 1 ? "" : "s"}
-            {payoutDate ? ` · ${payoutDate}` : ""}
+            {payoutDate ? ` · ${payoutDate}` : ""} ·{" "}
+            <span
+              className={cn(
+                "font-medium",
+                latestPayout.status === "PAID"
+                  ? "text-green-600 dark:text-green-400"
+                  : "text-amber-600 dark:text-amber-400"
+              )}
+            >
+              {STEADFAST_PAYMENT_STATUS_LABELS[latestPayout.status]}
+            </span>
           </div>
         )}
       </CardContent>
