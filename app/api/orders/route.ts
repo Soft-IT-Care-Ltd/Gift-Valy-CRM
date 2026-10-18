@@ -11,10 +11,9 @@ import {
   createOrderSchema,
   deliveryDateForMode,
   mfsTxnRequired,
+  generateOrderNumber,
   nextDraftNo,
-  nextOrderNo,
   orderListInclude,
-  orderNoPrefix,
   orderScopeWhere,
   recomputeDue,
   resolveItemsAndTotals,
@@ -179,7 +178,9 @@ export async function POST(req: Request) {
 
     const phone = normalizePhone(data.customer.phoneForeign);
 
-    // Retry on order-number collision (concurrent creates in the same month).
+    // Retry on a DRAFT-number collision (concurrent draft saves). GV numbers
+    // come from the order counter and can't collide; a retried transaction
+    // rolled its counter step back, so no number is skipped.
     let created: { id: number; orderNo: string } | null = null;
     for (let attempt = 0; attempt < 3 && !created; attempt++) {
       try {
@@ -209,7 +210,7 @@ export async function POST(req: Request) {
           const orderNo =
             initialStatus === "DRAFT"
               ? await nextDraftNo(tx)
-              : await nextOrderNo(tx, orderNoPrefix());
+              : await generateOrderNumber(tx);
           const order = await tx.order.create({
             data: {
               orderNo,

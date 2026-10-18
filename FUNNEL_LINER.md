@@ -165,7 +165,7 @@ Then build GV-11 (uploads and invoices outside the release), GV-12 (production b
 
 ### A7 and GV-N — in the Funnel Liner file
 
-Prompts 7 (A7, Funnel Liner Admin repo) and 8 (GV-N, Antu Boutique repo) are in the separate file **`FUNNEL_LINER_PROMPTS_FOR_GIFT_VALY.md`**. Run them before GV5.
+Prompts 7 (A7, Funnel Liner Admin repo) and 8 (GV-N, Antu Boutique repo) are in the separate file **`FUNNEL_LINER_PROMPTS_FOR_GIFT_VALY.md` in the Funnel Liner Admin repo** (root). Run them before GV5.
 
 ### GV5 — Staging, month test, then production (Gift Valy repo, on the server via `ssh antu`)
 
@@ -183,7 +183,7 @@ Part 2 — production, only after my OK. Create the giftvaly database and roles,
 
 ## Items
 
-### GV-1. The order counter — [OPEN]
+### GV-1. The order counter — [DONE]
 
 - New table `order_sequences`: `yearMonth` (`"2610"`, primary key), `lastNumber` (int), `updatedAt`.
 - `generateOrderNumber(tx)` in `lib/orders.ts`: one atomic statement per call — insert the Dhaka month's row with 1, or increment it, and return the new value (`INSERT … ON CONFLICT (year_month) DO UPDATE SET last_number = order_sequences.last_number + 1 RETURNING last_number`). Returns `GV-YYMM-NNNN` (at least 4 digits; 10,000+ grows to 5 — no wrap).
@@ -193,6 +193,7 @@ Part 2 — production, only after my OK. Create the giftvaly database and roles,
 - Nothing ever lowers, resets, edits or deletes an `order_sequences` row (rule 6). The trash cleanup never touches it.
 - The demo seed either numbers its orders through `generateOrderNumber` or refuses to run when `NODE_ENV=production` — both, preferably.
 - A test lists every order create and every write of `orderNo` and fails if a GV number is produced any other way (Antu: `lib/orders/__tests__/order-creation-paths.test.ts`).
+- **Done (19 Oct 2026):** `lib/order-number.ts` (`generateOrderNumber`, re-exported from `lib/orders.ts`), migration `20261019000000_gv1_order_sequences` (backfill also reads `orderNo` from audit rows, so purged numbers are never reissued — dev 2606 → 4, 2607 → 84), `npm run test:order-paths`. Verify scripts use `TEST-` numbers, never `GV-`.
 
 ### GV-2. Usage endpoint — [OPEN]
 

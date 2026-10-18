@@ -760,7 +760,7 @@ async function main() {
           });
 
         // ── D1: MATCH → auto-COMPLETE (the spec's own example numbers) ──
-        const o4 = await mkOrder("GV-SFP27-0001", 5500);
+        const o4 = await mkOrder("TEST-SFP27-0001", 5500);
         await mk27Shipment(o4.id, CID_BASE + 4, 5500, 215);
         const r6 = await ingestSteadfastPayment(tx, {
           parsed: {
@@ -820,7 +820,7 @@ async function main() {
         );
 
         // ── D2: MISMATCH (their 3000 vs our 5000) → discrepancy → resolve ──
-        const o5 = await mkOrder("GV-SFP27-0002", 5000);
+        const o5 = await mkOrder("TEST-SFP27-0002", 5000);
         const s5 = await mk27Shipment(o5.id, CID_BASE + 5, 5000, 135);
         const parsed5 = {
           steadfastPaymentId: SF_PAYMENT_5,
@@ -980,7 +980,7 @@ async function main() {
         );
 
         // ── D3: COD edited to 0 (customer paid bKash) — the real prod case ──
-        const o6 = await mkOrder("GV-SFP27-0003", 4000, 0);
+        const o6 = await mkOrder("TEST-SFP27-0003", 4000, 0);
         await mk27Shipment(o6.id, CID_BASE + 6, 0, 135);
         const r10 = await ingestSteadfastPayment(tx, {
           parsed: {

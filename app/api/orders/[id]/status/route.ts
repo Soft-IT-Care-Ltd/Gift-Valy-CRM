@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requireUser, apiError, AuthzError } from "@/lib/authz";
 import { getEffectivePermissions } from "@/lib/rbac";
@@ -107,24 +106,12 @@ export async function POST(req: Request, { params }: Params) {
       }
     }
 
-    // DRAFT → CONFIRMED runs the full confirm-from-draft path (real GV number,
-    // reserve, lead → Converted; CORRECTIONS Leads §10). Retries cover a
-    // concurrent GV-number collision.
+    // DRAFT → CONFIRMED runs the full confirm-from-draft path (real GV number
+    // from the order counter, reserve, lead → Converted; CORRECTIONS Leads §10).
     if (order.status === "DRAFT" && to === "CONFIRMED") {
-      for (let attempt = 0; ; attempt++) {
-        try {
-          await prisma.$transaction(async (tx) => {
-            await confirmDraftTx(tx, id, session.user.id, note);
-          });
-          break;
-        } catch (err) {
-          const collision =
-            err instanceof Prisma.PrismaClientKnownRequestError &&
-            err.code === "P2002" &&
-            (err.meta?.target as string[] | undefined)?.includes("order_no");
-          if (!collision || attempt === 2) throw err;
-        }
-      }
+      await prisma.$transaction(async (tx) => {
+        await confirmDraftTx(tx, id, session.user.id, note);
+      });
     } else {
       await prisma.$transaction(async (tx) => {
         await tx.order.update({

@@ -317,7 +317,7 @@ async function integrationTests() {
 
         // ---- A. send → handover reuses the existing shipment logic (§2) ----
         console.log("\nA. Send to Steadfast → shipment via existing applyHandover:");
-        const o1 = await makePackedOrder("GV-SFTEST-0001", 1500);
+        const o1 = await makePackedOrder("TEST-SFTEST-0001", 1500);
         const ship1 = await sendViaSteadfast(o1.id, 1000001, 1500);
         check("order flipped PACKED → HANDED_TO_COURIER", (await orderStatus(o1.id)) === "HANDED_TO_COURIER");
         check("shipment carries the Steadfast consignment id", Number((await load(ship1.id)).consignmentId) === 1000001);
@@ -352,7 +352,7 @@ async function integrationTests() {
 
         // ---- B2. §R2 rider→ASSIGNED gating + §R3 charge capture, end-to-end ----
         console.log("\nB2. §R2 warehouse-received stays Pending until a real rider; §R3 charge:");
-        const oR2 = await makePackedOrder("GV-SFTEST-R2", 800);
+        const oR2 = await makePackedOrder("TEST-SFTEST-R2", 800);
         const shipR2 = await sendViaSteadfast(oR2.id, 1000090, 800);
         // Warehouse receive (pending) with NO rider → Pending, never Assigned.
         await ingestDeliveryStatus(tx, {
@@ -407,7 +407,7 @@ async function integrationTests() {
 
         // ---- B3. Round 2 §2.6 — approval-pending holds the order In Transit ----
         console.log("\nB3. §2.6 delivery/return approval-pending stage (production flow):");
-        const oAp = await makePackedOrder("GV-SFTEST-AP1", 2200);
+        const oAp = await makePackedOrder("TEST-SFTEST-AP1", 2200);
         const shipAp = await sendViaSteadfast(oAp.id, 1000095, 2200);
         await ingestDeliveryStatus(tx, {
           shipment: asSync(await load(shipAp.id)),
@@ -448,7 +448,7 @@ async function integrationTests() {
         check("§2.6 delivered is final (polling stops)", isFinalSteadfastStatus("delivered"));
 
         // Return side: rider returns → cancelled webhook + approval-pending API.
-        const oAp2 = await makePackedOrder("GV-SFTEST-AP2", 900);
+        const oAp2 = await makePackedOrder("TEST-SFTEST-AP2", 900);
         const shipAp2 = await sendViaSteadfast(oAp2.id, 1000096, 900);
         await ingestDeliveryStatus(tx, {
           shipment: asSync(await load(shipAp2.id)),
@@ -495,7 +495,7 @@ async function integrationTests() {
 
         // ---- E. cancelled → RETURNED, return flow gated, idempotent (acceptance #7) ----
         console.log("\nE. Webhook cancelled → return flow (Admin-gated), idempotent:");
-        const o2 = await makePackedOrder("GV-SFTEST-0002", 800);
+        const o2 = await makePackedOrder("TEST-SFTEST-0002", 800);
         const ship2 = await sendViaSteadfast(o2.id, 1000002, 800);
         await ingestDeliveryStatus(tx, {
           shipment: asSync(await load(ship2.id)),
@@ -516,7 +516,7 @@ async function integrationTests() {
 
         // ---- F. poll path == webhook path (§3B / acceptance #9) ----
         console.log("\nF. Poll fallback produces the same result as the webhook:");
-        const o3 = await makePackedOrder("GV-SFTEST-0003", 500);
+        const o3 = await makePackedOrder("TEST-SFTEST-0003", 500);
         const ship3 = await sendViaSteadfast(o3.id, 1000003, 500);
         await ingestDeliveryStatus(tx, {
           shipment: asSync(await load(ship3.id)),
@@ -536,7 +536,7 @@ async function integrationTests() {
 
         // ---- G. MANUAL courier flow (Pathao) unchanged — requirement #6 ----
         console.log("\nG. Manual courier flow (non-Steadfast) is 100% unchanged:");
-        const o4 = await makePackedOrder("GV-SFTEST-0004", 0);
+        const o4 = await makePackedOrder("TEST-SFTEST-0004", 0);
         const ship4 = await applyHandover(
           tx,
           { orderId: o4.id, courierId: pathao.id, trackingNo: "PT-1", handoverDate: new Date(), codAmount: 0, expectedDelivery: null, note: null },
@@ -599,7 +599,7 @@ async function routeTests() {
   const unmatched = await POST(
     req(
       { Authorization: `Bearer ${testToken}` },
-      { notification_type: "delivery_status", consignment_id: 999999999, invoice: "GV-NOPE-9999", status: "Delivered" }
+      { notification_type: "delivery_status", consignment_id: 999999999, invoice: "TEST-NOPE-9999", status: "Delivered" }
     )
   );
   const body = (await unmatched.json()) as { status?: string };

@@ -13,6 +13,7 @@ import {
 } from "../lib/permissions";
 import { SEED_EXPENSE_CATEGORIES, AD_COST_CATEGORY } from "../lib/expense-constants";
 import { dhakaDateBound } from "../lib/order-constants";
+import { generateOrderNumber } from "../lib/order-number";
 import {
   ATTENDANCE_SETTINGS_KEY,
   DEFAULT_ATTENDANCE_SETTINGS,
@@ -26,6 +27,11 @@ import {
 const prisma = new PrismaClient();
 
 async function main() {
+  // CLAUDE.md rule 6 — the demo seed creates orders and moves the billing
+  // counter, so it never runs on production (use `npm run db:bootstrap`).
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("Refusing to seed: NODE_ENV=production. Production is bootstrapped with `npm run db:bootstrap`.");
+  }
   // 1. Permissions
   for (const def of PERMISSION_DEFS) {
     await prisma.permission.upsert({
@@ -632,37 +638,9 @@ async function main() {
     d.setHours(hour, 0, 0, 0);
     return d;
   };
-  // GV-YYMM- month prefix in Asia/Dhaka — mirrors lib/orders.ts orderNoPrefix
-  // (not imported: lib/orders pulls in next-auth, which the seed CLI can't load).
-  const prefixFor = (date: Date) => {
-    const parts = new Intl.DateTimeFormat("en-GB", {
-      timeZone: "Asia/Dhaka",
-      year: "2-digit",
-      month: "2-digit",
-    }).formatToParts(date);
-    const yy = parts.find((p) => p.type === "year")!.value;
-    const mm = parts.find((p) => p.type === "month")!.value;
-    return `GV-${yy}${mm}-`;
-  };
-  // Per-month sequence continues after any surviving (non-demo) orders.
-  const nextSeqByPrefix = new Map<string, number>();
-  const nextOrderNoFor = async (date: Date) => {
-    const prefix = prefixFor(date);
-    if (!nextSeqByPrefix.has(prefix)) {
-      const last = await prisma.order.findFirst({
-        where: { orderNo: { startsWith: prefix } },
-        orderBy: { orderNo: "desc" },
-        select: { orderNo: true },
-      });
-      nextSeqByPrefix.set(
-        prefix,
-        last ? parseInt(last.orderNo.slice(prefix.length), 10) + 1 : 1
-      );
-    }
-    const seq = nextSeqByPrefix.get(prefix)!;
-    nextSeqByPrefix.set(prefix, seq + 1);
-    return `${prefix}${String(seq).padStart(4, "0")}`;
-  };
+  // Demo orders are numbered by the order counter like every other order
+  // (CLAUDE.md rule 6), backdated to their createdAt month. Re-running the
+  // seed counts on from there — order_sequences never goes down.
 
   const avgCostBySku = new Map(demoProducts.map((p) => [p.sku, p.avgCost]));
   const pkgCostByCode = new Map(
@@ -1131,7 +1109,7 @@ async function main() {
     const cod = d.codOverride ?? Math.max(round2(total - advance), 0);
 
     await prisma.$transaction(async (tx) => {
-      const orderNo = await nextOrderNoFor(createdAt);
+      const orderNo = await generateOrderNumber(tx, createdAt);
       const order = await tx.order.create({
         data: {
           orderNo,

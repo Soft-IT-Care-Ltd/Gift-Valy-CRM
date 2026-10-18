@@ -27,6 +27,7 @@ import {
   type StoredChoiceSelection,
 } from "./bom";
 import { loadBomCatalog } from "./bom-db";
+import { generateOrderNumber } from "./order-number";
 
 type Tx = Prisma.TransactionClient | PrismaClient;
 
@@ -466,43 +467,33 @@ export async function resolveItemsAndTotals(
   return { lines, subtotal, discountAmount, total, floorBreaches };
 }
 
-// ---------- order number GV-YYMM-XXXX (§4.2), month in Asia/Dhaka ----------
+// ---------- order number GV-YYMM-NNNN (§4.2), month in Asia/Dhaka ----------
 
-export function orderNoPrefix(date = new Date()): string {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Dhaka",
-    year: "2-digit",
-    month: "2-digit",
-  }).formatToParts(date);
-  const yy = parts.find((p) => p.type === "year")!.value;
-  const mm = parts.find((p) => p.type === "month")!.value;
-  return `GV-${yy}${mm}-`;
-}
+// The generator lives in lib/order-number.ts (no next-auth import, so the
+// seed CLI can use it too); re-exported here for the app.
+export { dhakaYearMonth, generateOrderNumber } from "./order-number";
 
-export async function nextOrderNo(db: Tx, prefix: string): Promise<string> {
+// CORRECTIONS Leads §10 — drafts get a temporary DRAFT-XXXX number (one global
+// sequence, last row + 1 with the caller retrying on P2002); the real GV
+// number comes from generateOrderNumber at CONFIRM. Drafts are not orders yet,
+// so they never touch the counter (FUNNEL_LINER.md "Defaults assumed").
+export const DRAFT_NO_PREFIX = "DRAFT-";
+
+export async function nextDraftNo(db: Tx): Promise<string> {
   const last = await db.order.findFirst({
     // The OR spans both trash states ON PURPOSE: mentioning deletedAt opts out
-    // of the lib/db.ts trash auto-filter. A trashed order keeps its number
+    // of the lib/db.ts trash auto-filter. A trashed draft keeps its number
     // until the purge — hiding it here would reissue that number and the
     // unique(order_no) insert would collide forever (§6f).
     where: {
-      orderNo: { startsWith: prefix },
+      orderNo: { startsWith: DRAFT_NO_PREFIX },
       OR: [{ deletedAt: null }, { deletedAt: { not: null } }],
     },
     orderBy: { orderNo: "desc" },
     select: { orderNo: true },
   });
-  const seq = last ? parseInt(last.orderNo.slice(prefix.length), 10) + 1 : 1;
-  return `${prefix}${String(seq).padStart(4, "0")}`;
-}
-
-// CORRECTIONS Leads §10 — drafts get a temporary DRAFT-XXXX number (one global
-// sequence); the real GV-YYMM-XXXX is assigned at CONFIRM so sales numbering
-// stays clean. Same last-row + retry-on-P2002 pattern as nextOrderNo.
-export const DRAFT_NO_PREFIX = "DRAFT-";
-
-export async function nextDraftNo(db: Tx): Promise<string> {
-  return nextOrderNo(db, DRAFT_NO_PREFIX);
+  const seq = last ? parseInt(last.orderNo.slice(DRAFT_NO_PREFIX.length), 10) + 1 : 1;
+  return `${DRAFT_NO_PREFIX}${String(seq).padStart(4, "0")}`;
 }
 
 export function isDraftNo(orderNo: string): boolean {
@@ -519,9 +510,9 @@ export function isDraftNo(orderNo: string): boolean {
 //   3. stock reserves (syncStockForStatus inside the transition)
 //   4. advance_amount snapshots the total actually paid so far
 //   5. the source lead (if any) flips COMMITTED → CONVERTED
-// Caller owns the transaction and the P2002 retry on the order-number unique
-// (concurrent confirms in the same month), plus invoice generation AFTER the
-// transaction commits (SPEC §5, non-fatal).
+// Caller owns the transaction, plus invoice generation AFTER the transaction
+// commits (SPEC §5, non-fatal). The GV number comes from the counter, so
+// concurrent confirms in the same month can't collide.
 export async function confirmDraftTx(
   tx: Prisma.TransactionClient,
   orderId: number,
@@ -536,7 +527,7 @@ export async function confirmDraftTx(
     throw new AuthzError(400, `Order ${order.orderNo} is not a draft`);
   }
 
-  const orderNo = await nextOrderNo(tx, orderNoPrefix());
+  const orderNo = await generateOrderNumber(tx);
   const paid = order.payments.reduce(
     (s, p) =>
       p.isRejected ? s : s + (p.type === "REFUND" ? -Number(p.amount) : Number(p.amount)),

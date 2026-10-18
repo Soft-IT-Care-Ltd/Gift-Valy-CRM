@@ -192,7 +192,7 @@ async function main() {
       // ---- auto-convert (§3.2) ----
       const order = await tx.order.create({
         data: {
-          orderNo: "GV-TEST-9001",
+          orderNo: "TEST-LEADS-9001",
           leadId: openLead.id,
           customerId: customer.id,
           recipientName: "Recipient",
@@ -230,7 +230,7 @@ async function main() {
       });
       check(
         "re-convert guard: lead already linked to an order",
-        existingForLead?.orderNo === "GV-TEST-9001",
+        existingForLead?.orderNo === "TEST-LEADS-9001",
         `got ${existingForLead?.orderNo ?? "none"}`
       );
 

@@ -108,63 +108,52 @@ export async function POST(req: Request, { params }: Params) {
 
     // CORRECTIONS Leads §10 — money arriving on a DRAFT is the confirmation
     // moment: record the payment, then flip the draft to CONFIRMED (real GV
-    // number, stock reserve, lead → Converted) in the SAME transaction. The
-    // retry loop covers a concurrent GV-number collision at confirm time.
+    // number from the order counter, stock reserve, lead → Converted) in the
+    // SAME transaction.
     const confirmsDraft = order.status === "DRAFT" && data.type !== "REFUND";
-    let result: { paymentId: number; due: number; orderNo: string } | null = null;
-    for (let attempt = 0; attempt < 3 && !result; attempt++) {
-      try {
-        result = await prisma.$transaction(async (tx) => {
-          const payment = await tx.payment.create({
-            data: {
-              orderId: id,
-              type: data.type,
-              method: data.method,
-              amount: data.amount,
-              walletId: data.walletId,
-              transactionId: data.transactionId,
-              senderNumber: data.senderNumber,
-              screenshotUrl: data.screenshotUrl,
-              paymentDate: data.paymentDate
-                ? new Date(`${data.paymentDate}T12:00:00+06:00`)
-                : new Date(),
-              createdBy: session.user.id,
-              updatedBy: session.user.id,
-            },
-          });
-          const due = await recomputeDue(tx, id);
-          const { orderNo } = confirmsDraft
-            ? await confirmDraftTx(
-                tx,
-                id,
-                session.user.id,
-                `Advance received (${data.method}) — confirmed from draft ${order.orderNo}`
-              )
-            : { orderNo: order.orderNo };
-          return { paymentId: payment.id, due, orderNo };
-        });
-      } catch (err) {
-        const collision =
-          err instanceof Prisma.PrismaClientKnownRequestError &&
-          err.code === "P2002" &&
-          (err.meta?.target as string[] | undefined)?.includes("order_no");
-        if (!collision || attempt === 2) throw err;
-      }
-    }
+    const result = await prisma.$transaction(async (tx) => {
+      const payment = await tx.payment.create({
+        data: {
+          orderId: id,
+          type: data.type,
+          method: data.method,
+          amount: data.amount,
+          walletId: data.walletId,
+          transactionId: data.transactionId,
+          senderNumber: data.senderNumber,
+          screenshotUrl: data.screenshotUrl,
+          paymentDate: data.paymentDate
+            ? new Date(`${data.paymentDate}T12:00:00+06:00`)
+            : new Date(),
+          createdBy: session.user.id,
+          updatedBy: session.user.id,
+        },
+      });
+      const due = await recomputeDue(tx, id);
+      const { orderNo } = confirmsDraft
+        ? await confirmDraftTx(
+            tx,
+            id,
+            session.user.id,
+            `Advance received (${data.method}) — confirmed from draft ${order.orderNo}`
+          )
+        : { orderNo: order.orderNo };
+      return { paymentId: payment.id, due, orderNo };
+    });
 
     await logAudit({
       userId: session.user.id,
       action: "payment.create",
       entity: "payments",
-      entityId: result!.paymentId,
+      entityId: result.paymentId,
       after: {
-        orderNo: result!.orderNo,
+        orderNo: result.orderNo,
         type: data.type,
         method: data.method,
         amount: data.amount,
         walletId: data.walletId,
         transactionId: data.transactionId,
-        newDue: result!.due,
+        newDue: result.due,
         ...(confirmsDraft
           ? { confirmedFromDraft: order.orderNo }
           : {}),
@@ -176,9 +165,9 @@ export async function POST(req: Request, { params }: Params) {
     }
     return NextResponse.json(
       {
-        id: result!.paymentId,
-        due: result!.due,
-        ...(confirmsDraft ? { confirmed: true, orderNo: result!.orderNo } : {}),
+        id: result.paymentId,
+        due: result.due,
+        ...(confirmsDraft ? { confirmed: true, orderNo: result.orderNo } : {}),
       },
       { status: 201 }
     );

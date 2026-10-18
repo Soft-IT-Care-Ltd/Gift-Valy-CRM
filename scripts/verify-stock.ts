@@ -146,7 +146,7 @@ async function main() {
 
         const order = await tx.order.create({
           data: {
-            orderNo: "GV-VERIFY-0001",
+            orderNo: "TEST-VERIFY-0001",
             customerId: customer.id,
             recipientName: "Verify Recipient",
             recipientPhoneBd: "01700000000",
@@ -243,7 +243,7 @@ async function main() {
         ).reservedQty;
         const order2 = await tx.order.create({
           data: {
-            orderNo: "GV-VERIFY-0002",
+            orderNo: "TEST-VERIFY-0002",
             customerId: customer.id,
             recipientName: "Verify Recipient 2",
             recipientPhoneBd: "01700000001",

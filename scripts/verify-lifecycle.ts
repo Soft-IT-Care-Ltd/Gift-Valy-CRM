@@ -223,7 +223,7 @@ async function main() {
         const ADVANCE = 1200;
         const order = await tx.order.create({
           data: {
-            orderNo: "GV-LIFECYCLE-0001",
+            orderNo: "TEST-LIFECYCLE-0001",
             customerId: customer.id,
             recipientName: "Verify Recipient",
             recipientPhoneBd: "01700000000",
@@ -500,7 +500,7 @@ async function main() {
 
         const rOrder = await tx.order.create({
           data: {
-            orderNo: "GV-LIFECYCLE-0002",
+            orderNo: "TEST-LIFECYCLE-0002",
             customerId: customer.id,
             recipientName: "Return Recipient",
             recipientPhoneBd: "01700000002",
@@ -950,7 +950,7 @@ async function main() {
         const N_ADVANCE = 1500;
         const nOrder = await tx.order.create({
           data: {
-            orderNo: "GV-LIFECYCLE-0003",
+            orderNo: "TEST-LIFECYCLE-0003",
             customerId: customer.id,
             recipientName: "Combo Recipient",
             recipientPhoneBd: "01700000004",
@@ -1226,7 +1226,7 @@ async function main() {
               },
             },
           });
-        const tOrder = await mkTrashOrder("GV-LIFECYCLE-0004");
+        const tOrder = await mkTrashOrder("TEST-LIFECYCLE-0004");
         await syncReservations(tx, tOrder.id, admin.id);
         const reservedAfterConfirmT = (
           await tx.product.findUniqueOrThrow({ where: { id: teddy.id } })
@@ -1286,7 +1286,7 @@ async function main() {
           restoreDeducted: false,
           reason: `Order ${tOrder.orderNo} trashed`,
         });
-        const freshTrash = await mkTrashOrder("GV-LIFECYCLE-0005");
+        const freshTrash = await mkTrashOrder("TEST-LIFECYCLE-0005");
         await tx.order.update({
           where: { id: freshTrash.id },
           data: {
@@ -1300,7 +1300,7 @@ async function main() {
         const expired = await tx.order.findMany({
           where: {
             deletedAt: { not: null, lt: cutoff },
-            orderNo: { startsWith: "GV-LIFECYCLE-" },
+            orderNo: { startsWith: "TEST-LIFECYCLE-" },
           },
           select: { id: true, orderNo: true },
         });

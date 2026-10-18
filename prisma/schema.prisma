@@ -685,6 +685,18 @@ model Order {
   @@map("orders")
 }
 
+// FUNNEL_LINER.md GV-1 / CLAUDE.md rule 6 — THE billing record. One row per
+// Dhaka month ("2610"); lastNumber = orders created that month = the NNNN of
+// its last GV-YYMM-NNNN. Only generateOrderNumber (lib/orders.ts) writes it,
+// and only ever counts up — nothing lowers, resets, edits or deletes a row.
+model OrderSequence {
+  yearMonth  String   @id @map("year_month") @db.VarChar(4)
+  lastNumber Int      @map("last_number")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@map("order_sequences")
+}
+
 model OrderItem {
   id               Int           @id @default(autoincrement())
   orderId          Int           @map("order_id")

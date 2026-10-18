@@ -126,7 +126,7 @@ async function main() {
       const addOrder = (seId: number, amount: number, status: Prisma.OrderCreateInput["status"]) =>
         tx.order.create({
           data: {
-            orderNo: `GV-VT-${String(++orderSeq).padStart(4, "0")}`,
+            orderNo: `TEST-VT-${String(++orderSeq).padStart(4, "0")}`,
             customerId: customer.id,
             recipientName: "R", recipientPhoneBd: "01700000000",
             deliveryAddress: "A", district: "Dhaka", thana: "Gulshan",
