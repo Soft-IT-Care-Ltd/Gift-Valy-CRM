@@ -1,4 +1,5 @@
 import { headers } from "next/headers";
+import { steadfastCallbackUrl } from "@/lib/platform/addresses";
 import { prisma } from "@/lib/db";
 import { requirePagePermission } from "@/lib/page-auth";
 import { getEffectivePermissions } from "@/lib/rbac";
@@ -95,14 +96,12 @@ export default async function CourierPage() {
     paidSince(dhakaMonthStart()),
   ]);
 
-  // Callback URL host: NEXTAUTH_URL if set, else the request's own origin.
+  // FUNNEL_LINER.md GV-6 — the machine address (INSTANCE_URL), falling back
+  // to NEXTAUTH_URL, then the request's own origin (development).
   const h = await headers();
   const host = h.get("host");
   const proto = h.get("x-forwarded-proto") ?? "http";
-  const base =
-    process.env.NEXTAUTH_URL?.replace(/\/$/, "") ||
-    (host ? `${proto}://${host}` : "");
-  const callbackUrl = `${base}/api/webhooks/steadfast`;
+  const callbackUrl = steadfastCallbackUrl(host ? `${proto}://${host}` : "");
 
   const logRows: StatusLogRow[] = logs.map((l) => ({
     id: l.id,

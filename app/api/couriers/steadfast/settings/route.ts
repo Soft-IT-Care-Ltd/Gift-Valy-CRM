@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { requirePermission, apiError, AuthzError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
 import { encryptSecret } from "@/lib/crypto";
+import { steadfastCallbackUrl } from "@/lib/platform/addresses";
 import {
   STEADFAST,
   getSteadfastIntegration,
@@ -14,10 +15,10 @@ import {
 // Admin-only (settings.manage). Keys are encrypted at rest and never returned
 // to the client (masked view only, §1 / §5).
 
+// FUNNEL_LINER.md GV-6 — Steadfast is a machine: the callback uses the
+// machine address (INSTANCE_URL, …/_c/giftvaly), not the people's address.
 function callbackUrl(req: Request): string {
-  const base =
-    process.env.NEXTAUTH_URL?.replace(/\/$/, "") || new URL(req.url).origin;
-  return `${base}/api/webhooks/steadfast`;
+  return steadfastCallbackUrl(new URL(req.url).origin);
 }
 
 export async function GET(req: Request) {

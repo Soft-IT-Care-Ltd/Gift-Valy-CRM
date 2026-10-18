@@ -5,6 +5,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requirePermission, apiError } from "@/lib/authz";
 import { logAudit, auditSafeUser } from "@/lib/audit";
+import { checkUserPhone } from "@/lib/user-phone-db";
 
 const updateSchema = z.object({
   name: z.string().min(1).optional(),
@@ -37,12 +38,15 @@ export async function PATCH(req: Request, { params }: Params) {
       );
     }
 
+    const phone = await checkUserPhone(prisma, data.phone, id);
+    if ("error" in phone) return phone.error;
+
     const after = await prisma.user.update({
       where: { id },
       data: {
         name: data.name,
         email: data.email?.trim().toLowerCase(),
-        phone: data.phone === undefined ? undefined : data.phone || null,
+        phone: phone.phone,
         roleId: data.roleId,
         teamId: data.teamId === undefined ? undefined : data.teamId,
         isActive: data.isActive,
@@ -77,7 +81,7 @@ export async function PATCH(req: Request, { params }: Params) {
       e.code === "P2002"
     ) {
       return NextResponse.json(
-        { error: "A user with this email already exists" },
+        { error: "A user with this email or phone already exists" },
         { status: 409 }
       );
     }

@@ -11,13 +11,16 @@ datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
+  // CLAUDE.md rule 8 — the only database Prisma may wipe. Must end in _shadow;
+  // use `npm run db:diff`, which refuses to run otherwise (lib/shadow-db.ts).
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
 model User {
   id                 Int       @id @default(autoincrement())
   name               String
   email              String    @unique
-  phone              String?
+  phone              String?   @unique // normalised (lib/user-phone.ts) — a sign-in identifier (GV-5)
   passwordHash       String    @map("password_hash")
   roleId             Int       @map("role_id")
   teamId             Int?      @map("team_id")

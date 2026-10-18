@@ -195,7 +195,7 @@ Part 2 — production, only after my OK. Create the giftvaly database and roles,
 - A test lists every order create and every write of `orderNo` and fails if a GV number is produced any other way (Antu: `lib/orders/__tests__/order-creation-paths.test.ts`).
 - **Done (19 Oct 2026):** `lib/order-number.ts` (`generateOrderNumber`, re-exported from `lib/orders.ts`), migration `20261019000000_gv1_order_sequences` (backfill also reads `orderNo` from audit rows, so purged numbers are never reissued — dev 2606 → 4, 2607 → 84), `npm run test:order-paths`. Verify scripts use `TEST-` numbers, never `GV-`.
 
-### GV-2. Usage endpoint — [OPEN]
+### GV-2. Usage endpoint — [DONE]
 
 `GET /api/platform/usage?from=YYMM&to=YYMM` — machine-to-machine, `Authorization: Bearer <PLATFORM_SECRET>`, no session. Both optional; default the current and the previous Dhaka month.
 
@@ -213,8 +213,10 @@ Plus once per response: `serverTime`, the app version and commit, the current pl
 - Read-only; counts and order numbers only — no customer, recipient, product, money or staff name.
 - PLATFORM_SECRET is separate from CRON_SECRET and checked timing-safe (`lib/crypto.ts`); **fails closed when unset**. CRON_SECRET is refused here.
 - Zod on the query.
+- **Done (19 Oct 2026):** `app/api/platform/usage` → `lib/platform/handlers.ts` `usageHandler`, `lib/platform/usage.ts` (billed number = `order_sequences.lastNumber`; breakdown confirmedAndLater/onHold/cancelled/inTrash/draftsNotConfirmed by raw SQL so trashed rows count; ≤36 months), `lib/platform/auth.ts` `rejectUnlessPlatform` (timing-safe, fails closed, CRON_SECRET refused). Version = `APP_VERSION+APP_COMMIT` set in `next.config.ts`. Tests: `npm run test:platform`.
 
-### GV-3. State endpoint — [OPEN]
+
+### GV-3. State endpoint — [DONE]
 
 `POST /api/platform/state` — same authentication as GV-2.
 
@@ -223,8 +225,10 @@ Plus once per response: `serverTime`, the app version and commit, the current pl
 - A push older than the stored `sentAt` is ignored (answers `applied: false`), so a late retry can never undo a newer state.
 - Read through one small cached helper (about 5 seconds), so a change applies at once without a restart and the proxy doesn't query the database on every request.
 - Gift Valy never calls Funnel Liner. If nothing is ever pushed, the state is `active`.
+- **Done (19 Oct 2026):** `app/api/platform/state`, `lib/platform/state.ts` (5 s cache `getPlatformState()` for the GV-7 proxy; `applyPlatformPush` via `lib/platform/settings-push.ts`: row-locked, older `sentAt` ignored, audit row in the same transaction under the inactive system user "Funnel Liner (system)" (`getFunnelLinerUserId`, `logAuditTx`) with `actor: "Funnel Liner"`). `changedAt` moves only when the state changes.
 
-### GV-4. Billing snapshot endpoint — [OPEN]
+
+### GV-4. Billing snapshot endpoint — [DONE]
 
 `POST /api/platform/billing` — same authentication as GV-2. Body: the billing snapshot from FUNNEL_LINER_ADMIN.md §8:
 
@@ -248,21 +252,27 @@ Plus once per response: `serverTime`, the app version and commit, the current pl
 - Zod-validated; amounts are integer paisa; at most 12 invoices.
 - Stored whole in `settings` under `platform_billing`, replacing the last one; an older `sentAt` is ignored; audit row as in GV-3.
 - Answers `{ "applied": true | false }` — the admin panel uses it as the acknowledgement.
+- **Done (19 Oct 2026):** `app/api/platform/billing`, `lib/platform/billing.ts` (`readBillingSnapshot` for GV-8), schema in `lib/platform/state-shape.ts` (integer paisa, ≤12 invoices, unknown extra fields stripped so a newer admin panel never gets refused). Same lock/ignore/audit path as GV-3 (`platform.billing`).
 
-### GV-5. "Is this number yours?", sign-in page, phone sign-in, cookie name — [OPEN]
+
+### GV-5. "Is this number yours?", sign-in page, phone sign-in, cookie name — [DONE]
 
 - `POST /api/platform/has-user` — same authentication as GV-2. Body `identifier` (phone or email). Answer `{ "found": true | false }` and nothing else. `found` is true for exactly the people who could sign in right now — **one shared lookup used by both this route and `lib/auth.ts`** so they can never disagree. Read-only; never counts as a failed sign-in.
 - **Phone sign-in:** the credentials provider accepts a phone number or an email in one `identifier` field. Phones are normalised the same way everywhere (e.g. `+8801…`, `8801…`, `01…` → one form); a migration adds a unique index on the normalised phone; the user form refuses a duplicate.
 - **Sign-in page:** one box, placeholder `017XXXXXXXX or your email`. `/login?identifier=…` fills the box and puts the cursor in the password box. Below the form, "Not your shop? Sign in with another number" → `/go/switch`, shown **only** when `SHARED_SIGNIN` is exactly `enabled`. A wrong password shows the same message as today.
 - **Session cookie name:** set NextAuth's cookie names to Gift Valy's own (e.g. `__Secure-gv.session-token`, and the CSRF and callback cookies likewise) so they never collide with another shop's on the shared host. Everyone signs in once more after the change — fine, production is new.
+- **Done (19 Oct 2026):** `app/api/platform/has-user`; one match `lib/sign-in-user.ts` used by it and `lib/auth.ts`; `lib/user-phone.ts` `normalizeUserPhone` (BD mobile → `01XXXXXXXXX`, other → `+digits`); migration `20261019100000_gv5_user_phone_unique` (normalise, oldest active keeps a duplicate, unique `users_phone_key`; dev had no phones); user routes refuse a bad (400) or duplicate (409) phone via `lib/user-phone-db.ts`; `/login` = server page + `components/auth/login-form.tsx` (`?identifier=` prefill + password focus, "Not your shop?" only when `SHARED_SIGNIN=enabled`); cookies `__Secure-gv.session-token`, `__Secure-gv.callback-url`, `__Host-gv.csrf-token` (no prefix on http dev). Checked in the browser: sign-in by phone (`+880 1799-…`) and by email.
 
-### GV-6. Public address and machine address — [OPEN]
+
+### GV-6. Public address and machine address — [DONE]
 
 - `NEXTAUTH_URL` = `https://dashboard.funnelliner.com` — sign-in and every link a person follows.
 - `INSTANCE_URL` (new) = `https://dashboard.funnelliner.com/_c/giftvaly` — what machines use. Falls back to `NEXTAUTH_URL` when unset, so development is unchanged. One helper, `instanceUrl()`.
 - **The Steadfast callback URL** is built from `INSTANCE_URL` — today it is built from `NEXTAUTH_URL` in `app/api/couriers/steadfast/settings/route.ts` and `app/(dashboard)/courier/page.tsx`.
 - Search for every other place a full URL is built (WhatsApp invoice links, PDFs, redirects) and decide one by one whether a person or a machine uses it.
 - No page or route starts with `/go/` or `/_c/` — add a test.
+- **Done (19 Oct 2026):** `lib/platform/addresses.ts` `instanceUrl()` / `steadfastCallbackUrl()` (INSTANCE_URL → NEXTAUTH_URL → request origin), used by the Courier page and the Steadfast settings route. Every other full URL checked: redirects and `signOut` callbacks are relative (person), `wa.me` / Steadfast tracking / Graph API are external, the manifest `start_url` is relative, WhatsApp invoices send the PDF as media (no link). Tests pin the callback builder, no hardcoded funnelliner host, and no `go` / `_c` first route segment.
+
 
 ### GV-7. The billing lock — [OPEN]
 

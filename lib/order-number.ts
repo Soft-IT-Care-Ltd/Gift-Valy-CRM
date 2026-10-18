@@ -30,6 +30,13 @@ export async function generateOrderNumber(
     ON CONFLICT ("year_month") DO UPDATE
       SET "last_number" = "order_sequences"."last_number" + 1, "updated_at" = now()
     RETURNING "last_number"`;
-  // At least 4 digits; 10,000+ grows to 5 — never wraps.
-  return `GV-${yearMonth}-${String(row.last_number).padStart(4, "0")}`;
+  return formatOrderNo(yearMonth, row.last_number);
+}
+
+// The counter value n of month yearMonth as its order number. Also used
+// read-only by the usage endpoint (GV-2) to show the month's last number —
+// formatting is not numbering; only generateOrderNumber hands numbers out.
+// At least 4 digits; 10,000+ grows to 5 — never wraps.
+export function formatOrderNo(yearMonth: string, n: number): string {
+  return `GV-${yearMonth}-${String(n).padStart(4, "0")}`;
 }

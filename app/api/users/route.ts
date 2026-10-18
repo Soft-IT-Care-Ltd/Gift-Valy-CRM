@@ -6,6 +6,7 @@ import { prisma } from "@/lib/db";
 import { requirePermission, apiError } from "@/lib/authz";
 import { logAudit, auditSafeUser } from "@/lib/audit";
 import { dhakaDateBound } from "@/lib/orders";
+import { checkUserPhone } from "@/lib/user-phone-db";
 
 export async function GET() {
   try {
@@ -56,12 +57,14 @@ export async function POST(req: Request) {
   try {
     const session = await requirePermission("users.manage");
     const data = createSchema.parse(await req.json());
+    const phone = await checkUserPhone(prisma, data.phone ?? null);
+    if ("error" in phone) return phone.error;
 
     const user = await prisma.user.create({
       data: {
         name: data.name,
         email: data.email.trim().toLowerCase(),
-        phone: data.phone || null,
+        phone: phone.phone ?? null,
         passwordHash: await bcrypt.hash(data.password, 10),
         roleId: data.roleId,
         teamId: data.teamId ?? null,
@@ -87,7 +90,7 @@ export async function POST(req: Request) {
       e.code === "P2002"
     ) {
       return NextResponse.json(
-        { error: "A user with this email already exists" },
+        { error: "A user with this email or phone already exists" },
         { status: 409 }
       );
     }

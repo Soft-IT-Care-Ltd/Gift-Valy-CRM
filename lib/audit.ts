@@ -22,6 +22,24 @@ export async function logAudit(opts: {
   });
 }
 
+// Same row, written inside the caller's transaction — so the change and its
+// audit row commit or roll back together (FUNNEL_LINER.md GV-3/GV-4).
+export async function logAuditTx(
+  tx: Prisma.TransactionClient,
+  opts: Parameters<typeof logAudit>[0]
+) {
+  await tx.auditLog.create({
+    data: {
+      userId: opts.userId,
+      action: opts.action,
+      entity: opts.entity,
+      entityId: opts.entityId != null ? String(opts.entityId) : null,
+      beforeJson: (opts.before ?? undefined) as Prisma.InputJsonValue | undefined,
+      afterJson: (opts.after ?? undefined) as Prisma.InputJsonValue | undefined,
+    },
+  });
+}
+
 // Strip secrets before an object goes into the audit log.
 export function auditSafeUser<T extends { passwordHash?: string }>(u: T) {
   const { passwordHash: _passwordHash, ...rest } = u;

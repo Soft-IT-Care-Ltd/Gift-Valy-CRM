@@ -14,8 +14,23 @@ export const SYSTEM_USER_EMAIL = "steadfast-system@giftvaly.local";
 export const SYSTEM_USER_NAME = "Steadfast (system)";
 
 export async function getSystemUserId(tx: Tx): Promise<number> {
+  return systemUserId(tx, SYSTEM_USER_EMAIL, SYSTEM_USER_NAME);
+}
+
+// FUNNEL_LINER.md GV-3/GV-4 — audit_logs.user_id is required, and the pushes
+// from Funnel Liner (billing state, billing snapshot) have no human actor.
+// Same kind of inactive, non-login account as the Steadfast one; the audit JSON
+// also says actor "Funnel Liner".
+export const FUNNEL_LINER_USER_EMAIL = "funnelliner-system@giftvaly.local";
+export const FUNNEL_LINER_USER_NAME = "Funnel Liner (system)";
+
+export async function getFunnelLinerUserId(tx: Tx): Promise<number> {
+  return systemUserId(tx, FUNNEL_LINER_USER_EMAIL, FUNNEL_LINER_USER_NAME);
+}
+
+async function systemUserId(tx: Tx, email: string, name: string): Promise<number> {
   const existing = await tx.user.findUnique({
-    where: { email: SYSTEM_USER_EMAIL },
+    where: { email },
     select: { id: true },
   });
   if (existing) return existing.id;
@@ -24,8 +39,8 @@ export async function getSystemUserId(tx: Tx): Promise<number> {
   const anyRole = await tx.role.findFirstOrThrow({ select: { id: true } });
   const created = await tx.user.create({
     data: {
-      name: SYSTEM_USER_NAME,
-      email: SYSTEM_USER_EMAIL,
+      name,
+      email,
       passwordHash: `!disabled!${crypto.randomBytes(24).toString("hex")}`,
       roleId: anyRole.id,
       isActive: false,
