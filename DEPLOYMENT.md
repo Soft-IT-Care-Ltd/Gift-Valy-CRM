@@ -113,7 +113,16 @@ No shadow database on the server: `SHADOW_DATABASE_URL` is development only (CLA
 ## 4. Cloudflare (owner, in the dashboard, zone `funnelliner.com`)
 
 1. **DNS:** `gv-staging` — A (and AAAA) to the server, **proxied**.
-2. **Caching → Cache Rules:** add `gv-staging.funnelliner.com` to the *Bypass cache* rule the admin panel's step 4 made (hostname in the list **and** URI path not starting with `/_next/static/`). `dashboard.funnelliner.com` is already covered by Antu's rules.
+2. **Caching → Cache Rules** — the zone's only two, shared by every name in it (Antu's, the admin panel's and Gift Valy's; as of 23 Oct 2026 the zone had none, so they are made here once). Each: **Create rule** → **Custom filter expression** → **Edit expression** → paste → **Deploy**. *Never cache* stays above *Build files*.
+   1. **Never cache** → *Cache eligibility:* **Bypass cache**:
+      ```
+      (starts_with(http.request.uri.path, "/api/") or starts_with(http.request.uri.path, "/uploads/") or starts_with(http.request.uri.path, "/_c/") or http.request.uri.path eq "/sw.js") or (http.host in {"dashboard.funnelliner.com" "admin.funnelliner.com" "admin-staging.funnelliner.com" "staging.funnelliner.com" "gv-staging.funnelliner.com"} and not starts_with(http.request.uri.path, "/_next/static/"))
+      ```
+   2. **Build files** → *Cache eligibility:* **Eligible for cache**; *Edge TTL:* **Use cache-control header if present, bypass cache if not**; *Browser TTL:* respect origin:
+      ```
+      starts_with(http.request.uri.path, "/_next/static/")
+      ```
+   The Edge TTL choice matters: a device with no remembered shop gets `302 /go/` for every path, `/_next/static/…` included, and that redirect must never be cached (Nginx also sends it with `Cache-Control: no-store`). Never "Cache Everything" in this zone. `staging-shop.funnelliner.com` (Antu's staging website) needs no host entry — the path conditions cover it. Antu's third rule (public images) belongs to the shop's own zone, not this one. Rocket Loader, Email Address Obfuscation and Bot Fight Mode stay off (Antu's SETUP.md §7.5).
 3. Nothing else: Full (strict), Always Use HTTPS and TLS are the zone's. Production needs no new name — it is `dashboard.funnelliner.com`.
 
 ---

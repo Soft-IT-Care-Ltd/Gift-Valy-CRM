@@ -10,7 +10,7 @@ Gift Valy এখন Funnel Liner এর দ্বিতীয় client। স�
 
 1. **GitHub deploy key।** Developer server এ একটা key বানিয়ে আপনাকে একটা লাইন দেবে। GitHub → `Soft-IT-Care-Ltd/Gift-Valy-CRM` → **Settings → Deploy keys → Add deploy key** → Title: `antu-vps` → লাইনটা paste করুন → **"Allow write access" টিক দেবেন না** → Add key।
 2. **Repository টা private করুন।** `Gift-Valy-CRM` এখন **public** — যে কেউ code আর deploy এর ফাইল পড়তে পারে। Antu আর admin panel এর repo private। GitHub → Settings → General → Danger Zone → **Change visibility → Private**। (কোনো secret repo তে নেই, তবু private রাখাই নিরাপদ।)
-3. **Cloudflare — staging এর নাম।** Zone `funnelliner.com` → **DNS → Add record**: Type `A`, Name `gv-staging`, IPv4 = server এর IP (Antu যেটায় চলে), **Proxied (কমলা মেঘ) চালু**। তারপর **Caching → Cache Rules** এ admin panel এর জন্য যে *Bypass cache* rule আছে, তার hostname তালিকায় `gv-staging.funnelliner.com` যোগ করুন।
+3. **Cloudflare — staging এর নাম।** Zone `funnelliner.com` → **DNS → Add record**: Type `A`, Name `gv-staging`, IPv4 = server এর IP (Antu যেটায় চলে), **Proxied (কমলা মেঘ) চালু**। তারপর **Caching → Cache Rules** এ দুটো rule বানান — zone এর সব নামের জন্য একবারই (Antu, admin panel, Gift Valy): ঠিক কী paste করতে হবে আর কোন setting বাছতে হবে, তা `DEPLOYMENT.md` §4 ধাপ ২ এ আছে (*Never cache* উপরে, *Build files* নিচে)। **"Cache Everything" কখনো নয়।**
 4. **Backblaze B2 — ব্যাকআপ মুছে ফেলার নিয়ম।** B2 → bucket `antu-backups` → **Lifecycle Settings** → Antu ও admin panel এর নিয়মগুলোর পাশে এই পাঁচটা যোগ করুন:
 
    | File name prefix | Days from uploading to hiding | Days from hiding to deleting |
