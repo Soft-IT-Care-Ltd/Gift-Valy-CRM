@@ -1,0 +1,12 @@
+# /etc/logrotate.d/giftvaly — the app's PM2 logs (production and staging),
+# the cron and backup logs. copytruncate: PM2 and cron keep their files open.
+/var/log/giftvaly/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su deploy deploy
+}

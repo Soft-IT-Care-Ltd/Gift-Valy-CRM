@@ -1,11 +1,11 @@
 import { randomUUID } from "crypto";
-import { mkdir, writeFile } from "fs/promises";
-import path from "path";
 import { NextResponse } from "next/server";
 import { requireAnyPermission, apiError } from "@/lib/authz";
+import { saveUpload } from "@/lib/file-storage";
 
 // SPEC §15: local /uploads first, S3-compatible (R2) later — swap the write
-// here when that happens; callers only ever see the returned URL.
+// here when that happens; callers only ever see the returned URL. GV-11: the
+// file goes to UPLOAD_DIR and is served by app/uploads/[...path] (signed in).
 const MAX_BYTES = 5 * 1024 * 1024;
 
 // Extension comes from the validated MIME type, never the client filename.
@@ -18,7 +18,7 @@ const EXT_BY_TYPE: Record<string, string> = {
 export async function POST(req: Request) {
   try {
     // Any role that can attach a file: catalog photos, payment screenshots (SEs)
-    // or expense receipts (Accounts). Files land in the same public bucket.
+    // or expense receipts (Accounts). Files land in the same folder.
     await requireAnyPermission([
       "catalog.manage",
       "expenses.create",
@@ -44,12 +44,11 @@ export async function POST(req: Request) {
       );
     }
 
-    const name = `${randomUUID()}.${ext}`;
-    const dir = path.join(process.cwd(), "public", "uploads");
-    await mkdir(dir, { recursive: true });
-    await writeFile(path.join(dir, name), Buffer.from(await file.arrayBuffer()));
-
-    return NextResponse.json({ url: `/uploads/${name}` }, { status: 201 });
+    const url = await saveUpload(
+      `${randomUUID()}.${ext}`,
+      Buffer.from(await file.arrayBuffer())
+    );
+    return NextResponse.json({ url }, { status: 201 });
   } catch (e) {
     return apiError(e);
   }

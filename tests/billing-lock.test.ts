@@ -103,7 +103,7 @@ describe("GV-7 closed by default", () => {
     assert.equal(lockVerdict("GET", "/brand-new-page"), "redirect");
     assert.equal(lockVerdict("GET", "/api/brand-new/export"), "refuse");
     assert.equal(lockVerdict("POST", "/api/brand-new"), "refuse");
-    assert.equal(lockVerdict("GET", "/uploads/photo.jpg"), "redirect");
+    assert.equal(lockVerdict("GET", "/uploads/photo.jpg"), "refuse");
     assert.equal(lockVerdict("GET", "/api/cron/trash-cleanup"), "refuse");
   });
 

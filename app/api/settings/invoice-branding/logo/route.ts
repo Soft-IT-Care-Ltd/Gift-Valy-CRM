@@ -1,8 +1,7 @@
 import { randomUUID } from "crypto";
-import { mkdir, writeFile } from "fs/promises";
-import path from "path";
 import { NextResponse } from "next/server";
 import { requirePermission, apiError } from "@/lib/authz";
+import { saveUpload } from "@/lib/file-storage";
 
 // CORRECTIONS §R9 — the invoice logo upload. Separate from the shared
 // /api/uploads route because (a) it is settings.manage-gated, and (b) pdfkit
@@ -36,12 +35,11 @@ export async function POST(req: Request) {
       );
     }
 
-    const name = `invoice-logo-${randomUUID()}.${ext}`;
-    const dir = path.join(process.cwd(), "public", "uploads");
-    await mkdir(dir, { recursive: true });
-    await writeFile(path.join(dir, name), Buffer.from(await file.arrayBuffer()));
-
-    return NextResponse.json({ url: `/uploads/${name}` }, { status: 201 });
+    const url = await saveUpload(
+      `invoice-logo-${randomUUID()}.${ext}`,
+      Buffer.from(await file.arrayBuffer())
+    );
+    return NextResponse.json({ url }, { status: 201 });
   } catch (e) {
     return apiError(e);
   }

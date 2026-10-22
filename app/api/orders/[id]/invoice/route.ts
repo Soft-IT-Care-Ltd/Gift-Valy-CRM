@@ -1,10 +1,8 @@
-import path from "path";
-import { mkdir, readFile, writeFile } from "fs/promises";
+import { readFile } from "fs/promises";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { requirePermissionCtx, apiError, AuthzError } from "@/lib/authz";
 import {
-  INVOICE_DIR,
   generateInvoice,
   invoiceFileName,
   loadInvoiceOrder,
@@ -12,6 +10,7 @@ import {
 } from "@/lib/invoice";
 import { getCurrencyForCountry } from "@/lib/currency";
 import { getInvoiceBranding } from "@/lib/settings";
+import { invoicePdfPath, saveInvoicePdf } from "@/lib/file-storage";
 import { orderScopeWhere } from "@/lib/orders";
 import { orderIsInvoiceable } from "@/lib/order-constants";
 
@@ -69,7 +68,7 @@ export async function GET(req: Request, { params }: Params) {
     const fileName = invoiceFileName(order.orderNo, invoice.version);
     let pdf: Buffer;
     try {
-      pdf = await readFile(path.join(process.cwd(), invoice.pdfUrl));
+      pdf = await readFile(invoicePdfPath(invoice.pdfUrl));
     } catch {
       // File lost (fresh checkout / moved server). The latest version always
       // mirrors current order data — edits bump the version — so re-render
@@ -92,8 +91,7 @@ export async function GET(req: Request, { params }: Params) {
         await getCurrencyForCountry(full.customer.country),
         await getInvoiceBranding()
       );
-      await mkdir(INVOICE_DIR, { recursive: true });
-      await writeFile(path.join(INVOICE_DIR, fileName), pdf);
+      await saveInvoicePdf(fileName, pdf);
     }
 
     return new NextResponse(new Uint8Array(pdf), {

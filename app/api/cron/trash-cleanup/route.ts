@@ -1,7 +1,7 @@
-import path from "path";
 import { unlink } from "fs/promises";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { invoicePdfPath } from "@/lib/file-storage";
 import { timingSafeEqual } from "@/lib/crypto";
 import { logAudit } from "@/lib/audit";
 import { getSystemUserId } from "@/lib/system-user";
@@ -57,7 +57,7 @@ export async function GET(req: Request) {
       // (files carry PII, but an orphaned file is better than a zombie order).
       for (const inv of order.invoices) {
         try {
-          await unlink(path.join(process.cwd(), inv.pdfUrl));
+          await unlink(invoicePdfPath(inv.pdfUrl));
         } catch {
           // already gone / fresh checkout — nothing to clean
         }

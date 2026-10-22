@@ -1,4 +1,3 @@
-import path from "path";
 import { readFile } from "fs/promises";
 import type {
   WhatsAppIntegration,
@@ -17,6 +16,7 @@ import {
 } from "./invoice";
 import { getCurrencyForCountry } from "./currency";
 import { getInvoiceBranding } from "./settings";
+import { invoicePdfPath } from "./file-storage";
 import { buildInvoiceMessage } from "./invoice-message";
 
 // ============ WhatsApp invoice send (SPEC §5 / §16 Phase 4) ============
@@ -233,7 +233,7 @@ export async function sendInvoiceViaWhatsApp(
   // re-rendered — same fallback as the download route.
   let pdf: Buffer;
   try {
-    pdf = await readFile(path.join(process.cwd(), invoice.pdfUrl));
+    pdf = await readFile(invoicePdfPath(invoice.pdfUrl));
   } catch {
     pdf = await renderInvoicePdf(
       order,

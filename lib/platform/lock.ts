@@ -51,6 +51,9 @@ export function lockVerdict(method: string, pathname: string): LockVerdict {
   const path = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
   const isApi = path === "/api" || path.startsWith("/api/");
   if (isApi) return OPEN_API.some((r) => r.path.test(path)) ? "open" : "refuse";
+  // GV-11: uploads are a route (app/uploads/[...path]), not a page — an <img>
+  // gets the 423, never a redirect to the Billing page's HTML.
+  if (path === "/uploads" || path.startsWith("/uploads/")) return "refuse";
   if (OPEN_ASSETS.some((r) => r.path.test(path))) return "open";
   if (OPEN_PAGES.some((r) => r.path.test(path))) return "open";
   // A page. Only a plain read is redirected; anything else has no business

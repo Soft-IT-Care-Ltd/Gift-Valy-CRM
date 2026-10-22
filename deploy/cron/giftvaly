@@ -1,0 +1,20 @@
+# /etc/cron.d/giftvaly — Gift Valy's jobs and backups (FUNNEL_LINER.md GV-13),
+# as the deploy user (DEPLOYMENT.md step 10). A cron.d file of its own, not the
+# deploy user's crontab: Antu's DEPLOYMENT.md installs that one whole with
+# `crontab -`, which would wipe these lines. No secret here — run-job.sh reads
+# CRON_SECRET from /srv/giftvaly/shared/.env and calls the app on
+# 127.0.0.1:3200, never through Cloudflare.
+#
+# The server clock is UTC; Dhaka is UTC+6. Production only — staging has no cron.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+APP=/srv/giftvaly/app
+
+# Steadfast status + payments sync — every 15 minutes (keeps running while suspended, GV-7)
+*/15 * * * *   deploy  $APP/scripts/run-job.sh steadfast-sync >> /var/log/giftvaly/cron.log 2>&1
+# Trash cleanup — 03:30 Dhaka, after the nightly backup (answers 423 while suspended, GV-7)
+30 21 * * *    deploy  $APP/scripts/run-job.sh trash-cleanup  >> /var/log/giftvaly/cron.log 2>&1
+# Backups — the same times as Antu's and the admin panel's: nightly 03:00 Dhaka
+# (database + uploads + invoices), hourly 10:00–22:00 Dhaka (database)
+0 21 * * *     deploy  $APP/scripts/backup.sh                  >> /var/log/giftvaly/backup.log 2>&1
+0 4-16 * * *   deploy  $APP/scripts/backup.sh --hourly         >> /var/log/giftvaly/backup.log 2>&1

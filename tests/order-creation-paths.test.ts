@@ -150,7 +150,8 @@ describe("rule 6 — every GV number comes from generateOrderNumber", () => {
     }
     assert.deepEqual(offenders, []);
     assert.match(SEED.text, /generateOrderNumber\(tx,/);
-    assert.match(SEED.text, /process\.env\.NODE_ENV === "production"[^]{0,40}throw/);
+    // GV-12: NODE_ENV=production or a URL naming the "giftvaly" database (lib/seed-guard.ts).
+    assert.match(SEED.text, /const refusal = demoSeedRefusal\(process\.env\);\n\s+if \(refusal\) \{\n\s+throw/);
   });
 
   test("only generateOrderNumber ever writes order_sequences, and it only counts up", () => {

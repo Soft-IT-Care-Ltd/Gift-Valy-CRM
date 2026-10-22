@@ -67,7 +67,7 @@ leaves orders you entered through the app untouched.
 
 **Admin/Manager — Catalog** (sidebar section *Catalog*):
 - **Categories** — CRUD; deleting a category with products is blocked.
-- **Products** — CRUD with SKU auto-generated on save (`GV-0001`…), unit (pcs/box/set), avg cost, selling price + price floor, low-stock threshold (red *low* badge), stock-tracked toggle (off = perishable/per-order, e.g. cake & flowers), active toggle, and direct photo upload (JPEG/PNG/WebP ≤ 5MB → stored in `public/uploads/`, thumbnail in the table).
+- **Products** — CRUD with SKU auto-generated on save (`GV-0001`…), unit (pcs/box/set), avg cost, selling price + price floor, low-stock threshold (red *low* badge), stock-tracked toggle (off = perishable/per-order, e.g. cake & flowers), active toggle, and direct photo upload (JPEG/PNG/WebP ≤ 5MB → stored in `UPLOAD_DIR` (dev `storage/uploads/`), served to signed-in people at `/uploads/<name>`, thumbnail in the table).
 - **Packages** — CRUD with a BOM editor (add/remove product lines with qty). **Cost** = Σ component avg cost and **Margin** = price − cost are computed live and shown only to cost-visible roles. **Can make** = min over stock-tracked components of ⌊stock ÷ qty⌋ (seeded: Probashi Premium = 8, limited by 8 sarees); per-order components don't constrain it.
 
 **Sales Executive** — log in as Sanjoy or Partho:
@@ -127,5 +127,6 @@ app/(dashboard)/          Signed-in shell + admin + catalog + orders pages
 app/api/                  users, teams, roles, account, categories, products, packages,
                           uploads, customers/search, orders (+status/payments/edit-request),
                           edit-requests APIs
-public/uploads/           Uploaded photos & payment screenshots (gitignored)
+storage/uploads/          Uploaded photos & payment screenshots (dev UPLOAD_DIR, gitignored)
+storage/invoices/         Invoice PDFs (dev INVOICE_DIR, gitignored)
 ```

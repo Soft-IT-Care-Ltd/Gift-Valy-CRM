@@ -1,6 +1,5 @@
 import path from "path";
 import { existsSync } from "fs";
-import { mkdir, writeFile } from "fs/promises";
 import PDFDocument from "pdfkit";
 import { Prisma, type Invoice } from "@prisma/client";
 import { prisma } from "./db";
@@ -8,6 +7,7 @@ import { logAudit } from "./audit";
 import { PAYMENT_METHOD_LABELS } from "./order-constants";
 import { getCurrencyForCountry } from "./currency";
 import { getInvoiceBranding } from "./settings";
+import { saveInvoicePdf, uploadUrlPath } from "./file-storage";
 import {
   formatInCurrency,
   rateLine,
@@ -29,8 +29,9 @@ import { loadBomCatalog } from "./bom-db";
 // ============ SPEC §5 — Invoice PDF generation & versioning ============
 // Auto-generated on order confirmation; regenerated (version N+1) when an
 // approved edit changes the order. Old versions and their files are kept.
-// PDFs live in storage/invoices (NOT public/) — they carry customer PII and
-// are only served through the authenticated download route.
+// PDFs live in INVOICE_DIR (lib/file-storage.ts — never public/, outside the
+// release on the server) — they carry customer PII and are only served
+// through the authenticated download route.
 //
 // CORRECTIONS Orders §6i — the invoice is HALF an A4 page (an A5-landscape
 // slot): a single invoice prints on the top half of an A4 sheet with a dashed
@@ -47,8 +48,6 @@ import { loadBomCatalog } from "./bom-db";
 const FONT_DIR = path.join(process.cwd(), "public", "fonts");
 const FONT_REGULAR = path.join(FONT_DIR, "NotoSansBengali-Regular.ttf");
 const FONT_BOLD = path.join(FONT_DIR, "NotoSansBengali-Bold.ttf");
-
-export const INVOICE_DIR = path.join(process.cwd(), "storage", "invoices");
 
 // Colors
 const INK = "#111827";
@@ -167,8 +166,8 @@ function drawLogoPlaceholder(doc: Doc, x: number, y: number, size: number) {
     .text("GV", x, y + size / 2 - size * 0.3, { width: size, align: "center" });
 }
 
-// §R9 — the uploaded logo (PNG/JPEG under public/uploads, path re-validated
-// here) fits into a wider box than the square placeholder so wordmark-style
+// §R9 — the uploaded logo (PNG/JPEG in UPLOAD_DIR, path re-validated by
+// lib/file-storage.ts) fits into a wider box than the square placeholder so wordmark-style
 // logos stay legible. Any read/decode failure falls back to the placeholder —
 // a bad file must never block an invoice. Returns the x where the company
 // text column starts.
@@ -177,11 +176,8 @@ const LOGO_BOX_H = 30;
 
 function drawLogo(doc: Doc, branding: InvoiceBranding, x: number, y: number): number {
   if (branding.logoUrl) {
-    const uploadsDir = path.join(process.cwd(), "public", "uploads");
-    const file = path.resolve(
-      path.join(process.cwd(), "public", branding.logoUrl)
-    );
-    if (file.startsWith(uploadsDir + path.sep) && existsSync(file)) {
+    const file = uploadUrlPath(branding.logoUrl);
+    if (file && existsSync(file)) {
       try {
         doc.image(file, x, y, { fit: [LOGO_BOX_W, LOGO_BOX_H] });
         return x + LOGO_BOX_W + 8;
@@ -730,15 +726,14 @@ export async function generateInvoice(
     const version = (last?.version ?? 0) + 1;
     const pdf = await renderInvoicePdf(order, version, currency, branding);
     const fileName = invoiceFileName(order.orderNo, version);
-    await mkdir(INVOICE_DIR, { recursive: true });
-    await writeFile(path.join(INVOICE_DIR, fileName), pdf);
+    const pdfUrl = await saveInvoicePdf(fileName, pdf);
     try {
       const invoice = await prisma.invoice.create({
         data: {
           orderId,
           invoiceNo: order.orderNo,
           version,
-          pdfUrl: `storage/invoices/${fileName}`,
+          pdfUrl,
           generatedBy: userId ?? null,
         },
       });

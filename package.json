@@ -2,6 +2,9 @@
   "name": "gift-valy",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
@@ -12,7 +15,9 @@
     "test:order-paths": "tsx --test tests/order-creation-paths.test.ts",
     "test:shadow-db": "tsx --test tests/shadow-db.test.ts",
     "test:platform": "tsx --test tests/platform.test.ts tests/billing-lock.test.ts tests/platform.integration.test.ts",
+    "test:deploy": "tsx --test tests/deploy-config.test.ts",
     "db:diff": "tsx scripts/db-diff.ts",
+    "db:bootstrap": "bash scripts/db-bootstrap.sh",
     "verify:stock": "tsx scripts/verify-stock.ts",
     "verify:steadfast": "tsx scripts/verify-steadfast.ts",
     "verify:steadfast-payments": "tsx scripts/verify-steadfast-payments.ts",

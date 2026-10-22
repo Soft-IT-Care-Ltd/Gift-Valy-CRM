@@ -14,6 +14,7 @@ import {
 import { SEED_EXPENSE_CATEGORIES, AD_COST_CATEGORY } from "../lib/expense-constants";
 import { dhakaDateBound } from "../lib/order-constants";
 import { generateOrderNumber } from "../lib/order-number";
+import { demoSeedRefusal } from "../lib/seed-guard";
 import {
   ATTENDANCE_SETTINGS_KEY,
   DEFAULT_ATTENDANCE_SETTINGS,
@@ -24,13 +25,23 @@ import {
   dhakaYmd,
 } from "../lib/attendance-constants";
 
+// The .env's values, so the guard below sees DATABASE_URL even before Prisma
+// reads the file (values already in the environment win).
+try {
+  process.loadEnvFile();
+} catch {
+  // no .env — the environment alone
+}
+
 const prisma = new PrismaClient();
 
 async function main() {
   // CLAUDE.md rule 6 — the demo seed creates orders and moves the billing
   // counter, so it never runs on production (use `npm run db:bootstrap`).
-  if (process.env.NODE_ENV === "production") {
-    throw new Error("Refusing to seed: NODE_ENV=production. Production is bootstrapped with `npm run db:bootstrap`.");
+  // GV-12: also when the URL names the production database, whatever NODE_ENV says.
+  const refusal = demoSeedRefusal(process.env);
+  if (refusal) {
+    throw new Error(`Refusing to seed: ${refusal}. Production is bootstrapped with \`npm run db:bootstrap\`.`);
   }
   // 1. Permissions
   for (const def of PERMISSION_DEFS) {

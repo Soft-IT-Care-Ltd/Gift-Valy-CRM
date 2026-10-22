@@ -316,28 +316,31 @@ Settings, Admin only, read-only: the current state and when it last changed; ord
 
 - **Done (22 Oct 2026):** Settings → Funnel Liner (`app/(dashboard)/settings/funnel-liner`), Admin role only, from `readPlatformState` + `monthlyUsage`.
 
-### GV-11. Uploads and invoice PDFs outside the release — [OPEN]
+### GV-11. Uploads and invoice PDFs outside the release — [DONE]
 
 Today uploads are written to `public/uploads` (served publicly, by anyone with the link) and invoice PDFs to `storage/invoices`, both inside the app folder. On the server every deploy is a new release folder, so both would be lost on the next deploy.
 
 - `UPLOAD_DIR` and `INVOICE_DIR` env settings; production `/srv/giftvaly/uploads` and `/srv/giftvaly/invoices`, staging the same under `/srv/giftvaly-staging`. Defaults keep development as it is.
 - Uploads are served through a **login-checked route** (as in Antu), never as a public static path; existing `/uploads/<file>` URLs keep working through that route; the invoice logo is read from `UPLOAD_DIR`.
 - Nginx never serves either folder.
+- **Done (22 Oct 2026):** `lib/file-storage.ts` is the only place a stored URL or `pdfUrl` becomes a path: `UPLOAD_DIR` / `INVOICE_DIR` (dev defaults `./storage/uploads`, `./storage/invoices`; refused inside `public/`). Uploads served by `app/uploads/[...path]/route.ts` (session required → 401; one server-named file; `private` cache, `nosniff`); stored `/uploads/<file>` URLs unchanged; the invoice logo is read from `UPLOAD_DIR`. New `invoices.pdfUrl` = file name; old `storage/invoices/…` rows resolve by file name (checked on dev). The billing lock refuses `/uploads/*` with 423 (no redirect for an `<img>`). `public/uploads` removed (dev files moved). No `root`/`alias` in any Nginx file — `tests/deploy-config.test.ts`.
 
-### GV-12. Production bootstrap — [OPEN]
+### GV-12. Production bootstrap — [DONE]
 
 - `npm run db:bootstrap`: creates the roles and permissions and **one** Admin (name, email, phone and a temporary password typed on the server, must-change-password on). Creates no orders, customers, products or demo data. Safe to run twice (it does nothing the second time).
 - The demo seed refuses to run when `NODE_ENV=production` or when `DATABASE_URL` points at `giftvaly` (not `_staging` / dev).
+- **Done (22 Oct 2026):** `npm run db:bootstrap` → `scripts/db-bootstrap.sh` → `prisma/bootstrap.ts`: permissions, missing roles with `ROLE_MATRIX` (existing roles untouched), default settings, expense categories (+ Courier Charge, Product Purchase), the Steadfast courier; the Admin only while none is active (hidden password prompt, env of one process, must-change-password, audit row). Checked on an empty PostgreSQL: migrate deploy → bootstrap (exit 3 "no Admin") → Admin created → second run does nothing; no orders, no `order_sequences` row. `lib/seed-guard.ts` makes the demo seed refuse `NODE_ENV=production` and a `DATABASE_URL`/`DIRECT_URL` naming `giftvaly` (checked).
 
-### GV-13. Cron and backups — [OPEN]
+### GV-13. Cron and backups — [DONE]
 
 - `vercel.json` is removed. A cron file of its own, `deploy/cron/giftvaly` → `/etc/cron.d/giftvaly` (not the deploy user's crontab: Antu's deploy installs that whole with `crontab -`). Jobs call `http://127.0.0.1:3200` through a small script that reads `CRON_SECRET` from the production `.env` — no secret in the cron file. Server time is UTC; schedule in Dhaka times:
   - Steadfast sync every 15 minutes;
   - trash cleanup 03:30 Dhaka;
   - backups: nightly (database + uploads + invoices) and hourly database 10:00–22:00 Dhaka, the same way and to the same Backblaze remote as Antu, under a `giftvaly-` prefix, encrypted, with the same retention.
 - Every job logs to `/var/log/giftvaly/`, with logrotate.
+- **Done (22 Oct 2026):** `vercel.json` removed. `deploy/cron/giftvaly` (user `deploy`): steadfast-sync `*/15`, trash-cleanup `30 21` (03:30 Dhaka), backups `0 21` nightly and `0 4-16` hourly, via `scripts/run-job.sh` (`127.0.0.1:3200`, secret from the `.env` on curl's stdin). `scripts/backup.sh` (admin-panel shape + files): `giftvaly-db-<stamp>.dump` top level, `giftvaly-hourly/`, nightly `rclone sync` to `giftvaly-uploads/` and `giftvaly-invoices/` with `--backup-dir giftvaly-files-old/<stamp>`; local 14 d / 48 h; no app report (owner); B2 lifecycle rules in DEPLOYMENT.md step 11. `deploy/logrotate/giftvaly`. Backup run against a throwaway PostgreSQL with a stub rclone, good and failing.
 
-### GV-14. Deploy files and scripts — [OPEN]
+### GV-14. Deploy files and scripts — [DONE]
 
 - `deploy/ecosystem.config.cjs`: PM2 `giftvaly` → `next start --hostname localhost --port 3200` (never `127.0.0.1` — see Antu's CLAUDE.md "Stack gotchas"), `TZ=Asia/Dhaka`, one fork-mode process, logs in `/var/log/giftvaly/`; `deploy/ecosystem.staging.config.cjs` for `giftvaly-staging` on 3210.
 - `scripts/deploy.sh [--staging] <branch|tag|commit>` like Antu's: fetch from GitHub (read-only deploy key for this repo) → build in `releases/<stamp>-<sha>` while the current release serves → `npm ci` → `prisma migrate deploy` → GRANTs to the app role → `npm run build` → switch the `app` symlink → `pm2 startOrReload` → health check on `127.0.0.1:<port>/login`, switching back if it fails. Keep five releases. Only `prisma migrate deploy` ever touches the database.
@@ -345,11 +348,13 @@ Today uploads are written to `public/uploads` (served publicly, by anyone with t
 - `deploy/nginx/giftvaly-staging.conf` for `gv-staging.funnelliner.com` → `127.0.0.1:3210`, basic auth, `X-Robots-Tag: noindex`, the same real-IP, body-size and timeout rules as Antu. Production needs no server block of its own — it is reached through `dashboard.funnelliner.com` (GV-N) — except `app.giftvaly.com`, which only redirects (301) to `https://dashboard.funnelliner.com`.
 - `.env.example` lists every production setting with a comment: `DATABASE_URL`, `DIRECT_URL`, `NEXTAUTH_URL`, `NEXTAUTH_SECRET`, `INSTANCE_URL`, `PLATFORM_SECRET`, `SHARED_SIGNIN`, `CRON_SECRET`, `COURIER_ENCRYPTION_KEY` (**must be set on production** — today it falls back to `NEXTAUTH_SECRET`, so rotating that would make the saved Steadfast keys unreadable), `UPLOAD_DIR`, `INVOICE_DIR`, backup settings.
 - Node: the version the server runs (check with `ssh antu node -v`), pinned in `package.json` `engines`.
+- **Done (22 Oct 2026):** `deploy/ecosystem{,.staging}.config.cjs` (`giftvaly` :3200 / `giftvaly-staging` :3210, `--hostname localhost`, fork ×1, `TZ=Asia/Dhaka`, `/var/log/giftvaly/`); `scripts/deploy.sh` (Antu/admin shape; refuses wrong roles/db/URLs, `UPLOAD_DIR`/`INVOICE_DIR` other than `<base>/uploads|invoices`, `SHADOW_DATABASE_URL`, `BOOTSTRAP_ADMIN_*`, `COURIER_ENCRYPTION_KEY` = `NEXTAUTH_SECRET`, `PLATFORM_SECRET` = `CRON_SECRET`); `deploy/nginx/giftvaly-staging.conf` + `snippets/giftvaly-staging-guard.conf` (uses Antu's real-IP, ACME and app-proxy snippets); `deploy/nginx/giftvaly-legacy-redirect.conf` (only if `app.giftvaly.com` DNS moves here; plan is a Cloudflare rule); `deploy/postgresql/pg_hba-giftvaly.conf` (lines also needed in the Antu repo's `pg_hba.conf`); `scripts/staging-auth.sh`; `.env.example` rewritten; `engines.node` `24.x` (server v24.22.0). `npm run test:deploy` pins ports, host names, `/_c/` and `/go/`, no root/alias, cron on localhost with no secret, deploy.sh's database rules.
 
-### GV-15. DEPLOYMENT.md and GO_LIVE.md — [OPEN]
+### GV-15. DEPLOYMENT.md and GO_LIVE.md — [DONE]
 
 - `DEPLOYMENT.md`: the exact commands, in order, for adding Gift Valy to the existing server — staging first, then production — written like Antu's and the admin panel's. It does not repeat what the server already has. Commands marked (root) or (deploy). Every secret is generated on the server and goes to the owner's password manager, never into chat, a file in the repo or code. It ends with the post-deploy checklist from GV-17.
 - `GO_LIVE.md` in **Bangla**: the owner's own steps, in order (Cloudflare redirect for `app.giftvaly.com`, Steadfast panel, adding the client in the admin panel, creating staff accounts, cancelling the old VPS).
+- **Done (22 Oct 2026):** `DEPLOYMENT.md` (steps 1–14: deploy key, folders, databases + pg_hba, Cloudflare, staging Nginx + certificate, `.env` generated on the server, deploys + the suite on staging, bootstrap, staging password, cron, backups + restore drill, Funnel Liner + Steadfast, go-live order, the GV-17 checklists). `GO_LIVE.md` in Bangla (deploy key + make the repo private, Cloudflare, B2 rules, staging, production day, `app.giftvaly.com` redirect, cancelling the old VPS — it also hosts `iva.autoslip.xyz`).
 
 ### GV-16. Nginx on `dashboard.funnelliner.com` — [OPEN] — built in the Antu repo
 
