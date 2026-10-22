@@ -360,7 +360,7 @@ Today uploads are written to `public/uploads` (served publicly, by anyone with t
 
 The server block for `dashboard.funnelliner.com` lives in the Antu repo (`deploy/nginx/antu-crm.conf`). It gains `/_c/giftvaly/` → `127.0.0.1:3200/`, `/go/` → the shared sign-in page (A7), and routing of everything else by the shop remembered on the device. See the GV-N prompt.
 
-### GV-17. Go live — [OPEN]
+### GV-17. Go live — [DONE]
 
 **Staging month test** (with the admin panel's staging copy and its `?asOf=`):
 1. 1st → the October bill appears on Gift Valy staging's Billing page; Admin and Accounts see the reminder.
@@ -378,6 +378,7 @@ The server block for `dashboard.funnelliner.com` lives in the Antu repo (`deploy
 - The first nightly and hourly backups land in Backblaze; a restore drill into a throwaway database passes.
 - `app.giftvaly.com` redirects to `dashboard.funnelliner.com`.
 - No test order on production (rule 6).
+- **Done (23 Oct 2026):** staging `gv-staging.funnelliner.com` (basic auth, noindex) with the suite on the server (135 tests); month test against admin-staging with `?asOf=` (staging client's billing start moved to 1 Sep for the run, then back): 1st → FL-2610-0001 ৳2,900 issued, past_due pushed, banner for Admin + Accounts and the pop-up for Admin; 7th → "today is the last day" (Gift Valy counts days on its own clock, so checked through `billingReminder` at 7 Oct); 8th → suspended, every page → /billing, webhook + steadfast-sync still answer; payment → active acknowledged 0.1 s later. Found and fixed on staging: the usage answer's `state` must be an object (4d85134). Production: `giftvaly` + roles + `.env`, deploy 4d85134 on `:3200`, cron + logrotate, both backups in B2, restore drill passed, admin panel deployed to A7 (063d6da), A7 files + GV-N `antu-crm.conf` + Antu's `pg_hba.conf`, roles + the owner's Admin (no orders, counter empty), both shops clients in admin.funnelliner.com, `SHARED_SIGNIN=enabled` in both apps. Checked through Cloudflare: new device → shared page; a Gift Valy number → Gift Valy's sign-in with the number filled in, an Antu number → Antu's, neither → "Wrong phone/email or password."; "Not your shop?" clears the shop; a device with Antu's session cookie still goes to Antu; usage 200 with the secret / 401 without; `/_c/anything-else/` 404; `/uploads` 401 without a session; `admin.funnelliner.com/go/` 404; lookups limited (429). Left to the owner: signing in on a real phone (pages + an uploaded photo), the Steadfast callback and its first webhook, the `app.giftvaly.com` redirect (no DNS record yet), the first nightly backup by cron.
 
 ---
 

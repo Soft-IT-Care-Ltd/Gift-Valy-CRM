@@ -16,9 +16,9 @@ The exact commands, in order, for adding Gift Valy to **the server that already 
 
 **Uploads and invoice PDFs** (GV-11) live outside every release folder, so a deploy never touches them. Nginx never serves either folder (no `root` or `alias` in any site file): uploads are served by the app's own `/uploads/<file>` route to signed-in people only, invoice PDFs by the logged-in invoice download. Both are backed up nightly (step 11).
 
-Commands marked **(root)** run as root (`ssh antu-root`, or `sudo`); everything else runs as `deploy` (`ssh antu`). Secrets are made **on the server** with `openssl` and written straight into the files that need them — none is typed into a chat, a command line on another machine, or this repository. The owner keeps a copy of each `.env` in the password manager.
+Commands marked **(root)** run as root through `sudo` from `ssh antu` (the server refuses SSH logins as root; `deploy` has sudo); everything else runs as `deploy` (`ssh antu`). Secrets are made **on the server** with `openssl` and written straight into the files that need them — none is typed into a chat, a command line on another machine, or this repository. The owner keeps a copy of each `.env` in the password manager.
 
-**Order (GV5):** staging first — steps 1–9 and 12 (staging) — then the month test (step 14a), then, after the owner's OK, production: steps 10, 11, 8 and 13, and the checklist (step 14b).
+**Order (GV5):** staging first — steps 1–7, 8 (bootstrap), then 7b (the suite needs bootstrap's roles), 9 and 12 (staging) — then the month test (step 14a), then, after the owner's OK, production: steps 10, 11, 8 and 13, and the checklist (step 14b).
 
 ---
 
@@ -221,7 +221,7 @@ Staging can be stopped when nobody is testing: `pm2 stop giftvaly-staging && pm2
 
 ### 7b. The suite on the server (staging)
 
-The file tests need no database; `test:platform` also runs its database part inside a transaction that is rolled back — **on staging only**:
+The file tests need no database; `test:platform` also runs its database part inside a transaction that is rolled back — **on staging only**, and **after step 8**: that part needs a role and the Funnel Liner system user, which bootstrap creates (on an empty database five of its tests fail with "record not found"):
 
 ```bash
 cd /srv/giftvaly-staging/app && npm run test:deploy && npm run test:order-paths && npm run test:bom && npm run test:shadow-db && npm run test:platform
@@ -312,18 +312,18 @@ Object Lock (Antu's step 12.5) covers the whole bucket, these files included. Th
 **Restore drill** (owner's OK first; never over a live database) **(root)** — into a throwaway database, then check and drop it:
 
 ```bash
-sudo -u postgres createdb -O giftvaly_owner giftvaly_restore && sudo -u postgres pg_restore --no-owner --role=giftvaly_owner --dbname=giftvaly_restore "$(ls -1t /var/backups/giftvaly/giftvaly-db-*.dump | head -1)" && sudo -u postgres psql -d giftvaly_restore -Atc "select count(*) from users; select count(*) from orders; select * from order_sequences order by year_month desc limit 3;"
+sudo -u postgres createdb -O giftvaly_owner giftvaly_restore && sudo -u postgres pg_restore --no-owner --role=giftvaly_owner --dbname=giftvaly_restore < "$(ls -1t /var/backups/giftvaly/giftvaly-db-*.dump | head -1)" && sudo -u postgres psql -d giftvaly_restore -Atc "select count(*) from users; select count(*) from orders; select * from order_sequences order by year_month desc limit 3;"
 ```
 
 ```bash
 sudo -u postgres dropdb giftvaly_restore
 ```
 
-(Check the name twice: `giftvaly_restore`, never `giftvaly`.) From off the server, fetch a dump first with `rclone copy antu-offsite:giftvaly-db-<stamp>.dump .`, and the files with `rclone copy antu-offsite:giftvaly-uploads /srv/giftvaly/uploads` (likewise invoices). The app needs the same `COURIER_ENCRYPTION_KEY` (from the password manager) to read the saved Steadfast keys.
+(Check the name twice: `giftvaly_restore`, never `giftvaly`.) The dump is fed in on standard input (`<`, opened by root) because `postgres` can't read `deploy`'s dumps (600, in a 700 folder). From off the server, fetch a dump first with `rclone copy antu-offsite:giftvaly-db-<stamp>.dump .`, and the files with `rclone copy antu-offsite:giftvaly-uploads /srv/giftvaly/uploads` (likewise invoices). The app needs the same `COURIER_ENCRYPTION_KEY` (from the password manager) to read the saved Steadfast keys.
 
 | Date | Dump | Result |
 |---|---|---|
-| | | |
+| 23 Oct 2026 | `giftvaly-db-20261022-225718.dump` (production, before go-live) | passed — 28 migrations, 0 users / orders / `order_sequences` rows, as the live database |
 
 ---
 
@@ -351,7 +351,9 @@ In this order:
 
 1. **Deploy production** (step 7) — the first time from the bootstrap clone.
 2. **Cron and backups** — step 10 and step 11 (lifecycle rules, both runs by hand).
-3. **Nginx for two shops (root):** install the admin repo's A7 files and the Antu repo's new `antu-crm.conf` together, as the admin panel's DEPLOYMENT.md step 14 says (`fl-shops.conf` already maps `giftvaly 127.0.0.1:3200`), then `nginx -t && systemctl reload nginx`.
+3. **Nginx for two shops (root):** install the admin repo's A7 files and the Antu repo's new `antu-crm.conf` together, as the admin panel's DEPLOYMENT.md step 14 says (`fl-shops.conf` already maps `giftvaly 127.0.0.1:3200`), then `nginx -t && systemctl reload nginx`. Two things first (found on go-live day, 23 Oct 2026):
+   - the admin panel's **production** release must contain A7 (`/srv/fl-admin/app/deploy/nginx/conf.d/fl-shops.conf` exists, `/go` answers on `127.0.0.1:3300`) — otherwise deploy it (admin DEPLOYMENT.md step 7) first;
+   - **both** shops — Antu (`antu`, `http://localhost:3000`) and Gift Valy — must already be clients **with their platform secret** in `admin.funnelliner.com`. The shared page asks only those; without them every device without Antu's session cookie lands on `/go/` and finds no shop. So do item 5 (Add client) before this item; the Antu repo's new `antu-crm.conf` takes a `__DOMAIN__` (`sed "s/__DOMAIN__/antuboutique.com/g"`).
 4. **The owner's Admin** — step 8, production. No demo data, no test order (CLAUDE.md rule 6).
 5. **Admin panel → Add client** and the **Steadfast panel** — step 12, production.
 6. **Shared sign-in on** — in both Gift Valy's and Antu's production `.env` **(deploy)**, then restart both:
