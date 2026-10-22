@@ -5,6 +5,13 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { getEffectivePermissions } from "@/lib/rbac";
 import { ROLE_LABELS, type RoleName } from "@/lib/permissions";
+import { getPlatformState } from "@/lib/platform/state";
+import { billingReminder } from "@/lib/platform/billing-display";
+import { reminderSeenToday } from "@/lib/platform/reminder";
+import {
+  BillingReminderBanner,
+  BillingReminderPopup,
+} from "@/components/billing/billing-reminder";
 import { Badge } from "@/components/ui/badge";
 import { SignOutButton } from "@/components/sign-out-button";
 import { MobileNav } from "@/components/mobile-nav";
@@ -32,7 +39,18 @@ export default async function DashboardLayout({
   if (!user || !user.isActive) redirect("/login");
   if (user.mustChangePassword) redirect("/change-password");
 
-  const permissions = await getEffectivePermissions(user.id);
+  const [permissions, platform] = await Promise.all([
+    getEffectivePermissions(user.id),
+    getPlatformState(),
+  ]);
+  const canSeeBill = permissions.includes("billing.view");
+  const suspended = platform.state === "suspended";
+
+  // FUNNEL_LINER.md GV-9 — while past_due: the banner for billing.view roles,
+  // and once per Dhaka day the pop-up for the Admin. Other roles: nothing.
+  const reminder = canSeeBill ? billingReminder(platform) : null;
+  const showPopup =
+    reminder != null && user.role.name === "Admin" && !(await reminderSeenToday(user.id));
 
   // Sidebar is built as main menus with submenus; a group is only shown when
   // the role has at least one item in it, and single-item groups render as a
@@ -242,13 +260,27 @@ export default async function DashboardLayout({
       { href: "/settings/occasions", label: "Occasion Reminders" }
     );
   }
+  // FUNNEL_LINER.md GV-10 — the Funnel Liner usage card, Admin only.
+  if (user.role.name === "Admin") {
+    settingsItems.push({ href: "/settings/funnel-liner", label: "Funnel Liner" });
+  }
   addGroup("Settings", "settings", settingsItems);
+
+  // FUNNEL_LINER.md GV-8 — the Funnel Liner bill, Admin + Accounts.
+  addGroup("Billing", "billing", canSeeBill ? [{ href: "/billing", label: "Billing" }] : []);
+
+  // GV-7 — while suspended every other page goes to /billing (proxy.ts), so
+  // the sidebar shows only what still opens.
+  if (suspended) {
+    const open = navGroups.filter((g) => g.icon === "billing");
+    navGroups.splice(0, navGroups.length, ...open);
+  }
 
   const roleLabel = ROLE_LABELS[user.role.name as RoleName] ?? user.role.name;
 
   return (
     <div className="flex min-h-screen">
-      <aside className="hidden w-60 shrink-0 flex-col border-r bg-background md:flex">
+      <aside className="hidden w-60 shrink-0 flex-col border-r bg-background md:flex print:hidden">
         <div className="flex h-14 items-center border-b px-4">
           <Image
             src="/gift-valy-logo.png"
@@ -275,7 +307,7 @@ export default async function DashboardLayout({
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 items-center justify-between gap-2 border-b bg-background px-3 md:px-4">
+        <header className="flex h-14 items-center justify-between gap-2 border-b bg-background px-3 md:px-4 print:hidden">
           {/* §R11 — phones get a hamburger drawer with the full nav tree. */}
           <div className="flex items-center gap-1.5 md:hidden">
             <MobileNav groups={navGroups} />
@@ -304,7 +336,9 @@ export default async function DashboardLayout({
         </header>
         {/* §R11 — content uses the full available width, bounded only by a
             sensible ultra-wide cap; pages no longer pin themselves narrow. */}
-        <main className="flex-1 bg-muted/30 p-4 md:p-6">
+        {reminder && <BillingReminderBanner reminder={reminder} />}
+        {showPopup && reminder && <BillingReminderPopup reminder={reminder} />}
+        <main className="flex-1 bg-muted/30 p-4 md:p-6 print:bg-transparent print:p-0">
           <div className="mx-auto w-full max-w-[1800px]">{children}</div>
         </main>
       </div>

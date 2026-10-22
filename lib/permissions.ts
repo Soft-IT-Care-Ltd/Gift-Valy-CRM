@@ -88,6 +88,9 @@ export const PERMISSION_DEFS: PermissionDef[] = [
   { key: "settings.manage", label: "Manage settings", group: "Admin" },
   { key: "audit.view", label: "View audit log", group: "Admin" },
   { key: "dashboard.owner", label: "Owner dashboard", group: "Admin" },
+  // FUNNEL_LINER.md GV-8 — the Funnel Liner bill (amounts, invoices, how to
+  // pay). Admin + Accounts only; nobody else ever receives an amount.
+  { key: "billing.view", label: "View the Funnel Liner bill", group: "Admin" },
 ];
 
 export const ALL_PERMISSION_KEYS = PERMISSION_DEFS.map((p) => p.key);
@@ -147,6 +150,7 @@ export const ROLE_MATRIX: Record<RoleName, string[]> = {
     "stock.view",
     "courier.manage",
     "reports.pnl",
+    "billing.view",
     "attendance.own",
   ],
 };

@@ -11,6 +11,7 @@ import {
   LayoutDashboard,
   Megaphone,
   Package,
+  Receipt,
   Settings,
   ShieldCheck,
   ShoppingCart,
@@ -37,7 +38,8 @@ export type NavIconName =
   | "targets"
   | "attendance"
   | "admin"
-  | "settings";
+  | "settings"
+  | "billing";
 
 const NAV_ICONS: Record<NavIconName, LucideIcon> = {
   dashboard: LayoutDashboard,
@@ -53,6 +55,7 @@ const NAV_ICONS: Record<NavIconName, LucideIcon> = {
   attendance: CalendarCheck,
   admin: ShieldCheck,
   settings: Settings,
+  billing: Receipt,
 };
 
 export interface NavLeaf {

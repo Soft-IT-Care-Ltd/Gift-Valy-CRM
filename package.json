@@ -11,7 +11,7 @@
     "test:bom": "tsx --test tests/bom.test.ts",
     "test:order-paths": "tsx --test tests/order-creation-paths.test.ts",
     "test:shadow-db": "tsx --test tests/shadow-db.test.ts",
-    "test:platform": "tsx --test tests/platform.test.ts tests/platform.integration.test.ts",
+    "test:platform": "tsx --test tests/platform.test.ts tests/billing-lock.test.ts tests/platform.integration.test.ts",
     "db:diff": "tsx scripts/db-diff.ts",
     "verify:stock": "tsx scripts/verify-stock.ts",
     "verify:steadfast": "tsx scripts/verify-steadfast.ts",

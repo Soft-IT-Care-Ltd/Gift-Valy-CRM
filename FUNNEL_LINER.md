@@ -274,7 +274,7 @@ Plus once per response: `serverTime`, the app version and commit, the current pl
 - **Done (19 Oct 2026):** `lib/platform/addresses.ts` `instanceUrl()` / `steadfastCallbackUrl()` (INSTANCE_URL → NEXTAUTH_URL → request origin), used by the Courier page and the Steadfast settings route. Every other full URL checked: redirects and `signOut` callbacks are relative (person), `wa.me` / Steadfast tracking / Graph API are external, the manifest `start_url` is relative, WhatsApp invoices send the PDF as media (no link). Tests pin the callback builder, no hardcoded funnelliner host, and no `go` / `_c` first route segment.
 
 
-### GV-7. The billing lock — [OPEN]
+### GV-7. The billing lock — [DONE]
 
 While the state is `suspended`:
 
@@ -283,8 +283,9 @@ While the state is `suspended`:
 - **One place:** a new `proxy.ts` (this Next.js version's name for middleware — read its docs first) calling one gate helper. **Closed by default:** the gate lists what stays open; anything else is closed, so a page or route added later is covered the day it is added. Machine routes (`/api/platform/*`, `/api/cron/*`, `/api/webhooks/*`) pass the proxy without a session, as today.
 - **Cron:** `steadfast-sync` keeps running (parcels keep moving and money keeps reconciling). `trash-cleanup` **does not run** while suspended (nothing is deleted from a locked system). Any other staff-only job pauses and must neither lose data nor double-count when it resumes after missed days.
 - `past_due` and `active` lock nothing.
+- **Done (22 Oct 2026):** `proxy.ts` (matcher: everything but `_next/static` / `_next/image`) → `lib/platform/gate.ts` `billingLockGate` → `lib/platform/lock.ts` (the open list, each entry with its reason; page GET → 307 `/billing`, anything else → 423 `BILLING_LOCKED` EN + BN). Open paths never read the state; the rest read the 5 s `getPlatformState()` cache. No session read in the proxy. `trash-cleanup` gets 423 (cutoff-based, so it resumes without double counting); `steadfast-sync` and the webhook stay open; no other jobs exist. `tests/billing-lock.test.ts` walks every page, route and public file and pins the open set. Checked in the browser on dev (suspended → `/orders` lands on `/billing`, APIs 423, lifting needs no restart).
 
-### GV-8. The Billing page — [OPEN]
+### GV-8. The Billing page — [DONE]
 
 `/billing`, in the sidebar for roles with `billing.view` (Admin, Accounts):
 
@@ -296,18 +297,22 @@ While the state is `suspended`:
 - **No snapshot yet:** this month's count and "Your first bill will appear here on the 1st".
 - **Everyone else while suspended:** the short version — the dashboard is closed because the Funnel Liner bill is unpaid; the shop's admin knows; no amounts.
 - No amount is ever in an API response for a role without `billing.view`.
+- **Done (22 Oct 2026):** `app/(dashboard)/billing` (server-rendered from `readBillingSnapshot` + `monthlyUsage`, so no API carries an amount) and `billing/invoices/[number]` (print-ready; layout chrome `print:hidden`). `lib/platform/billing-display.ts` (`estimateBill`, status words, Dhaka days). `billing.view` in `lib/permissions.ts` (Admin, Accounts) + migration `20261022000000_gv8_billing_view_permission`. Sidebar: Billing for `billing.view`; only Billing while suspended. Help number from `FUNNEL_LINER_HELP_PHONE` (hidden when unset).
 
-### GV-9. Reminders, 1st to 7th — [OPEN]
+### GV-9. Reminders, 1st to 7th — [DONE]
 
 While the state is `past_due`:
 
 - **Banner on every dashboard page** for Admin and Accounts: "Your Funnel Liner bill of ৳3,800 is due by Fri 7 Nov — 3 days left. Pay now →" (to `/billing`), with a Bangla line. Amber; red on the due date with "Today is the last day". Days counted in Dhaka days from `dueOn`.
 - **Once a day, a pop-up for the Admin** on the first page they open: the same words, "Pay now" and "Later". Once per Dhaka day per person, remembered on the server (a settings key or a small table).
 - Other roles: nothing.
+- **Done (22 Oct 2026):** `components/billing/billing-reminder.tsx` banner + pop-up from the dashboard layout; `billingReminder()` words; pop-up remembered per person in settings `billing_reminder_seen:<userId>` (Dhaka day) via `POST /api/billing/reminder-seen` when it opens (`lib/platform/reminder.ts`).
 
-### GV-10. Funnel Liner card in Settings — [OPEN]
+### GV-10. Funnel Liner card in Settings — [DONE]
 
 Settings, Admin only, read-only: the current state and when it last changed; orders created this month and last month, with each month's last GV number; one line: "Your Funnel Liner bill is based on these numbers. Every order created counts, including cancelled orders."; and "Open Billing →".
+
+- **Done (22 Oct 2026):** Settings → Funnel Liner (`app/(dashboard)/settings/funnel-liner`), Admin role only, from `readPlatformState` + `monthlyUsage`.
 
 ### GV-11. Uploads and invoice PDFs outside the release — [OPEN]
 
