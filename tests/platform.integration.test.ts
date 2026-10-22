@@ -98,9 +98,14 @@ describe("GV-2 usage", () => {
   });
 });
 
-async function auditRows(tx: Prisma.TransactionClient, action: string, since: Date) {
+// Rows this test wrote: after the last id at its start (a time window would
+// also catch real pushes made to the dev server a moment earlier).
+const lastAuditId = async (tx: Prisma.TransactionClient) =>
+  (await tx.auditLog.findFirst({ orderBy: { id: "desc" }, select: { id: true } }))?.id ?? 0;
+
+async function auditRows(tx: Prisma.TransactionClient, action: string, afterId: number) {
   return tx.auditLog.findMany({
-    where: { action, at: { gte: since } },
+    where: { action, id: { gt: afterId } },
     include: { user: { select: { email: true, isActive: true } } },
     orderBy: { id: "asc" },
   });
@@ -110,7 +115,7 @@ describe("GV-3 state", () => {
   test("applies, audits as Funnel Liner, ignores an older push, keeps changedAt on a repeat", async () => {
     await inRollback(async (tx) => {
       await tx.setting.deleteMany({ where: { key: PLATFORM_STATE_KEY } });
-      const since = new Date(Date.now() - 60_000);
+      const since = await lastAuditId(tx);
 
       let res = await stateHandler(post("/api/platform/state", {
         state: "past_due", amountDue: "৳3,800", dueOn: "2099-11-07", sentAt: "2099-11-01T01:00:00+06:00",
@@ -152,7 +157,7 @@ describe("GV-4 billing snapshot", () => {
   test("stored whole, audited, an older sentAt ignored", async () => {
     await inRollback(async (tx) => {
       await tx.setting.deleteMany({ where: { key: PLATFORM_BILLING_KEY } });
-      const since = new Date(Date.now() - 60_000);
+      const since = await lastAuditId(tx);
       const snap = validSnapshot();
 
       let res = await billingHandler(post("/api/platform/billing", snap), tx);
@@ -199,6 +204,15 @@ describe("GV-5 has-user", () => {
       assert.equal(await ask("gv5-inactive@test.local"), false, "deactivated");
       assert.equal(await ask("01799000009"), false, "unknown");
       assert.equal(await ask(FUNNEL_LINER_USER_EMAIL), false, "system user");
+
+      // A phone stored in another spelling (seed, bootstrap, a hand fix) and an
+      // email stored with capitals are still found by what the shared sign-in
+      // page sends: 01XXXXXXXXX and a lower-cased email.
+      await mk("GV5-Caps@Test.Local", "+8801799000003", true);
+      await mk("gv5-intl@test.local", "8801799000004", true);
+      assert.equal(await ask("01799000003"), true, "+8801… stored");
+      assert.equal(await ask("01799000004"), true, "8801… stored");
+      assert.equal(await ask("gv5-caps@test.local"), true, "capitals stored");
     });
   });
 

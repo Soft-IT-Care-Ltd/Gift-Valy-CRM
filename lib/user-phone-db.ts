@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type { Prisma, PrismaClient } from "@prisma/client";
-import { normalizeUserPhone } from "./user-phone";
+import { normalizeUserPhone, userPhoneSpellings } from "./user-phone";
 
 // FUNNEL_LINER.md GV-5 — a staff phone is a sign-in identifier, so it is
 // stored normalised and is unique among users (users_phone_key). The user
@@ -26,7 +26,7 @@ export async function checkUserPhone(
     };
   }
   const holder = await db.user.findFirst({
-    where: { phone, ...(userId ? { id: { not: userId } } : {}) },
+    where: { phone: { in: userPhoneSpellings(phone) }, ...(userId ? { id: { not: userId } } : {}) },
     select: { name: true },
   });
   if (holder) {

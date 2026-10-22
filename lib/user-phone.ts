@@ -15,3 +15,13 @@ export function normalizeUserPhone(raw: string | null | undefined): string | nul
   if (d.startsWith("0")) return null; // a local number that is not a BD mobile
   return d.length >= 8 && d.length <= 15 ? `+${d}` : null;
 }
+
+// Every way the same number may already be stored. The user routes and the GV-5
+// migration store the normalised form, but a row written another way (the
+// seed, a bootstrap script, a hand fix in psql) must still sign in — so a
+// lookup matches all of them: "01712345678" → itself, "+8801…", "8801…",
+// "008801…"; "+966…" → itself, "966…", "00966…".
+export function userPhoneSpellings(normalized: string): string[] {
+  const intl = normalized.startsWith("+") ? normalized.slice(1) : `88${normalized}`;
+  return [...new Set([normalized, `+${intl}`, intl, `00${intl}`])];
+}

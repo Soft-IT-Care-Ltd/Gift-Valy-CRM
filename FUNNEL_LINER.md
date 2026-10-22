@@ -151,6 +151,8 @@ Reviewer pass on GV1–GV3. Verify by reading code and testing against the dev d
 Report findings, fix them, commit, push.
 ```
 
+**Verify GV — done (22 Oct 2026).** All 15 checks (plus the shared sign-in spellings) run against the dev server over HTTP. Order paths in one month: counter 0 → 4 for confirmed + on-hold + two confirmed drafts, the deleted draft is not counted, and the counter keeps the number after cancel, trash and the 31-day purge (14 after 10 test orders were purged). A save that fails inside the transaction gives its number back. Two orders created together get two numbers. Lock, banner, pop-up, billing and audit all behave as specified. Fixed: (1) a phone saved as `+8801…`/`8801…` and an email stored with capitals were not found by sign-in or has-user, so `lib/sign-in-user.ts` now matches every spelling (`userPhoneSpellings`) and the email in any case, and the duplicate-phone check uses the same match; (2) the platform routes also fail closed when `PLATFORM_SECRET` equals `CRON_SECRET`; (3) `trash-cleanup` reads the stored state itself and deletes nothing while suspended, even if the proxy's cache fell back to "active"; (4) the stale `verify:lifecycle` / `verify:reports` / `verify:dashboard` checks no longer depend on other dev data or the weekday.
+
 ### GV4 — Ready for the server (Gift Valy repo)
 
 ```

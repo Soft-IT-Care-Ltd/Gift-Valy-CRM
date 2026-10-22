@@ -45,10 +45,12 @@ async function main() {
     to: "2026-06-30",
   });
   check("today is a single Dhaka day", today.singleDay && today.range === "today");
+  // "This Week" = Sunday (Dhaka) to today — 1 to 7 days depending on the weekday.
+  const weekDays = Math.round((today.to.getTime() - week.from.getTime()) / 86_400_000);
   check(
-    "week spans 7 Dhaka days",
-    Math.round((today.to.getTime() - week.from.getTime()) / 86_400_000) === 7,
-    `got ${(today.to.getTime() - week.from.getTime()) / 86_400_000}`
+    "week starts on a Dhaka Sunday and runs to today",
+    new Date(week.from.getTime() + 6 * 3_600_000).getUTCDay() === 0 && weekDays >= 1 && weekDays <= 7,
+    `${weekDays} days`
   );
   check("month starts on the 1st", month.fromYmd.endsWith("-01"), month.fromYmd);
   check(

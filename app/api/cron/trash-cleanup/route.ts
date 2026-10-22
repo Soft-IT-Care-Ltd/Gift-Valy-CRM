@@ -6,6 +6,8 @@ import { timingSafeEqual } from "@/lib/crypto";
 import { logAudit } from "@/lib/audit";
 import { getSystemUserId } from "@/lib/system-user";
 import { TRASH_RETENTION_DAYS } from "@/lib/order-constants";
+import { readPlatformState } from "@/lib/platform/state";
+import { LOCK_CODE, LOCK_ERROR } from "@/lib/platform/lock";
 
 // CORRECTIONS Orders §6f — scheduled purge: orders trashed more than 30 days
 // ago are deleted permanently. Row deletion cascades to items, payments,
@@ -26,6 +28,13 @@ export async function GET(req: Request) {
   }
 
   try {
+    // FUNNEL_LINER.md GV-7 — nothing is deleted from a locked system. proxy.ts
+    // already answers 423 here; this reads the stored state uncached so the
+    // purge also holds when the proxy's cached read fell back to "active".
+    // Cutoff-based, so it catches up without double counting once lifted.
+    if ((await readPlatformState(prisma)).state === "suspended") {
+      return NextResponse.json({ error: LOCK_ERROR, code: LOCK_CODE }, { status: 423 });
+    }
     const cutoff = new Date(Date.now() - TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000);
     // Explicit deletedAt filter opts out of the lib/db.ts trash auto-filter.
     const expired = await prisma.order.findMany({

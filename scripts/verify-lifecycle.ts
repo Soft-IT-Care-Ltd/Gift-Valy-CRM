@@ -221,6 +221,8 @@ async function main() {
         console.log("2. CONFIRM — 1×PKG-001 + 2×Teddy, advance ৳1200 → reserve");
         const TOTAL = 4920; // subtotal 5000 − discount 200 + courier 120
         const ADVANCE = 1200;
+        // Other live dev orders may already hold Teddy — check this order's share.
+        const teddyReservedBefore = (await tx.product.findUniqueOrThrow({ where: { id: teddy.id } })).reservedQty;
         const order = await tx.order.create({
           data: {
             orderNo: "TEST-LIFECYCLE-0001",
@@ -289,7 +291,7 @@ async function main() {
         check(
           `Teddy reserved ${teddyReq} (2 line + ${teddyReq - 2} BOM)`,
           (await tx.product.findUniqueOrThrow({ where: { id: teddy.id } }))
-            .reservedQty === teddyReq
+            .reservedQty - teddyReservedBefore === teddyReq
         );
         check(
           "on-hand unchanged by reservation",

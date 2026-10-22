@@ -14,7 +14,7 @@ import {
   usageHandler,
 } from "../lib/platform/handlers";
 import type { Db } from "../lib/platform/tx";
-import { normalizeUserPhone } from "../lib/user-phone";
+import { normalizeUserPhone, userPhoneSpellings } from "../lib/user-phone";
 import { signInUserWhere } from "../lib/sign-in-user";
 import { instanceUrl, steadfastCallbackUrl } from "../lib/platform/addresses";
 import {
@@ -77,6 +77,16 @@ describe("PLATFORM_SECRET — every route answers 401 and never touches the data
     test(`${r.name}: CRON_SECRET is refused`, async () => {
       const res = await r.handler(req(r.method, r.url, `Bearer ${CRON}`, r.body), NO_DB);
       assert.equal(res.status, 401);
+    });
+    test(`${r.name}: fails closed when PLATFORM_SECRET was set to CRON_SECRET`, async () => {
+      const saved = process.env.PLATFORM_SECRET;
+      process.env.PLATFORM_SECRET = CRON;
+      try {
+        const res = await r.handler(req(r.method, r.url, `Bearer ${CRON}`, r.body), NO_DB);
+        assert.equal(res.status, 401);
+      } finally {
+        process.env.PLATFORM_SECRET = saved;
+      }
     });
     test(`${r.name}: fails closed with PLATFORM_SECRET unset or blank`, async () => {
       delete process.env.PLATFORM_SECRET;
@@ -197,9 +207,17 @@ describe("GV-5 phone normalisation and the shared sign-in match", () => {
       assert.equal(normalizeUserPhone(raw), null, String(raw));
     }
   });
-  test("signInUserWhere: email lower-cased, phone normalised, active users only", () => {
-    assert.deepEqual(signInUserWhere(" Admin@GiftValy.com "), { isActive: true, email: "admin@giftvaly.com" });
-    assert.deepEqual(signInUserWhere("+8801712345678"), { isActive: true, phone: "01712345678" });
+  test("signInUserWhere: email any case, phone any spelling, active users only", () => {
+    assert.deepEqual(signInUserWhere(" Admin@GiftValy.com "), {
+      isActive: true,
+      email: { equals: "admin@giftvaly.com", mode: "insensitive" },
+    });
+    // A phone saved as +8801…, 8801… or 01… is found by 01XXXXXXXXX (what the shared sign-in page sends).
+    assert.deepEqual(signInUserWhere("01712345678"), {
+      isActive: true,
+      phone: { in: ["01712345678", "+8801712345678", "8801712345678", "008801712345678"] },
+    });
+    assert.deepEqual(userPhoneSpellings("+966551234567"), ["+966551234567", "966551234567", "00966551234567"]);
     assert.equal(signInUserWhere("not a phone"), null);
     assert.equal(signInUserWhere("  "), null);
   });

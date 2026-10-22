@@ -362,8 +362,9 @@ async function main() {
     );
 
     // §10 confidentiality — the seeded confidential target (TL Sakib).
+    // Only a target of the month the report covers can show on it.
     const confidential = await prisma.target.findFirst({
-      where: { scope: "USER", isConfidential: true },
+      where: { scope: "USER", isConfidential: true, month: new Date(`${monthKey}-01T00:00:00Z`) },
       select: { userId: true },
     });
     if (confidential?.userId) {
