@@ -210,7 +210,7 @@ Per Dhaka month:
 | `lastOrderNo` | e.g. `GV-2610-0347` — the evidence a person can check. |
 | `breakdown` | Information only, from rows that still exist: confirmed and later, on hold, cancelled, in trash, and drafts not yet confirmed. Never used for billing; may add up to less than `ordersCreated` after a purge. |
 
-Plus once per response: `serverTime`, the app version and commit, the current platform state (name only).
+Plus once per response: `serverTime`, the app version and commit, the current platform state as `{ state, changedAt, sentAt }` — no message or amount (Antu's shape; the admin panel's parser and its Test connection refuse a bare string — found on staging, GV-17).
 
 - Read-only; counts and order numbers only — no customer, recipient, product, money or staff name.
 - PLATFORM_SECRET is separate from CRON_SECRET and checked timing-safe (`lib/crypto.ts`); **fails closed when unset**. CRON_SECRET is refused here.

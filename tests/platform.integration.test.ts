@@ -58,7 +58,9 @@ describe("GV-2 usage", () => {
       assert.equal(res.status, 200);
       const body = await res.json();
       assert.deepEqual(Object.keys(body).sort(), ["months", "serverTime", "state", "version"]);
-      assert.equal(typeof body.state, "string");
+      // The admin panel parses `state` as an object (Antu's shape); a bare string fails its Test connection.
+      assert.deepEqual(Object.keys(body.state).sort(), ["changedAt", "sentAt", "state"]);
+      assert.equal(typeof body.state.state, "string");
       const [m] = body.months;
       const n = seqs.find((s) => s.yearMonth === ym)?.lastNumber ?? 0;
       assert.equal(m.ordersCreated, n);

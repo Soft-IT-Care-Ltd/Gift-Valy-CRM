@@ -1,6 +1,6 @@
 import { dhakaYearMonth, formatOrderNo } from "@/lib/order-number";
 import { readPlatformState } from "./state";
-import type { PlatformStateName } from "./state-shape";
+import type { PlatformState } from "./state-shape";
 import type { Db } from "./tx";
 
 // FUNNEL_LINER.md GV-2 — the billed number per Dhaka month. CLAUDE.md rule 6:
@@ -29,8 +29,12 @@ export type MonthUsage = {
 export type UsageReport = {
   serverTime: string;
   version: string;
-  /** The state name only — never the message or amount. */
-  state: PlatformStateName;
+  /**
+   * The state, when it changed and which push it came from — never the
+   * message or amount. An object, as Antu's usage route answers: the admin
+   * panel's usage parser (and its Test connection) refuses a bare string.
+   */
+  state: Pick<PlatformState, "state" | "changedAt" | "sentAt">;
   months: MonthUsage[];
 };
 
@@ -132,5 +136,10 @@ export async function usageReport(
     monthlyUsage(db, yearMonthsBetween(range.from, range.to)),
     readPlatformState(db),
   ]);
-  return { serverTime: now.toISOString(), version: appVersion(), state: state.state, months };
+  return {
+    serverTime: now.toISOString(),
+    version: appVersion(),
+    state: { state: state.state, changedAt: state.changedAt, sentAt: state.sentAt },
+    months,
+  };
 }
