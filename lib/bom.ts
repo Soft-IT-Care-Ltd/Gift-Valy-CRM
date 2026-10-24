@@ -22,6 +22,8 @@
 // indirectly; nesting is capped at MAX_PACKAGE_DEPTH levels. Both throw
 // BomError so API validation and packing fail loudly instead of looping.
 
+import type { PrintKitSpec } from "./print-kit";
+
 export const MAX_PACKAGE_DEPTH = 3;
 
 export class BomError extends Error {
@@ -44,6 +46,8 @@ export interface BomProduct {
   weightKg: number | null;
   /** Product-level packing materials (CORRECTIONS Products §2). */
   components: { componentId: number; qty: number }[];
+  /** PHOTO_PRINT PP-2 — photos/cards one unit needs (null/absent = none). */
+  printKit?: PrintKitSpec | null;
 }
 
 export interface BomLine {
@@ -512,6 +516,92 @@ export function packageContentsTree(
   selections?: ChoiceSelections
 ): BomTreeNode {
   return packageTreeNode(catalog, packageId, qty, selections, []);
+}
+
+// ---------- print kits (PHOTO_PRINT.md PP-2) ----------
+
+/** One kit-carrying product inside an item, per ONE unit of that item.
+ *  `path` names where it sits — stable across catalog edits because it is
+ *  built from package/product ids, never from package_items ids (a BOM save
+ *  recreates those): "P5" (the product itself / a PRODUCT line),
+ *  "K7/P5" (inside sub-package 7), "C5" (chosen option of a choice group). */
+export interface PrintKitNeed {
+  productId: number;
+  path: string;
+  units: number;
+  kit: PrintKitSpec;
+}
+
+/** Print kits for one unit of a standalone product. Only the product's own
+ *  kit counts — packing materials never carry one. */
+export function productPrintKitNeeds(
+  catalog: BomCatalog,
+  productId: number
+): PrintKitNeed[] {
+  const p = productOrThrow(catalog, productId);
+  return p.printKit ? [{ productId, path: `P${productId}`, units: 1, kit: p.printKit }] : [];
+}
+
+/** Print kits for one unit of a package: the same walk as explodePackage
+ *  (nested packages, the chosen — or default — option of each choice group),
+ *  so a package inherits the kit of every kit-carrying product inside it. */
+export function packagePrintKitNeeds(
+  catalog: BomCatalog,
+  packageId: number,
+  selections?: ChoiceSelections
+): PrintKitNeed[] {
+  const out = new Map<string, PrintKitNeed>();
+  printKitsInto(catalog, out, packageId, 1, "", selections, []);
+  return [...out.values()];
+}
+
+function printKitsInto(
+  catalog: BomCatalog,
+  out: Map<string, PrintKitNeed>,
+  packageId: number,
+  qty: number,
+  prefix: string,
+  selections: ChoiceSelections | undefined,
+  chain: number[]
+) {
+  if (chain.includes(packageId)) {
+    const p = catalog.packages.get(packageId);
+    throw new BomError(
+      `Package cycle detected: "${p?.name ?? packageId}" contains itself (directly or via a sub-package)`
+    );
+  }
+  if (chain.length + 1 > MAX_PACKAGE_DEPTH) {
+    throw new BomError(
+      `Package nesting exceeds the maximum of ${MAX_PACKAGE_DEPTH} levels`
+    );
+  }
+  const pkg = packageOrThrow(catalog, packageId);
+  const add = (productId: number, path: string, units: number) => {
+    const p = productOrThrow(catalog, productId);
+    if (!p.printKit) return;
+    const prev = out.get(path);
+    // Two choice groups of one package may resolve to the same product.
+    if (prev) prev.units += units;
+    else out.set(path, { productId, path, units, kit: p.printKit });
+  };
+  for (const line of pkg.items) {
+    if (line.kind === "PRODUCT") {
+      add(line.productId!, `${prefix}P${line.productId}`, qty * line.qty);
+    } else if (line.kind === "PACKAGE") {
+      printKitsInto(
+        catalog,
+        out,
+        line.childPackageId!,
+        qty * line.qty,
+        `${prefix}K${line.childPackageId}/`,
+        selections,
+        [...chain, packageId]
+      );
+    } else {
+      const chosen = resolveChoice(line, selections);
+      add(chosen, `${prefix}C${chosen}`, qty * line.qty);
+    }
+  }
 }
 
 // ---------- choice groups of a package tree (order form / detail) ----------

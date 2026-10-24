@@ -7,6 +7,7 @@ import {
   type BomLineKind,
   type BomProductType,
 } from "./bom";
+import { normalizePrintKit } from "./print-kit";
 
 type Tx = Prisma.TransactionClient | PrismaClient;
 
@@ -204,6 +205,7 @@ export async function loadBomCatalog(tx: Tx): Promise<BomCatalog> {
         stockQty: true,
         avgCost: true,
         weightKg: true,
+        printKit: true,
         components: { select: { componentId: true, qty: true } },
       },
     }),
@@ -244,6 +246,7 @@ export async function loadBomCatalog(tx: Tx): Promise<BomCatalog> {
           avgCost: Number(p.avgCost),
           weightKg: p.weightKg == null ? null : Number(p.weightKg),
           components: p.components,
+          printKit: normalizePrintKit(p.printKit),
         },
       ])
     ),

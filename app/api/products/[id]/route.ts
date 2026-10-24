@@ -3,6 +3,8 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { requirePermission, requirePermissionCtx, apiError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
+import { printKitInputSchema } from "@/lib/print-kit";
+import { printKitColumn } from "@/lib/print-kits";
 import {
   canSeeCosts,
   productSerializeInclude,
@@ -56,6 +58,8 @@ const updateSchema = z
     deliveryChargeInsideDhaka: z.number().min(0).optional(),
     deliveryChargeSubDhaka: z.number().min(0).optional(),
     deliveryChargeOutsideDhaka: z.number().min(0).optional(),
+    // PHOTO_PRINT PP-2 — null switches the kit off.
+    printKit: printKitInputSchema.nullable().optional(),
     components: z
       .array(componentSchema)
       .optional()
@@ -137,6 +141,12 @@ export async function PATCH(req: Request, { params }: Params) {
           deliveryChargeInsideDhaka: isComponent ? 0 : data.deliveryChargeInsideDhaka,
           deliveryChargeSubDhaka: isComponent ? 0 : data.deliveryChargeSubDhaka,
           deliveryChargeOutsideDhaka: isComponent ? 0 : data.deliveryChargeOutsideDhaka,
+          // A component-only product never carries a kit.
+          printKit: isComponent
+            ? printKitColumn(null)
+            : data.printKit === undefined
+              ? undefined
+              : printKitColumn(data.printKit),
           updatedBy: session.user.id,
         },
       });
@@ -168,6 +178,7 @@ export async function DELETE(req: Request, { params }: Params) {
             orderItems: true,
             componentOf: true,
             choiceOptions: true,
+            printKits: true,
           },
         },
       },
@@ -193,7 +204,7 @@ export async function DELETE(req: Request, { params }: Params) {
         { status: 400 }
       );
     }
-    if (product._count.orderItems > 0) {
+    if (product._count.orderItems > 0 || product._count.printKits > 0) {
       return NextResponse.json(
         {
           error:

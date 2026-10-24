@@ -22,6 +22,7 @@ import {
 import { upsertRecipientOccasions } from "@/lib/occasions";
 import { syncReservations } from "@/lib/stock";
 import { leadScopeWhere } from "@/lib/leads";
+import { syncPrintKits } from "@/lib/print-kits";
 import { normalizePhone, type OrderStatusValue } from "@/lib/order-constants";
 
 // Order list — same filters/window/search/pagination as the Orders page
@@ -282,6 +283,8 @@ export async function POST(req: Request) {
               },
             });
           }
+          // PHOTO_PRINT PP-2 — a kit per unit of every kit-carrying product.
+          await syncPrintKits(tx, order.id);
           await recomputeDue(tx, order.id); // integrity rule 1
           // SPEC §1.3: stock reserves at CONFIRMED (ON_HOLD reserves nothing —
           // the reservation happens when the hold lifts via the status route).

@@ -172,20 +172,22 @@ After my OK: deploy to production (scripts/deploy.sh main) and run db:seed-card-
 
 ## Items
 
-### PP-1. Print sizes and layouts — in Settings — [OPEN]
+### PP-1. Print sizes and layouts — in Settings — [DONE]
 
 - Settings → **Gift print** (Admin only): the four sizes from "The sizes" in mm (one decimal) and the layout choice ("3 pages (safe)" default / "2 pages (borderless)").
 - The two layouts from "The layout" are stored as data: per page, a list of `{ slot, x, y }` in mm. Sizes come from the size settings.
 - Saving a size runs the layout check (PP-6) and refuses a size that makes the chosen layout overlap or run off the page — it says which piece and by how much.
+- **Done (24 Oct 2026):** `lib/print-layouts.ts` (both layouts as data, `checkLayout`, 300 DPI pixels), `print_settings` key read by `getPrintSettings()`, `PUT /api/settings/print` (settings.manage; refuses with the pieces + mm, warns about the other layout), Settings → Gift Print → Sizes & layout with a live A4 preview. Tests: `npm run test:print`.
 
-### PP-2. Print kit on a product — [OPEN]
+### PP-2. Print kit on a product — [DONE]
 
 - A product can carry a **print kit**: how many photos of each size and which cards, e.g. `{ photos: { PHOTO_L: 10, PHOTO_S: 4 }, cards: ["CARD_1", "CARD_2"] }`. Set on the product's edit page (Admin/Manager) — "This product needs customer photos / cards".
 - The **Customize Chocolate Box** product gets the 10 + 4 + 2 kit.
 - A package line gets a kit for every kit-carrying product inside it, through the existing BOM explosion (`lib/bom.ts`: nested packages, chosen option of a choice group). Line qty 2 → 2 kits.
 - A kit is snapshotted onto the order when the line is saved, so changing the product later never changes an existing order.
+- **Done (24 Oct 2026):** `products.print_kit` + the switch on the product form ("Photo kit" badge on products and packages). `packagePrintKitNeeds` / `productPrintKitNeeds` in `lib/bom.ts` walk the same tree as the explosion. `order_print_kits` hang off the order (an edit recreates all items) and are matched back by `source_key` (`K72.1/K71/P224#2` = item + occurrence / BOM path # unit), built from package/product ids, never `package_items` ids. `syncPrintKits` runs in the same transaction on create and in `applyOrderEdit` (direct edit + approved edit request). Checked on dev: 5 kits → edit to qty 1 → 2 kits kept their rows; a new line got the product's changed kit while the old kits kept their frozen spec. **Still to set on production:** switch the kit on for the real Customize Chocolate Box product (Catalog → Products → Edit).
 
-### PP-3. Card designs and card messages — [OPEN]
+### PP-3. Card designs and card messages — [DONE]
 
 **Card designs** (Settings → Gift print → Card designs, Admin/Manager): a name, which card size it is for, a **background image without text** (uploaded, cropped to the card's size), the **text area** (drawn as a box on the preview, stored in % of the card), text colour, alignment, and a font (Noto Sans Bengali Bold by default; an admin may upload another .ttf). Active / inactive.
 
@@ -238,6 +240,8 @@ After my OK: deploy to production (scripts/deploy.sh main) and run db:seed-card-
 26. *(Bangla, common)* অভিনন্দন! তোমার এই সাফল্যে আমরা সবাই অনেক খুশি। সামনে আরও এগিয়ে যাও।
 27. *(English, names)* Congratulations, {to}! So proud of you. — {from}
 
+**Done (24 Oct 2026):** `card_designs` + `card_messages`, `/api/print/card-designs` (+ `/background`, cropped to the card's 300 DPI pixels), `/api/print/card-messages`, `/api/print/fonts`, `/api/print/card-preview`; Settings → Gift Print → Card designs (text area drawn on the card, live preview from the print renderer) and Card messages. Seed: `npm run db:seed-card-messages` (27 messages, run twice on dev = 27 then 0 added). Card text rules in `lib/print-card-text.ts` (greeting/signature lines; an empty name drops its line; a slot inside a sentence is removed with its comma). The card is rendered by sharp/Pango, not pdfkit — pdfkit gives দ্ধ the wrong width (শ্রদ্ধা/শুদ্ধ overlap and lose the space); checked on Linux (Docker, sharp 0.35.3): Noto Sans Bengali, correct conjuncts, ~0.3 s per card. On macOS sharp ignores the font file and uses a system Bangla font, and the first text render in a process takes about a minute — dev previews only; the server is Linux. **Waiting for the owner:** the two card backgrounds without text (then add them as designs).
+
 ### PP-4. Photos and cards on the order — [OPEN]
 
 - On the order form and the order detail page, every kit gets a **"Photos & cards"** section (one per kit when qty > 1).
@@ -247,7 +251,7 @@ After my OK: deploy to production (scripts/deploy.sh main) and run db:seed-card-
 - The order **can be saved with photos missing** (customers often send them later). The kit shows **"Photos pending 9/14"** / **"Cards pending"** / **"Ready to print"**, on the order list as a badge and as a filter.
 - Every upload, replace, delete, crop change and card change writes an audit row.
 
-### PP-5. Who can do what — [OPEN]
+### PP-5. Who can do what — [PARTLY DONE]
 
 New permissions in `lib/permissions.ts`:
 
@@ -258,6 +262,8 @@ New permissions in `lib/permissions.ts`:
 | `print.settings` | Admin (sizes, layouts), Admin + Manager (designs, messages) | Settings → Gift print |
 
 Photos are the customer's private pictures: stored only in `UPLOAD_DIR` (never `public/`), served only through the signed-in route, and only to a role with `print.edit` or `print.print`.
+
+- **Done (24 Oct 2026, PP1):** the three permissions in `lib/permissions.ts` and granted to the existing roles by the PP1 migration (bootstrap only seeds roles that don't exist yet). Sizes & layouts are on `settings.manage` (Admin) — one `print.settings` can't be "Admin" and "Admin + Manager" at once; designs/messages on `print.settings`. **Left for PP2/PP3:** the PACKED lock on `print.edit`, the photo route check, `print.print` on the PDF.
 
 ### PP-6. The print PDF — [OPEN]
 

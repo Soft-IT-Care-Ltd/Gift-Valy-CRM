@@ -28,6 +28,7 @@ import {
 } from "./bom";
 import { loadBomCatalog } from "./bom-db";
 import { generateOrderNumber } from "./order-number";
+import { syncPrintKits } from "./print-kits";
 
 type Tx = Prisma.TransactionClient | PrismaClient;
 
@@ -672,6 +673,9 @@ export async function applyOrderEdit(
         : undefined,
     })),
   });
+  // PHOTO_PRINT PP-2 — kits are matched back by source_key, so they survive
+  // the items being recreated above.
+  await syncPrintKits(tx, orderId);
   // District/Thana intentionally untouched (CORRECTIONS Orders §5): removed
   // from the form; legacy rows keep whatever they had.
   await tx.order.update({

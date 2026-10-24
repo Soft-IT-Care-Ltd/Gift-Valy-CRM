@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 
 // FUNNEL_LINER.md GV-11 — where uploads and invoice PDFs live on disk.
 //
@@ -73,6 +73,38 @@ export async function saveUpload(name: string, data: Buffer): Promise<string> {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, data);
   return `/uploads/${name}`;
+}
+
+// ── Card fonts (PHOTO_PRINT PP-3) ─────────────────────────────────────────
+// An Admin may upload another font for a card design. Fonts are only read by
+// the server's card renderer — never served — and live in UPLOAD_DIR/fonts as
+// <uuid>.ttf|otf; card_designs.font_path holds the bare file name.
+
+const FONT_NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,127}\.(ttf|otf)$/;
+
+/** The file on disk for a card font name, or null when the name isn't one we write. */
+export function printFontPath(name: string | null | undefined): string | null {
+  if (!name || !FONT_NAME.test(name)) return null;
+  return path.join(/* turbopackIgnore: true */ uploadRoot(), "fonts", name);
+}
+
+/** Every uploaded card font's file name (none yet → []). */
+export async function listPrintFonts(): Promise<string[]> {
+  try {
+    const names = await readdir(path.join(/* turbopackIgnore: true */ uploadRoot(), "fonts"));
+    return names.filter((n) => FONT_NAME.test(n)).sort();
+  } catch {
+    return [];
+  }
+}
+
+/** Writes an uploaded card font and returns the name to store. */
+export async function savePrintFont(name: string, data: Buffer): Promise<string> {
+  const file = printFontPath(name);
+  if (!file) throw new Error(`Invalid font name: ${name}`);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, data);
+  return name;
 }
 
 // ── Invoice PDFs ───────────────────────────────────────────────────────────

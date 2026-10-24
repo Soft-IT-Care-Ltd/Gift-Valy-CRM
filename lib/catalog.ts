@@ -5,12 +5,14 @@ import {
   packageAvailability,
   packageCost,
   packageWeightKg,
+  packagePrintKitNeeds,
   productAvailability,
   productEffectiveCost,
   productWeightKg,
   explodePackage,
   type BomCatalog,
 } from "./bom";
+import { normalizePrintKit } from "./print-kit";
 
 // SPEC §6.1/§6.2 + CLAUDE.md rule 1: cost & margin fields are stripped in the
 // service layer for anyone without these permissions — Sales Executives (and
@@ -91,6 +93,8 @@ export function serializeProduct(
     deliveryChargeInsideDhaka: Number(p.deliveryChargeInsideDhaka),
     deliveryChargeSubDhaka: Number(p.deliveryChargeSubDhaka),
     deliveryChargeOutsideDhaka: Number(p.deliveryChargeOutsideDhaka),
+    // PHOTO_PRINT PP-2 — photos/cards one unit needs (null = none).
+    printKit: normalizePrintKit(p.printKit),
     // CORRECTIONS Products §2 — the product's packing materials.
     components: p.components.map((c) => ({
       componentId: c.componentId,
@@ -231,6 +235,11 @@ export function serializePackage(
     availableToSell: availability,
     weightKg: pkg.weightKg == null ? null : Number(pkg.weightKg), // manual override
     autoWeightKg: autoWeight, // BOM-summed
+    // PHOTO_PRINT PP-2 — photo/card kits one unit inherits (default picks).
+    printKitUnits: safe(
+      () => packagePrintKitNeeds(catalog, pkg.id).reduce((n, k) => n + k.units, 0),
+      0
+    ),
     deliveryChargeInsideDhaka: Number(pkg.deliveryChargeInsideDhaka),
     deliveryChargeSubDhaka: Number(pkg.deliveryChargeSubDhaka),
     deliveryChargeOutsideDhaka: Number(pkg.deliveryChargeOutsideDhaka),

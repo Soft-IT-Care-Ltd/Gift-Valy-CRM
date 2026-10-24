@@ -267,6 +267,10 @@ model Product {
   deliveryChargeInsideDhaka  Decimal  @default(0) @map("delivery_charge_inside_dhaka") @db.Decimal(12, 2)
   deliveryChargeSubDhaka     Decimal  @default(0) @map("delivery_charge_sub_dhaka") @db.Decimal(12, 2)
   deliveryChargeOutsideDhaka Decimal  @default(0) @map("delivery_charge_outside_dhaka") @db.Decimal(12, 2)
+  // PHOTO_PRINT PP-2 — the customer photos / wishing cards one unit of this
+  // product needs: { photos: { PHOTO_L: 10, PHOTO_S: 4 }, cards: ["CARD_1",
+  // "CARD_2"] }. Null = no print kit. Packages inherit it through lib/bom.ts.
+  printKit          Json?    @map("print_kit")
   // Caches — pure sums over stock_movements, written in the SAME transaction
   // as the movement rows (SPEC §14 integrity rule 2). stock_qty = physical
   // on-hand; reserved_qty = held by CONFIRMED orders; available = qty − reserved.
@@ -288,6 +292,7 @@ model Product {
   // …and the reverse: which products consume THIS one as a component.
   componentOf    ProductComponent[]  @relation("ComponentUsage")
   damageLogs     DamageLog[]
+  printKits      OrderPrintKit[]
 
   @@map("products")
 }
@@ -676,6 +681,7 @@ model Order {
   whatsappMessages WhatsAppMessage[]
   damageLogs       DamageLog[]
   steadfastPaymentItems SteadfastPaymentItem[]
+  printKits        OrderPrintKit[]
 
   // List queries filter by scope/status/window and sort by created_at desc —
   // composite indexes keep them fast as data accumulates (SPEC-scale: years).
@@ -1524,4 +1530,113 @@ model RosterAssignment {
   @@index([userId, effectiveFrom])
   @@index([shiftId])
   @@map("roster_assignments")
+}
+
+// ============ GIFT PRINT (PHOTO_PRINT.md PP-1 … PP-7) ============
+
+// The four printed pieces of a kit. Their mm sizes live in Settings
+// (print_sizes), never in code, so the owner can correct them.
+enum PrintSlot {
+  PHOTO_L
+  PHOTO_S
+  CARD_1
+  CARD_2
+}
+
+enum CardLanguage {
+  BN
+  EN
+  MIXED
+}
+
+enum CardTextAlign {
+  LEFT
+  CENTER
+  RIGHT
+}
+
+// PP-4/PP-7 — PENDING until every photo and card is in; READY = the PDF can be
+// built; PRINTED = Packing marked it; CHANGED_AFTER_PRINT = a photo, crop or
+// card changed after it was printed (reprint).
+enum PrintKitStatus {
+  PENDING
+  READY
+  PRINTED
+  CHANGED_AFTER_PRINT
+}
+
+// PP-3 — a card background (no text) for one card size, plus where and how the
+// message is written on it. text_box is { x, y, w, h } in % of the card.
+// background_path is null until the owner's text-free background is uploaded.
+model CardDesign {
+  id             Int           @id @default(autoincrement())
+  name           String
+  slot           PrintSlot // CARD_1 | CARD_2 (validated in the API)
+  backgroundPath String?       @map("background_path")
+  textBox        Json          @map("text_box")
+  textColor      String        @default("#be185d") @map("text_color")
+  align          CardTextAlign @default(CENTER)
+  fontPath       String?       @map("font_path") // null = Noto Sans Bengali Bold
+  maxFontPt      Decimal       @default(16) @map("max_font_pt") @db.Decimal(4, 1)
+  minFontPt      Decimal       @default(9) @map("min_font_pt") @db.Decimal(4, 1)
+  isActive       Boolean       @default(true) @map("is_active")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  createdBy      Int?          @map("created_by")
+  updatedBy      Int?          @map("updated_by")
+
+  @@index([slot, isActive])
+  @@map("card_designs")
+}
+
+// PP-3 — the message library. {to} / {from} are the name slots; a line that
+// holds only an empty slot is dropped when the card is rendered. text is
+// unique so the seed (npm run db:seed-card-messages) can match and never
+// duplicate.
+model CardMessage {
+  id           Int          @id @default(autoincrement())
+  occasion     String // "জন্মদিন / Birthday" — free text, admins add more
+  language     CardLanguage
+  text         String       @unique
+  hasNameSlots Boolean      @default(false) @map("has_name_slots")
+  sortOrder    Int          @default(0) @map("sort_order")
+  isActive     Boolean      @default(true) @map("is_active")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+  createdBy    Int?         @map("created_by")
+  updatedBy    Int?         @map("updated_by")
+
+  @@index([occasion, isActive])
+  @@map("card_messages")
+}
+
+// PP-2 — one kit per unit of a kit-carrying product on the order (a package
+// line of qty 2 with one Customize Chocolate Box inside = 2 kits). Hangs off
+// the ORDER, not order_items: an order edit deletes and recreates every item
+// (applyOrderEdit), so kits are matched back by source_key (line identity +
+// BOM path + unit number) and keep their photos. spec is the product's
+// print_kit frozen when the line was saved. A kit whose line disappeared is
+// marked orphaned_at, never silently deleted while it holds photos.
+model OrderPrintKit {
+  id            Int            @id @default(autoincrement())
+  orderId       Int            @map("order_id")
+  sourceKey     String         @map("source_key")
+  productId     Int            @map("product_id")
+  spec          Json           @map("spec_snapshot")
+  status        PrintKitStatus @default(PENDING)
+  printHash     String?        @map("print_hash")
+  printedAt     DateTime?      @map("printed_at")
+  printedBy     Int?           @map("printed_by")
+  printCount    Int            @default(0) @map("print_count")
+  orphanedAt    DateTime?      @map("orphaned_at")
+  filesPurgedAt DateTime?      @map("files_purged_at")
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@unique([orderId, sourceKey])
+  @@index([status])
+  @@map("order_print_kits")
 }

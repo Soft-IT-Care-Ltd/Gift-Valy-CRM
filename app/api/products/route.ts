@@ -4,6 +4,8 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { requirePermission, requirePermissionCtx, apiError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
+import { printKitInputSchema } from "@/lib/print-kit";
+import { printKitColumn } from "@/lib/print-kits";
 import {
   canSeeCosts,
   productSerializeInclude,
@@ -55,6 +57,8 @@ const createSchema = z
     deliveryChargeSubDhaka: z.number().min(0).default(0),
     deliveryChargeOutsideDhaka: z.number().min(0).default(0),
     components: z.array(componentSchema).default([]),
+    // PHOTO_PRINT PP-2 — "This product needs customer photos / cards".
+    printKit: printKitInputSchema.nullable().optional(),
   })
   .refine((d) => d.priceFloor <= d.sellingPrice, {
     message: "Price floor cannot exceed selling price",
@@ -107,6 +111,7 @@ export async function POST(req: Request) {
           deliveryChargeInsideDhaka: isComponent ? 0 : data.deliveryChargeInsideDhaka,
           deliveryChargeSubDhaka: isComponent ? 0 : data.deliveryChargeSubDhaka,
           deliveryChargeOutsideDhaka: isComponent ? 0 : data.deliveryChargeOutsideDhaka,
+          printKit: printKitColumn(isComponent ? null : data.printKit),
           createdBy: session.user.id,
           updatedBy: session.user.id,
           components: {

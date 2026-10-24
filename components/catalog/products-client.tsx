@@ -39,6 +39,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { PhotoField } from "./photo-field";
+import {
+  DEFAULT_PRINT_KIT,
+  PRINT_KIT_MAX,
+  describePrintKit,
+  type PrintKitSpec,
+} from "@/lib/print-kit";
 
 export interface ProductComponentRow {
   componentId: number;
@@ -69,6 +75,7 @@ export interface ProductRow {
   deliveryChargeSubDhaka: number;
   deliveryChargeOutsideDhaka: number;
   components: ProductComponentRow[];
+  printKit: PrintKitSpec | null;
   avgCost?: number; // absent for roles without cost visibility
   effectiveCost?: number | null; // avg cost + packing materials
 }
@@ -135,6 +142,12 @@ export function ProductsClient({
   const [chargeSub, setChargeSub] = useState("0");
   const [chargeOutside, setChargeOutside] = useState("0");
   const [componentLines, setComponentLines] = useState<ComponentLine[]>([]);
+  // PHOTO_PRINT PP-2 — "This product needs customer photos / cards".
+  const [kitOn, setKitOn] = useState(false);
+  const [kitBig, setKitBig] = useState(String(DEFAULT_PRINT_KIT.photos.PHOTO_L));
+  const [kitSmall, setKitSmall] = useState(String(DEFAULT_PRINT_KIT.photos.PHOTO_S));
+  const [kitCard1, setKitCard1] = useState(true);
+  const [kitCard2, setKitCard2] = useState(true);
 
   const isComponent = productType === "COMPONENT";
 
@@ -156,6 +169,7 @@ export function ProductsClient({
     setChargeSub("0");
     setChargeOutside("0");
     setComponentLines([]);
+    setKit(null);
     setDialogOpen(true);
   }
 
@@ -182,8 +196,34 @@ export function ProductsClient({
         qty: String(c.qty),
       }))
     );
+    setKit(p.printKit);
     setDialogOpen(true);
   }
+
+  function setKit(kit: PrintKitSpec | null) {
+    const k = kit ?? DEFAULT_PRINT_KIT;
+    setKitOn(kit != null);
+    setKitBig(String(k.photos.PHOTO_L));
+    setKitSmall(String(k.photos.PHOTO_S));
+    setKitCard1(k.cards.includes("CARD_1"));
+    setKitCard2(k.cards.includes("CARD_2"));
+  }
+
+  const kitCount = (v: string, max: number) =>
+    Math.min(max, Math.max(0, Math.floor(Number(v) || 0)));
+  const kitPayload: PrintKitSpec | null =
+    kitOn && !isComponent
+      ? {
+          photos: {
+            PHOTO_L: kitCount(kitBig, PRINT_KIT_MAX.PHOTO_L),
+            PHOTO_S: kitCount(kitSmall, PRINT_KIT_MAX.PHOTO_S),
+          },
+          cards: [
+            ...(kitCard1 ? (["CARD_1"] as const) : []),
+            ...(kitCard2 ? (["CARD_2"] as const) : []),
+          ],
+        }
+      : null;
 
   const validComponents = componentLines.filter(
     (l) => l.componentId !== "" && Number(l.qty) >= 1
@@ -213,6 +253,7 @@ export function ProductsClient({
             componentId: Number(l.componentId),
             qty: Number(l.qty),
           })),
+      printKit: kitPayload,
     };
     const res = await fetch(
       editing ? `/api/products/${editing.id}` : "/api/products",
@@ -364,6 +405,15 @@ export function ProductsClient({
                   )}
                 </TableCell>
                 <TableCell className="text-right text-muted-foreground">
+                  {p.printKit && (
+                    <Badge
+                      variant="outline"
+                      className="mr-1.5 border-primary/40 text-primary"
+                      title={describePrintKit(p.printKit)}
+                    >
+                      Photo kit
+                    </Badge>
+                  )}
                   {p.weightKg == null ? "—" : `${p.weightKg} kg`}
                 </TableCell>
                 <TableCell className="text-right">
@@ -685,6 +735,60 @@ export function ProductsClient({
             <div className="grid grid-cols-2 gap-3">
               <PhotoField value={photoUrl} onChange={setPhotoUrl} />
             </div>
+            {!isComponent && (
+              <div className="space-y-3 rounded-md border p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <Label>Needs customer photos / cards</Label>
+                    <p className="text-xs text-muted-foreground">
+                      The SE uploads the customer&apos;s photos and picks the
+                      wishing cards on the order; Packing prints them. Every
+                      package containing this product inherits it.
+                    </p>
+                  </div>
+                  <Switch checked={kitOn} onCheckedChange={setKitOn} />
+                </div>
+                {kitOn && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="grid gap-1">
+                      <Label htmlFor="kitBig">Big photos (max {PRINT_KIT_MAX.PHOTO_L})</Label>
+                      <Input
+                        id="kitBig"
+                        type="number"
+                        min={0}
+                        max={PRINT_KIT_MAX.PHOTO_L}
+                        value={kitBig}
+                        onChange={(e) => setKitBig(e.target.value)}
+                      />
+                    </div>
+                    <div className="grid gap-1">
+                      <Label htmlFor="kitSmall">Small photos (max {PRINT_KIT_MAX.PHOTO_S})</Label>
+                      <Input
+                        id="kitSmall"
+                        type="number"
+                        min={0}
+                        max={PRINT_KIT_MAX.PHOTO_S}
+                        value={kitSmall}
+                        onChange={(e) => setKitSmall(e.target.value)}
+                      />
+                    </div>
+                    <label className="flex items-center gap-2 text-sm">
+                      <Switch checked={kitCard1} onCheckedChange={setKitCard1} />
+                      Card 1 (large)
+                    </label>
+                    <label className="flex items-center gap-2 text-sm">
+                      <Switch checked={kitCard2} onCheckedChange={setKitCard2} />
+                      Card 2 (small)
+                    </label>
+                    {kitPayload && (
+                      <p className="col-span-2 text-xs text-muted-foreground">
+                        Per unit: {describePrintKit(kitPayload) || "nothing — the kit is off"}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="flex items-center justify-between rounded-md border p-3">
               <div>
                 <Label>Stock tracked</Label>

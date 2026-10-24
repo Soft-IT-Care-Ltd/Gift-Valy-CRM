@@ -260,6 +260,16 @@ export default async function DashboardLayout({
       { href: "/settings/occasions", label: "Occasion Reminders" }
     );
   }
+  // PHOTO_PRINT.md PP-1/PP-3 — Gift print: sizes & layout (settings.manage),
+  // card designs & messages (print.settings — Admin + Manager).
+  if (permissions.includes("settings.manage") || permissions.includes("print.settings")) {
+    settingsItems.push({
+      href: permissions.includes("settings.manage")
+        ? "/settings/gift-print"
+        : "/settings/gift-print/designs",
+      label: "Gift Print",
+    });
+  }
   // FUNNEL_LINER.md GV-10 — the Funnel Liner usage card, Admin only.
   if (user.role.name === "Admin") {
     settingsItems.push({ href: "/settings/funnel-liner", label: "Funnel Liner" });

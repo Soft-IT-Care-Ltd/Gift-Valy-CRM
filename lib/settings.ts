@@ -10,6 +10,7 @@ import {
   normalizeInvoiceBranding,
   type InvoiceBranding,
 } from "./invoice-branding-constants";
+import { normalizePrintSettings, type PrintSettings } from "./print-layouts";
 
 // SPEC §14 settings table — JSON values keyed by string. Missing keys fall
 // back to code defaults so no seed row is required.
@@ -32,6 +33,8 @@ export const SETTING_KEYS = {
   // metadata, so the sync remembers the last non-empty page (the tail, where
   // new payouts appear) and resumes there instead of re-walking 60+ pages.
   steadfastPaymentsLastPage: "steadfast_payments_last_page",
+  // PHOTO_PRINT.md PP-1 — gift-print piece sizes (mm) + the chosen A4 layout.
+  printSettings: "print_settings",
 } as const;
 
 // SPEC §10 default onboarding grace: new joiners excluded from team aggregates
@@ -138,4 +141,13 @@ export async function getOccasionReminderLeadDays(): Promise<number> {
     DEFAULT_OCCASION_LEAD_DAYS
   );
   return Math.max(0, Math.round(days));
+}
+
+// PHOTO_PRINT.md PP-1 — the four print sizes (mm) and the chosen layout.
+// Missing row or fields → the owner's measured sizes and "3 pages (safe)".
+export async function getPrintSettings(): Promise<PrintSettings> {
+  const row = await prisma.setting.findUnique({
+    where: { key: SETTING_KEYS.printSettings },
+  });
+  return normalizePrintSettings(row?.value ?? null);
 }

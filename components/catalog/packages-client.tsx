@@ -92,6 +92,7 @@ interface PackageRow {
   availableToSell: number | null;
   weightKg: number | null; // manual override
   autoWeightKg: number | null; // BOM-summed
+  printKitUnits: number; // PHOTO_PRINT PP-2 — inherited photo kits per unit
   deliveryChargeInsideDhaka: number;
   deliveryChargeSubDhaka: number;
   deliveryChargeOutsideDhaka: number;
@@ -462,6 +463,15 @@ export function PackagesClient({
                   </TableCell>
                 )}
                 <TableCell className="text-right text-muted-foreground">
+                  {pkg.printKitUnits > 0 && (
+                    <Badge
+                      variant="outline"
+                      className="mr-1.5 border-primary/40 text-primary"
+                      title="Contains a product that needs customer photos / cards (default picks)"
+                    >
+                      Photo kit{pkg.printKitUnits > 1 ? ` ×${pkg.printKitUnits}` : ""}
+                    </Badge>
+                  )}
                   {pkg.weightKg != null
                     ? `${pkg.weightKg} kg`
                     : pkg.autoWeightKg

@@ -56,6 +56,13 @@ export const PERMISSION_DEFS: PermissionDef[] = [
   },
   { key: "orders.pack", label: "Packing queue & mark packed", group: "Orders" },
   { key: "invoice.generate", label: "Generate invoices", group: "Orders" },
+  // PHOTO_PRINT.md PP-5 — the Customize Chocolate Box photos + wishing cards.
+  // print.edit works only until the order is PACKED (Admin/Manager any time);
+  // print.settings covers card designs + messages — print sizes and layouts
+  // stay on settings.manage (Admin).
+  { key: "print.edit", label: "Upload gift photos & choose cards", group: "Gift print" },
+  { key: "print.print", label: "Print gift photos & cards", group: "Gift print" },
+  { key: "print.settings", label: "Manage card designs & messages", group: "Gift print" },
   // Money
   { key: "payments.create", label: "Record payments", group: "Money" },
   { key: "payments.verify", label: "Verify payments", group: "Money" },
@@ -108,6 +115,7 @@ export const ROLE_MATRIX: Record<RoleName, string[]> = {
     "orders.edit", "orders.approve_edit", "orders.cancel", "orders.trash",
     "orders.pack",
     "invoice.generate",
+    "print.edit", "print.print", "print.settings",
     "payments.create", "payments.verify", "wallets.manage",
     "expenses.create", "purchases.create",
     "catalog.view", "catalog.manage",
@@ -121,6 +129,7 @@ export const ROLE_MATRIX: Record<RoleName, string[]> = {
     "leads.create", "leads.bulk", "leads.view_own", "leads.view_team", "leads.edit", "leads.reassign",
     "orders.create", "orders.view_own", "orders.view_team", "orders.approve_edit",
     "invoice.generate",
+    "print.edit",
     "payments.create",
     "catalog.view",
     "reports.own", "reports.team",
@@ -131,6 +140,7 @@ export const ROLE_MATRIX: Record<RoleName, string[]> = {
     "leads.create", "leads.view_own",
     "orders.create", "orders.view_own",
     "invoice.generate",
+    "print.edit",
     "payments.create",
     "catalog.view",
     "reports.own",
@@ -139,6 +149,7 @@ export const ROLE_MATRIX: Record<RoleName, string[]> = {
   ],
   Packing: [
     "orders.pack",
+    "print.print",
     "catalog.view",
     "stock.view",
     "attendance.own",
