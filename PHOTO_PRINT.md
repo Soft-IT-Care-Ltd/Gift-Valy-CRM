@@ -1,5 +1,6 @@
 # Gift Valy — Customize Chocolate Box: photo + wishing-card print
 
+**Status: [DONE]** — PP0–PP3 built, verified, live on production 24 Oct 2026 (86a4ff5).
 **Raised by:** the owner, 24 Oct 2026. **Goes in:** the root of the Gift Valy CRM repo, next to `CORRECTIONS.md` and `FUNNEL_LINER.md`.
 **Sample layouts:** `docs/print-layout-3-pages.pdf` and `docs/print-layout-2-pages-borderless.pdf` (default since PP3) — the owner's own sample photos and cards, every piece at its real size.
 
@@ -102,7 +103,7 @@ Both layouts are stored as **data** (per page, a list of `{ slot, x, y }` plus t
 | 2 | PP1 — Print sizes, kits, card library | Gift Valy repo | PP0 |
 | 3 | PP2 — Photos and cards on the order | Gift Valy repo | PP1 |
 | 4 | PP3 — The print PDF and the Packing screen | Gift Valy repo | PP2 |
-| 5 | Verify PP, staging, then production | Gift Valy repo, then the server (`ssh antu`) | PP3 |
+| 5 | Verify PP, staging, then production — [DONE] | Gift Valy repo, then the server (`ssh antu`) | PP3 |
 
 ### PP0 — Read and plan (Gift Valy repo)
 
@@ -149,7 +150,9 @@ Before writing code, show me: (a) the function that turns a kit + a layout into 
 Then build PP-6 and PP-7. Default layout "2 pages (borderless)". The PDF page is exactly A4 (595.28 × 841.89 pt), images placed at exact mm with no scaling of the page, 300 DPI images. Render one PDF from test photos at both layouts and look at it as an image before you finish. Mark the items [DONE], commit, push.
 ```
 
-### Verify PP, staging, then production (Gift Valy repo, then `ssh antu`)
+### Verify PP, staging, then production (Gift Valy repo, then `ssh antu`) — [DONE]
+
+Done 24 Oct 2026. Reviewer checks 1–8 all pass; four findings fixed in 86a4ff5: the 60-day photo purge now counts from the LATEST delivery/return; a card re-rendered for the PDF that no longer fits its design is refused (409) instead of printing outside the text area; a printed kit moved by an order edit becomes "Changed after print — reprint"; test:order-paths / verify:reports false failures fixed. Staging: deployed 86a4ff5, 27 card messages seeded, test order GV-2610-0001 (14 photos incl. EXIF-rotated + 300×300, 2 cards) — PDF 2 × A4, every image 300 ppi, sent to the owner; the staging test Admin was deactivated after. Production: deployed 86a4ff5 (pp1 + pp2 migrations), 27 card messages seeded, no test order (rule 6).
 
 ```
 Reviewer pass on PP1–PP3 by reading the code and testing on dev:
