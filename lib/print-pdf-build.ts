@@ -143,6 +143,14 @@ async function ensureFiles(kit: KitRow, settings: PrintSettings) {
         settings.sizes[slot],
         cardLines(c.text, { to: c.toName, from: c.fromName })
       );
+      // The card fitted when it was chosen; a smaller size or text area since
+      // then must not let the text run outside it on paper.
+      if (!card.fits) {
+        throw new AuthzError(
+          409,
+          `${c.slot === "CARD_1" ? "Card 1" : "Card 2"}: মেসেজটা আর কার্ডে আঁটছে না — Manager ছোট করুন / The message no longer fits this card after a design or size change — a Manager must shorten it`
+        );
+      }
       renderPath = await savePrintFile(`card-${randomUUID()}.png`, card.png);
       await prisma.orderPrintCard.update({
         where: { id: c.id },

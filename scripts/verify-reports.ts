@@ -3,7 +3,6 @@
 // Read-only against the seeded dev DB: every builder is cross-checked against
 // direct Prisma aggregates under each role scope (SE own / TL team / all), and
 // §10 target confidentiality is asserted per viewer. Run: npm run verify:reports
-import { PrismaClient } from "@prisma/client";
 import type { Session } from "next-auth";
 import {
   buildSalesReport,
@@ -18,7 +17,9 @@ import {
 } from "../lib/order-constants";
 import type { OrderStatus, Prisma } from "@prisma/client";
 
-const prisma = new PrismaClient();
+// The app's client: its trash auto-filter (lib/db.ts) is the rule the
+// reports follow, so a trashed order never counts on either side.
+import { prisma } from "../lib/db";
 
 let passed = 0;
 let failed = 0;

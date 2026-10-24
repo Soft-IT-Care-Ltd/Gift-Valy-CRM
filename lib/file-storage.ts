@@ -179,7 +179,7 @@ function printPdfDir(): string {
   return path.join(/* turbopackIgnore: true */ invoiceRoot(), "print");
 }
 
-/** "GV-2610-0001" → a safe file-name stem. */
+/** An order number ("DRAFT-0003", a GV number) → a safe file-name stem. */
 function printPdfStem(orderNo: string): string {
   return orderNo.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 64) || "order";
 }

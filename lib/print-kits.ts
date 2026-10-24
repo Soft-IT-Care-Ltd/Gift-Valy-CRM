@@ -112,7 +112,7 @@ export async function syncPrintKits(
     tx.orderPrintKit.findMany({
       where: { orderId },
       orderBy: { id: "asc" },
-      select: { id: true, sourceKey: true, productId: true, photoCount: true, cardCount: true, orphanedAt: true },
+      select: { id: true, sourceKey: true, productId: true, status: true, photoCount: true, cardCount: true, orphanedAt: true },
     }),
   ]);
   const desired = desiredPrintKits(catalog ?? (await loadBomCatalog(tx)), items);
@@ -157,6 +157,10 @@ export async function syncPrintKits(
       await tx.orderPrintCard.updateMany({ where: { kitId: kit.id }, data: { kitId: target.id } });
       await tx.orderPrintKit.delete({ where: { id: kit.id } });
       await refreshKit(tx, target.id);
+      // Moved after it was printed: Packing must reprint (PP-7).
+      if (kit.status === "PRINTED" || kit.status === "CHANGED_AFTER_PRINT") {
+        await tx.orderPrintKit.update({ where: { id: target.id }, data: { status: "CHANGED_AFTER_PRINT" } });
+      }
       moved++;
     } else if (!kit.orphanedAt) {
       await tx.orderPrintKit.update({ where: { id: kit.id }, data: { orphanedAt: new Date() } });

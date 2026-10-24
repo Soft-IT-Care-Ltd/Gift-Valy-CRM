@@ -51,10 +51,15 @@ export async function purgeDeliveredPrintFiles(now = new Date()): Promise<number
     where: {
       filesPurgedAt: null,
       // Delivered / returned (status history — panel-sent parcels have no
-      // shipment row) and still in a post-delivery status.
+      // shipment row) and still in a post-delivery status. The LATEST
+      // delivery / return counts: a parcel returned 70 days ago and sent
+      // again keeps its photos until 60 days after that second delivery.
       order: {
         status: { in: ["DELIVERED", "COMPLETED", "RETURNED", "REFUNDED"] },
-        statusHistory: { some: { toStatus: { in: ["DELIVERED", "RETURNED"] }, at: { lt: cutoff } } },
+        statusHistory: {
+          some: { toStatus: { in: ["DELIVERED", "RETURNED"] }, at: { lt: cutoff } },
+          none: { toStatus: { in: ["DELIVERED", "RETURNED"] }, at: { gte: cutoff } },
+        },
       },
     },
     select: {

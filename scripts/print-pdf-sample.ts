@@ -85,7 +85,7 @@ async function main() {
   }
 
   const info = {
-    orderNo: "GV-2610-0042",
+    orderNo: "SAMPLE-2610-0042",
     recipientName: "নুসরাত জাহান (Nusrat)",
     recipientPhone: "01711-234567",
     delivery: "28 Oct 2026",
