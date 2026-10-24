@@ -110,6 +110,11 @@ export default async function EditOrderPage({
       seName={order.salesExecutive.name}
       teamName={order.team?.name ?? null}
       initial={initial}
+      printKitCount={
+        permissions.includes("print.edit")
+          ? await prisma.orderPrintKit.count({ where: { orderId: order.id } })
+          : 0
+      }
     />
   );
 }

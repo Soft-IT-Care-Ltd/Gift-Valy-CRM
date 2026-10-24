@@ -62,6 +62,18 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DateFilter } from "@/components/ui/date-filter";
+import {
+  PRINT_FILTERS,
+  PRINT_FILTER_LABELS,
+  type OrderPrintSummary,
+} from "@/lib/print-kit";
+
+const PRINT_BADGE: Record<OrderPrintSummary["state"], string> = {
+  PENDING: "border-amber-400 text-amber-700 dark:text-amber-400",
+  READY: "border-emerald-400 text-emerald-700 dark:text-emerald-400",
+  PRINTED: "border-sky-400 text-sky-700 dark:text-sky-400",
+  CHANGED_AFTER_PRINT: "border-destructive text-destructive",
+};
 import { detectPreset } from "@/lib/date-filter";
 import { money, formatDate, formatDateTime } from "@/lib/format";
 import { computeNetReceivable } from "@/lib/steadfast-payments-constants";
@@ -146,6 +158,8 @@ export interface OrderRow {
   courierNote: string | null;
   // Items column (§6c) — resolved item names + qty
   items: { id: number; name: string; qty: number }[];
+  // PHOTO_PRINT PP-4 — photos & cards progress (null = nothing to print).
+  print: OrderPrintSummary | null;
   // Trash (§6f) — set only on the Trash tab
   deletedAt: string | null;
   purgeInDays: number | null;
@@ -1192,7 +1206,28 @@ export function OrdersListClient({
               </Select>
             </div>
           )}
+          {/* PHOTO_PRINT PP-4 — orders by photos & cards state. */}
+          <div className="grid gap-1">
+            <Label className="text-xs">Photos &amp; cards</Label>
+            <Select
+              value={params.get("print") ?? "ALL"}
+              onValueChange={(v) => setParam("print", v)}
+            >
+              <SelectTrigger className="w-48">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">Any</SelectItem>
+                {PRINT_FILTERS.map((f) => (
+                  <SelectItem key={f} value={f}>
+                    {PRINT_FILTER_LABELS[f]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           {(params.get("status") ||
+            params.get("print") ||
             params.get("from") ||
             params.get("to") ||
             params.get("seId") ||
@@ -1524,6 +1559,15 @@ export function OrdersListClient({
                       >
                         +{o.items.length - 3} more
                       </button>
+                    )}
+                    {o.print && (
+                      <Badge
+                        variant="outline"
+                        title={o.print.labelBn}
+                        className={`mt-1 max-w-full truncate text-[10px] ${PRINT_BADGE[o.print.state]}`}
+                      >
+                        📷 {o.print.label}
+                      </Badge>
                     )}
                   </div>
                 </TableCell>

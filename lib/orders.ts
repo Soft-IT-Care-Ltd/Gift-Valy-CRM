@@ -29,6 +29,12 @@ import {
 import { loadBomCatalog } from "./bom-db";
 import { generateOrderNumber } from "./order-number";
 import { syncPrintKits } from "./print-kits";
+import {
+  PRINT_FILTERS,
+  PRINT_FILTER_STATUS,
+  orderPrintSummary,
+  type PrintFilter,
+} from "./print-kit";
 
 type Tx = Prisma.TransactionClient | PrismaClient;
 
@@ -151,6 +157,14 @@ export function buildOrderListFilters(
   }
   const seId = Number(params.seId);
   if (seId) nonDateFilters.push({ salesExecutiveId: seId });
+  // PHOTO_PRINT PP-4 — orders with a kit in this print state.
+  if (PRINT_FILTERS.includes(params.print as PrintFilter)) {
+    nonDateFilters.push({
+      printKits: {
+        some: { status: PRINT_FILTER_STATUS[params.print as PrintFilter], orphanedAt: null },
+      },
+    });
+  }
 
   const baseFilters: Prisma.OrderWhereInput[] = [...nonDateFilters];
   const hasFrom = !!params.from && /^\d{4}-\d{2}-\d{2}$/.test(params.from);
@@ -1020,6 +1034,10 @@ export const orderListInclude = {
       courierStatusAt: true,
     },
   },
+  // PHOTO_PRINT PP-4 — the "Photos pending 9/14" badge.
+  printKits: {
+    select: { status: true, photoCount: true, cardCount: true, spec: true, orphanedAt: true },
+  },
 } satisfies Prisma.OrderInclude;
 
 export type OrderListRow = Prisma.OrderGetPayload<{
@@ -1071,6 +1089,8 @@ export function serializeOrderListRow(
       name: it.product?.name ?? it.package?.name ?? it.customName ?? "(custom)",
       qty: it.qty,
     })),
+    // PHOTO_PRINT PP-4 — photos & cards progress (null = nothing to print).
+    print: orderPrintSummary(o.printKits),
     // Trash tab (§6f): when trashed, days until the 30-day purge.
     deletedAt: o.deletedAt ? o.deletedAt.toISOString() : null,
     purgeInDays: o.deletedAt

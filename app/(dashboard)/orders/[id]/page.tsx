@@ -7,6 +7,7 @@ import {
   getOrderEditWindowMinutes,
   getCourierOverchargeTolerancePct,
   getCourierStuckThresholds,
+  getPrintSettings,
 } from "@/lib/settings";
 import {
   orderDetailInclude,
@@ -23,6 +24,9 @@ import { COURIER_STAGE_STATUSES } from "@/lib/courier-constants";
 import { getWhatsAppIntegration } from "@/lib/whatsapp";
 import { getCurrencyForCountry } from "@/lib/currency";
 import { OrderDetailClient } from "@/components/orders/order-detail-client";
+import { OrderPrintKits } from "@/components/orders/print/order-print-kits";
+import { loadKitViews } from "@/lib/print-kit-ops";
+import { canEditPrintAt } from "@/lib/print-access";
 
 export const dynamic = "force-dynamic";
 
@@ -85,6 +89,11 @@ export default async function OrderDetailPage({
   // same overcharge highlight (tolerance) and stuck-duration escalation as the
   // In Transit tab.
   const showCosts = canSeeCosts(permissions);
+  // PHOTO_PRINT PP-4 — the order's photo/card kits (print.edit / print.print).
+  const canSeePrint = permissions.includes("print.edit") || permissions.includes("print.print");
+  const [printKits, printSizes] = canSeePrint
+    ? await Promise.all([loadKitViews(order.id), getPrintSettings().then((s) => s.sizes)])
+    : [[], null];
   const [waIntegration, currency, overchargeTolerancePct, stuckThresholds] =
     await Promise.all([
       getWhatsAppIntegration(),
@@ -111,6 +120,17 @@ export default async function OrderDetailPage({
       stuckAmberDays={stuckThresholds.amberDays}
       stuckRedDays={stuckThresholds.redDays}
       nowMs={Date.now()}
+      printSection={
+        printKits.length > 0 && printSizes ? (
+          <OrderPrintKits
+            initialKits={printKits}
+            sizes={printSizes}
+            canEdit={canEditPrintAt(order.status, permissions)}
+            canDeleteKit={permissions.includes("orders.edit") && permissions.includes("print.edit")}
+            locked={permissions.includes("print.edit") && !canEditPrintAt(order.status, permissions)}
+          />
+        ) : null
+      }
     />
   );
 }

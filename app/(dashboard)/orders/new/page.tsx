@@ -1,3 +1,4 @@
+import { getPrintSettings } from "@/lib/settings";
 import { prisma } from "@/lib/db";
 import { requirePagePermission } from "@/lib/page-auth";
 import { getEffectivePermissions } from "@/lib/rbac";
@@ -143,6 +144,9 @@ export default async function NewOrderPage({
       initial={initial}
       leadId={convertLeadId}
       leadLabel={leadLabel}
+      printSizes={
+        permissions.includes("print.edit") ? (await getPrintSettings()).sizes : undefined
+      }
     />
   );
 }

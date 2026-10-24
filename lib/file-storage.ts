@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, unlink, writeFile } from "node:fs/promises";
 
 // FUNNEL_LINER.md GV-11 — where uploads and invoice PDFs live on disk.
 //
@@ -73,6 +73,44 @@ export async function saveUpload(name: string, data: Buffer): Promise<string> {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, data);
   return `/uploads/${name}`;
+}
+
+// ── Gift print files (PHOTO_PRINT PP-4) ───────────────────────────────────
+// Customer photos and rendered cards: UPLOAD_DIR/print/<name>, flat, named by
+// the server. Originals are "<uuid>.<ext>", their screen preview
+// "<uuid>-preview.jpg", the 300 DPI print file "<uuid>-print-<rev>.jpg" and a
+// rendered card "card-<uuid>.png". Served only by app/uploads/[...path] →
+// /uploads/print/<name>, which checks the row's order scope and the print
+// permissions — never the plain signed-in check of other uploads.
+
+const PRINT_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,127}\.(jpg|jpeg|png|webp)$/;
+
+/** The file on disk for a print file name, or null when the name isn't one we write. */
+export function printFilePath(name: string | null | undefined): string | null {
+  if (!name || !PRINT_FILE_NAME.test(name)) return null;
+  return path.join(/* turbopackIgnore: true */ uploadRoot(), "print", name);
+}
+
+/** Writes a print file and returns its name (what the rows store). */
+export async function savePrintFile(name: string, data: Buffer): Promise<string> {
+  const file = printFilePath(name);
+  if (!file) throw new Error(`Invalid print file name: ${name}`);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, data);
+  return name;
+}
+
+/** Removes print files; missing files are fine (already cleaned). */
+export async function deletePrintFiles(names: (string | null | undefined)[]): Promise<void> {
+  for (const name of names) {
+    const file = printFilePath(name);
+    if (!file) continue;
+    try {
+      await unlink(file);
+    } catch {
+      // already gone
+    }
+  }
 }
 
 // ── Card fonts (PHOTO_PRINT PP-3) ─────────────────────────────────────────

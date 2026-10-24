@@ -1585,6 +1585,8 @@ model CardDesign {
   createdBy      Int?          @map("created_by")
   updatedBy      Int?          @map("updated_by")
 
+  cards OrderPrintCard[]
+
   @@index([slot, isActive])
   @@map("card_designs")
 }
@@ -1605,6 +1607,8 @@ model CardMessage {
   updatedAt    DateTime     @updatedAt @map("updated_at")
   createdBy    Int?         @map("created_by")
   updatedBy    Int?         @map("updated_by")
+
+  cards OrderPrintCard[]
 
   @@index([occasion, isActive])
   @@map("card_messages")
@@ -1628,15 +1632,81 @@ model OrderPrintKit {
   printedAt     DateTime?      @map("printed_at")
   printedBy     Int?           @map("printed_by")
   printCount    Int            @default(0) @map("print_count")
+  // PP-4 — kept in step with the photo/card rows on every change, so the
+  // order list can show "Photos pending 9/14" without loading them.
+  photoCount    Int            @default(0) @map("photo_count")
+  cardCount     Int            @default(0) @map("card_count")
   orphanedAt    DateTime?      @map("orphaned_at")
   filesPurgedAt DateTime?      @map("files_purged_at")
   createdAt     DateTime       @default(now()) @map("created_at")
   updatedAt     DateTime       @updatedAt @map("updated_at")
 
-  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id])
+  order   Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product          @relation(fields: [productId], references: [id])
+  photos  OrderPrintPhoto[]
+  cards   OrderPrintCard[]
 
   @@unique([orderId, sourceKey])
   @@index([status])
+  @@index([orderId])
   @@map("order_print_kits")
+}
+
+// PP-4 — one customer photo. Files live flat in UPLOAD_DIR/print/ (never
+// public/) and are served only by app/uploads/print/<file>, which checks the
+// row's order scope. While the order form is not yet saved the photo is
+// "staged": kit_id null, stage_token = the form's token, staged_by = the
+// uploader; saving the order attaches it (nightly cleanup drops staged photos
+// older than 24 h). crop is { cx, cy, zoom } as fractions of the original
+// (cx/cy = centre), default = sharp's attention point.
+model OrderPrintPhoto {
+  id           Int        @id @default(autoincrement())
+  kitId        Int?       @map("kit_id")
+  slot         PrintSlot? // PHOTO_L | PHOTO_S once attached
+  position     Int? // 1-based within the slot
+  stageToken   String?    @map("stage_token")
+  stagedBy     Int?       @map("staged_by")
+  originalPath String     @map("original_path")
+  printPath    String?    @map("print_path")
+  srcWidth     Int        @map("src_width")
+  srcHeight    Int        @map("src_height")
+  srcBytes     Int        @map("src_bytes")
+  crop         Json
+  lowRes       Boolean    @default(false) @map("low_res")
+  uploadedBy   Int        @map("uploaded_by")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  kit OrderPrintKit? @relation(fields: [kitId], references: [id], onDelete: Cascade)
+
+  @@unique([kitId, slot, position])
+  @@index([stageToken])
+  @@index([createdAt])
+  @@map("order_print_photos")
+}
+
+// PP-4 — one wishing card of a kit. text is the message as chosen (library
+// text snapshotted, or the SE's custom words) with {to}/{from} slots; to/from
+// are the names. The rendered 300 DPI PNG is cached at render_path.
+model OrderPrintCard {
+  id         Int       @id @default(autoincrement())
+  kitId      Int       @map("kit_id")
+  slot       PrintSlot // CARD_1 | CARD_2
+  designId   Int       @map("design_id")
+  messageId  Int?      @map("message_id") // null = custom message
+  text       String
+  toName     String?   @map("to_name")
+  fromName   String?   @map("from_name")
+  renderPath String?   @map("render_path")
+  fontPt     Decimal?  @map("font_pt") @db.Decimal(4, 1)
+  updatedBy  Int       @map("updated_by")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  kit     OrderPrintKit @relation(fields: [kitId], references: [id], onDelete: Cascade)
+  design  CardDesign    @relation(fields: [designId], references: [id])
+  message CardMessage?  @relation(fields: [messageId], references: [id])
+
+  @@unique([kitId, slot])
+  @@map("order_print_cards")
 }

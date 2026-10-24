@@ -409,3 +409,77 @@ describe("PP-3 card text", () => {
     }
   });
 });
+
+// ---------- PP-4 ----------
+import { CENTER_CROP, clampCrop, cropBox, cropDpi, cropFocus, normalizeCrop, storedCrop } from "../lib/print-crop";
+import { kitProgress, kitProgressLabel, orderPrintSummary } from "../lib/print-kit";
+
+describe("PP-4 crop math (shared by the crop dialog and the print file)", () => {
+  const big = DEFAULT_PRINT_SIZES.PHOTO_L;
+  const aspect = big.w / big.h;
+
+  test("zoom 1 is the largest box of the slot's shape — crop to fill", () => {
+    const landscape = cropBox(1600, 900, aspect, CENTER_CROP);
+    assert.equal(landscape.height, 900);
+    assert.ok(Math.abs(landscape.width / landscape.height - aspect) < 0.002);
+    assert.equal(landscape.left, Math.round((1600 - landscape.width) / 2));
+    const portrait = cropBox(1080, 1920, aspect, CENTER_CROP);
+    assert.equal(portrait.width, 1080);
+    assert.ok(portrait.height <= 1920);
+  });
+
+  test("the box never leaves the photo, whatever the centre", () => {
+    for (const cx of [0, 0.1, 0.5, 0.9, 1]) {
+      for (const zoom of [1, 2, 4]) {
+        const b = cropBox(1600, 900, aspect, { cx, cy: 0, zoom });
+        assert.ok(b.left >= 0 && b.top >= 0 && b.left + b.width <= 1600 && b.top + b.height <= 900, JSON.stringify(b));
+      }
+    }
+  });
+
+  test("zoom halves the cut; clampCrop pulls the centre back inside", () => {
+    const z1 = cropBox(2000, 2000, 1, CENTER_CROP);
+    const z2 = cropBox(2000, 2000, 1, { cx: 0.5, cy: 0.5, zoom: 2 });
+    assert.equal(z2.width, z1.width / 2);
+    const c = clampCrop(2000, 2000, 1, { cx: 0, cy: 1, zoom: 2 });
+    assert.deepEqual([c.cx, c.cy], [0.25, 0.75]);
+  });
+
+  test("DPI and the 150 DPI low-res line", () => {
+    assert.equal(Math.round(cropDpi(cropBox(900, 917, aspect, CENTER_CROP), big.w)), 300);
+    assert.ok(cropDpi(cropBox(300, 300, aspect, CENTER_CROP), big.w) < 150);
+  });
+
+  test("malformed crops fall back; the focus survives a re-crop", () => {
+    assert.deepEqual(normalizeCrop({ cx: 9, zoom: 0 }), { cx: 1, cy: 0.5, zoom: 1 });
+    const saved = storedCrop({ cx: 0.2, cy: 0.3, zoom: 2 }, { cx: 0.6, cy: 0.4, zoom: 1, fx: 0.6, fy: 0.4 });
+    assert.deepEqual(cropFocus(saved), { cx: 0.6, cy: 0.4, zoom: 1 });
+    assert.deepEqual(cropFocus(null), CENTER_CROP);
+  });
+});
+
+describe("PP-4 kit progress + the order-list badge", () => {
+  test("photos first, then cards, then ready", () => {
+    assert.deepEqual(kitProgressLabel(kitProgress(KIT, 9, 0)).en, "Photos pending 9/14");
+    assert.deepEqual(kitProgressLabel(kitProgress(KIT, 14, 1)).en, "Cards pending 1/2");
+    assert.equal(kitProgress(KIT, 14, 2).state, "READY");
+  });
+
+  const k = (status: string, photoCount: number, cardCount: number, orphanedAt: Date | null = null) => ({
+    status,
+    photoCount,
+    cardCount,
+    spec: KIT,
+    orphanedAt,
+  });
+
+  test("summary sums kits, ignores removed-line kits", () => {
+    assert.equal(orderPrintSummary([]), null);
+    assert.equal(orderPrintSummary([k("PENDING", 3, 0, new Date())]), null);
+    assert.equal(orderPrintSummary([k("PENDING", 9, 0), k("READY", 14, 2)])?.label, "Photos pending 23/28");
+    assert.equal(orderPrintSummary([k("PENDING", 14, 1)])?.label, "Cards pending 1/2");
+    assert.equal(orderPrintSummary([k("READY", 14, 2), k("PRINTED", 14, 2)])?.state, "READY");
+    assert.equal(orderPrintSummary([k("PRINTED", 14, 2)])?.state, "PRINTED");
+    assert.equal(orderPrintSummary([k("PRINTED", 14, 2), k("CHANGED_AFTER_PRINT", 14, 2)])?.state, "CHANGED_AFTER_PRINT");
+  });
+});

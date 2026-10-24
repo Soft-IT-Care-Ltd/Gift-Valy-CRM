@@ -298,6 +298,7 @@ export function OrderDetailClient({
   stuckAmberDays,
   stuckRedDays,
   nowMs,
+  printSection,
 }: {
   order: OrderDetail;
   canEdit: boolean; // direct edit (privileged or within window)
@@ -315,6 +316,7 @@ export function OrderDetailClient({
   stuckAmberDays: number; // §R7/§R6 — duration escalation thresholds (days)
   stuckRedDays: number;
   nowMs: number; // §R6 — server render time; durations compute against it
+  printSection?: React.ReactNode; // PHOTO_PRINT PP-4 — "Photos & cards", under Items
 }) {
   const router = useRouter();
 
@@ -1097,6 +1099,8 @@ export function OrderDetailClient({
           </div>
         </CardContent>
       </Card>
+
+      {printSection}
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">

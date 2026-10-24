@@ -45,6 +45,12 @@ import {
   type PaymentMethodValue,
 } from "@/lib/order-constants";
 import { WALLET_TYPE_LABELS, type WalletOption } from "@/lib/wallet";
+import type { PrintSizes } from "@/lib/print-layouts";
+import {
+  OrderFormPrint,
+  type FormItemForPrint,
+  type PrintKitsPayload,
+} from "@/components/orders/print/order-form-print";
 
 // ---- option shapes (page passes catalog without any cost fields) ----
 
@@ -174,6 +180,8 @@ export function OrderForm({
   wallets = [],
   leadId,
   leadLabel,
+  printSizes,
+  printKitCount = 0,
 }: {
   mode: "create" | "edit" | "edit-request";
   orderId?: number;
@@ -186,9 +194,16 @@ export function OrderForm({
   wallets?: WalletOption[]; // active receiving wallets (create mode, §8)
   leadId?: number; // set when converting a lead → order (§3.2)
   leadLabel?: string; // human label for the banner (e.g. "Rahim · WhatsApp")
+  // PHOTO_PRINT PP-4 — set when the user has print.edit: the create form gets
+  // "C2 · Photos & cards"; the edit forms point to the order page instead.
+  printSizes?: PrintSizes;
+  printKitCount?: number;
 }) {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
+  // PHOTO_PRINT PP-4 — staged photos + chosen cards (create mode).
+  const [printKits, setPrintKits] = useState<PrintKitsPayload[]>([]);
+  const [printUploading, setPrintUploading] = useState(false);
 
   // Section A — customer
   const [customerPhone, setCustomerPhone] = useState(
@@ -459,7 +474,33 @@ export function OrderForm({
     mfsNeedsTxn ||
     (mode === "edit-request" && editReason.trim().length < 3);
 
+  // The lines as /api/print/kits-preview reads them (valid lines only, in order).
+  const printItems: FormItemForPrint[] = useMemo(
+    () =>
+      lines
+        .filter((l) => l.itemId !== "" && Number(l.qty) >= 1)
+        .map((l) => ({
+          itemType: l.itemType,
+          productId: l.itemType === "PRODUCT" ? Number(l.itemId) : null,
+          packageId: l.itemType === "PACKAGE" ? Number(l.itemId) : null,
+          qty: Math.floor(Number(l.qty)),
+          choiceSelections:
+            l.itemType === "PACKAGE"
+              ? Object.fromEntries(
+                  Object.entries(l.selections)
+                    .filter(([, v]) => v !== "")
+                    .map(([k, v]) => [k, Number(v)])
+                )
+              : null,
+        })),
+    [lines]
+  );
+
   async function submit(saveAsDraft = false) {
+    if (printUploading) {
+      toast.error("ছবি আপলোড শেষ হওয়া পর্যন্ত অপেক্ষা করুন / Wait for the photos to finish uploading");
+      return;
+    }
     setSaving(true);
     const orderPayload = {
       recipientName,
@@ -523,6 +564,7 @@ export function OrderForm({
           zeroAdvanceReason: zeroAdvanceReason || undefined,
           leadId: leadId ?? undefined,
           saveAsDraft,
+          printKits: printKits.length ? printKits : undefined,
         }),
       });
     } else if (mode === "edit") {
@@ -1066,6 +1108,27 @@ export function OrderForm({
           </div>
         </CardContent>
       </Card>
+
+      {/* PHOTO_PRINT PP-4 — C2 · Photos & cards (create) / pointer (edit). */}
+      {mode === "create" && printSizes && (
+        <OrderFormPrint
+          items={printItems}
+          sizes={printSizes}
+          onChange={(payload, uploading) => {
+            setPrintKits(payload);
+            setPrintUploading(uploading);
+          }}
+        />
+      )}
+      {mode !== "create" && printKitCount > 0 && (
+        <div className="rounded-md border bg-muted/30 px-4 py-2 text-sm">
+          ছবি ও কার্ড অর্ডার পেজে বদলান / Photos &amp; cards are managed on the{" "}
+          <a href={`/orders/${orderId}`} className="font-medium text-primary underline-offset-2 hover:underline">
+            order page
+          </a>
+          . They stay with their kits when the items are edited.
+        </div>
+      )}
 
       {/* Section D — Payment at confirmation (create only) */}
       {mode === "create" ? (

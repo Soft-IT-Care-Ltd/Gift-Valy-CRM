@@ -6,7 +6,7 @@ import {
   type BomCatalog,
 } from "./bom";
 import { loadBomCatalog } from "./bom-db";
-import { normalizePrintKit, type PrintKitSpec } from "./print-kit";
+import { kitProgress, normalizePrintKit, type PrintKitSpec } from "./print-kit";
 
 // ============ PHOTO_PRINT.md PP-2 — print kits on an order ============
 //
@@ -85,14 +85,18 @@ export function desiredPrintKits(
 /**
  * Brings the order's kits in line with its current items — call inside the
  * same transaction that wrote the items (order create, every edit path).
- * New kits are created; kits whose line is gone are deleted. (PP-4 turns the
- * delete into "orphaned" for a kit that already holds photos or cards.)
+ *  - new kits are created (spec frozen from the product's current kit);
+ *  - a kit whose line is gone is deleted when empty; when it already holds
+ *    photos or cards, its content MOVES to a newly created kit of the same
+ *    product (the SE swapped one package for another), else the kit is kept
+ *    and marked orphaned ("Line removed") for Admin/Manager to clear;
+ *  - an orphaned kit whose line comes back is un-orphaned.
  */
 export async function syncPrintKits(
   tx: Prisma.TransactionClient,
   orderId: number,
   catalog?: BomCatalog
-): Promise<{ created: number; removed: number }> {
+): Promise<{ created: number; removed: number; moved: number; orphaned: number }> {
   const [items, existing] = await Promise.all([
     tx.orderItem.findMany({
       where: { orderId },
@@ -107,27 +111,90 @@ export async function syncPrintKits(
     }),
     tx.orderPrintKit.findMany({
       where: { orderId },
-      select: { id: true, sourceKey: true },
+      orderBy: { id: "asc" },
+      select: { id: true, sourceKey: true, productId: true, photoCount: true, cardCount: true, orphanedAt: true },
     }),
   ]);
   const desired = desiredPrintKits(catalog ?? (await loadBomCatalog(tx)), items);
   const want = new Set(desired.map((k) => k.sourceKey));
   const have = new Set(existing.map((k) => k.sourceKey));
 
-  const toCreate = desired.filter((k) => !have.has(k.sourceKey));
-  const toRemove = existing.filter((k) => !want.has(k.sourceKey)).map((k) => k.id);
-  if (toCreate.length) {
-    await tx.orderPrintKit.createMany({
-      data: toCreate.map((k) => ({
-        orderId,
-        sourceKey: k.sourceKey,
-        productId: k.productId,
-        spec: k.spec as unknown as Prisma.InputJsonValue,
-      })),
-    });
+  const created: { id: number; productId: number }[] = [];
+  for (const k of desired.filter((d) => !have.has(d.sourceKey))) {
+    created.push(
+      await tx.orderPrintKit.create({
+        data: {
+          orderId,
+          sourceKey: k.sourceKey,
+          productId: k.productId,
+          spec: k.spec as unknown as Prisma.InputJsonValue,
+        },
+        select: { id: true, productId: true },
+      })
+    );
   }
-  if (toRemove.length) {
-    await tx.orderPrintKit.deleteMany({ where: { id: { in: toRemove } } });
+
+  let removed = 0;
+  let moved = 0;
+  let orphaned = 0;
+  const claimed = new Set<number>();
+  for (const kit of existing) {
+    if (want.has(kit.sourceKey)) {
+      if (kit.orphanedAt) {
+        await tx.orderPrintKit.update({ where: { id: kit.id }, data: { orphanedAt: null } });
+      }
+      continue;
+    }
+    if (kit.photoCount + kit.cardCount === 0) {
+      await tx.orderPrintKit.delete({ where: { id: kit.id } });
+      removed++;
+      continue;
+    }
+    const target = created.find((c) => c.productId === kit.productId && !claimed.has(c.id));
+    if (target) {
+      claimed.add(target.id);
+      await tx.orderPrintPhoto.updateMany({ where: { kitId: kit.id }, data: { kitId: target.id } });
+      await tx.orderPrintCard.updateMany({ where: { kitId: kit.id }, data: { kitId: target.id } });
+      await tx.orderPrintKit.delete({ where: { id: kit.id } });
+      await refreshKit(tx, target.id);
+      moved++;
+    } else if (!kit.orphanedAt) {
+      await tx.orderPrintKit.update({ where: { id: kit.id }, data: { orphanedAt: new Date() } });
+      orphaned++;
+    }
   }
-  return { created: toCreate.length, removed: toRemove.length };
+  return { created: created.length, removed, moved, orphaned };
+}
+
+/**
+ * Recounts a kit's photos and cards and sets its status: PENDING until every
+ * photo and card is in, then READY. Once printed, any change (`changed`)
+ * makes it CHANGED_AFTER_PRINT — Packing must reprint (PP-7).
+ */
+export async function refreshKit(
+  tx: Prisma.TransactionClient,
+  kitId: number,
+  opts: { changed?: boolean } = {}
+) {
+  const kit = await tx.orderPrintKit.findUniqueOrThrow({
+    where: { id: kitId },
+    select: { spec: true, status: true, _count: { select: { photos: true, cards: true } } },
+  });
+  const spec = normalizePrintKit(kit.spec);
+  const photos = kit._count.photos;
+  const cards = kit._count.cards;
+  const complete = spec ? kitProgress(spec, photos, cards).state === "READY" : true;
+  const printed = kit.status === "PRINTED" || kit.status === "CHANGED_AFTER_PRINT";
+  const status = printed
+    ? opts.changed
+      ? "CHANGED_AFTER_PRINT"
+      : kit.status
+    : complete
+      ? "READY"
+      : "PENDING";
+  return tx.orderPrintKit.update({
+    where: { id: kitId },
+    data: { photoCount: photos, cardCount: cards, status },
+    select: { id: true, status: true, photoCount: true, cardCount: true },
+  });
 }

@@ -23,6 +23,13 @@ import { upsertRecipientOccasions } from "@/lib/occasions";
 import { syncReservations } from "@/lib/stock";
 import { leadScopeWhere } from "@/lib/leads";
 import { syncPrintKits } from "@/lib/print-kits";
+import {
+  attachPrint,
+  preparePrintAttach,
+  printKitsPayloadSchema,
+  type PreparedPrint,
+} from "@/lib/print-attach";
+import { getPrintSettings } from "@/lib/settings";
 import { normalizePhone, type OrderStatusValue } from "@/lib/order-constants";
 
 // Order list — same filters/window/search/pagination as the Orders page
@@ -65,8 +72,24 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const { session, permissions } = await requirePermissionCtx("orders.create");
-    const data = createOrderSchema.parse(await req.json());
+    const body = await req.json();
+    const data = createOrderSchema.parse(body);
     const canOverride = permissions.includes("orders.approve_edit");
+    // PHOTO_PRINT PP-4 — photos staged on the form + chosen cards. Print files
+    // and card renders are made here, before the transaction (a too-long card
+    // refuses the save); attachPrint links them inside it.
+    const printKits = printKitsPayloadSchema.optional().parse(body?.printKits);
+    let preparedPrint: PreparedPrint | null = null;
+    if (printKits?.length) {
+      if (!permissions.includes("print.edit")) {
+        throw new AuthzError(403, "Missing permission: print.edit");
+      }
+      preparedPrint = await preparePrintAttach(
+        session.user.id,
+        printKits,
+        (await getPrintSettings()).sizes
+      );
+    }
 
     // CORRECTIONS Leads §10 — a draft is by definition unpaid: the advance is
     // recorded later on the draft, which is what confirms it.
@@ -183,6 +206,7 @@ export async function POST(req: Request) {
     // come from the order counter and can't collide; a retried transaction
     // rolled its counter step back, so no number is skipped.
     let created: { id: number; orderNo: string } | null = null;
+    let printAttached: { photos: number; cards: number } | null = null;
     for (let attempt = 0; attempt < 3 && !created; attempt++) {
       try {
         created = await prisma.$transaction(async (tx) => {
@@ -285,6 +309,9 @@ export async function POST(req: Request) {
           }
           // PHOTO_PRINT PP-2 — a kit per unit of every kit-carrying product.
           await syncPrintKits(tx, order.id);
+          if (preparedPrint) {
+            printAttached = await attachPrint(tx, order.id, preparedPrint, session.user.id);
+          }
           await recomputeDue(tx, order.id); // integrity rule 1
           // SPEC §1.3: stock reserves at CONFIRMED (ON_HOLD reserves nothing —
           // the reservation happens when the hold lifts via the status route).
@@ -341,6 +368,7 @@ export async function POST(req: Request) {
         ...(totals.floorBreaches.length > 0
           ? { priceFloorOverride: totals.floorBreaches }
           : {}),
+        ...(printAttached ? { printAttached } : {}),
       },
     });
     // SPEC §5: invoice v1 auto-generated on confirmation. Non-fatal — the
