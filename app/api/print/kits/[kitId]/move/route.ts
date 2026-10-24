@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { apiError } from "@/lib/authz";
@@ -10,6 +10,7 @@ import { makePrintFile } from "@/lib/print-photos";
 import { normalizeCrop } from "@/lib/print-crop";
 import { assertSlotInSpec, kitSpec, loadKitViews } from "@/lib/print-kit-ops";
 import { refreshKit } from "@/lib/print-kits";
+import { warmPrintPdf } from "@/lib/print-pdf-build";
 import type { PhotoSlot } from "@/lib/print-layouts";
 
 type Params = { params: Promise<{ kitId: string }> };
@@ -69,6 +70,7 @@ export async function POST(req: Request, { params }: Params) {
       entityId: kit.id,
       after: { orderNo: order.orderNo, photoId: a.id, from, to, swappedWith: b?.id ?? null },
     });
+    after(() => warmPrintPdf(order.id)); // PP-6: the PDF is ready before Packing clicks Print
     return NextResponse.json({ kits: await loadKitViews(order.id) });
   } catch (e) {
     return apiError(e);

@@ -212,3 +212,8 @@ export function orderPrintSummary(
   }
   return { state: "READY", label: "Ready to print", labelBn: "প্রিন্টের জন্য তৈরি" };
 }
+
+/** PP-7 — shown (never blocking) when an order is packed before its photos
+ *  and cards were printed. */
+export const PACKED_UNPRINTED_WARNING =
+  "ছবি/কার্ড এখনো প্রিন্ট হয়নি — বক্সে দিয়েছেন তো? / Photos & cards are not marked printed — make sure they are in the box";

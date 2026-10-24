@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, readdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rename, unlink, writeFile } from "node:fs/promises";
 
 // FUNNEL_LINER.md GV-11 — where uploads and invoice PDFs live on disk.
 //
@@ -165,4 +165,60 @@ export async function saveInvoicePdf(fileName: string, pdf: Buffer): Promise<str
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, pdf);
   return fileName;
+}
+
+// ── Gift print PDFs (PHOTO_PRINT PP-6) ────────────────────────────────────
+// One cached PDF per order and content hash: INVOICE_DIR/print/<orderNo>-<hash>.pdf.
+// The name IS the content hash, so a stale PDF is never served; older ones of
+// the same order are removed when a new one is written. Served only by
+// /api/orders/[id]/print-pdf (print.print).
+
+const PRINT_PDF_NAME = /^[A-Za-z0-9-]{1,64}-[0-9a-f]{12}\.pdf$/;
+
+function printPdfDir(): string {
+  return path.join(/* turbopackIgnore: true */ invoiceRoot(), "print");
+}
+
+/** "GV-2610-0001" → a safe file-name stem. */
+function printPdfStem(orderNo: string): string {
+  return orderNo.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 64) || "order";
+}
+
+export function printPdfPath(orderNo: string, hash12: string): string {
+  const name = `${printPdfStem(orderNo)}-${hash12}.pdf`;
+  if (!PRINT_PDF_NAME.test(name)) throw new Error(`Invalid print PDF name: ${name}`);
+  return path.join(printPdfDir(), name);
+}
+
+/** Writes the PDF (tmp + rename, so a reader never sees half a file) and
+ *  removes the order's older print PDFs. */
+export async function savePrintPdf(orderNo: string, hash12: string, pdf: Buffer): Promise<string> {
+  const file = printPdfPath(orderNo, hash12);
+  await mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tmp, pdf);
+  await rename(tmp, file);
+  await deletePrintPdfs(orderNo, path.basename(file));
+  return file;
+}
+
+/** Deletes an order's cached print PDFs (all, or all but `keep`). */
+export async function deletePrintPdfs(orderNo: string, keep?: string): Promise<void> {
+  const prefix = `${printPdfStem(orderNo)}-`;
+  let names: string[];
+  try {
+    names = await readdir(printPdfDir());
+  } catch {
+    return;
+  }
+  for (const n of names) {
+    if (n === keep || !n.startsWith(prefix) || !PRINT_PDF_NAME.test(n)) continue;
+    // "<stem>-<hash>.pdf" only — GV-2610-0001 must not catch GV-2610-00011.
+    if (n.length !== prefix.length + 16) continue;
+    try {
+      await unlink(path.join(printPdfDir(), n));
+    } catch {
+      // already gone
+    }
+  }
 }

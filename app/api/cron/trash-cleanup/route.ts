@@ -8,8 +8,8 @@ import { getSystemUserId } from "@/lib/system-user";
 import { TRASH_RETENTION_DAYS } from "@/lib/order-constants";
 import { readPlatformState } from "@/lib/platform/state";
 import { LOCK_CODE, LOCK_ERROR } from "@/lib/platform/lock";
-import { deletePrintFiles } from "@/lib/file-storage";
-import { orderPrintFiles, purgeStagedPhotos } from "@/lib/print-cleanup";
+import { deletePrintFiles, deletePrintPdfs } from "@/lib/file-storage";
+import { orderPrintFiles, purgeDeliveredPrintFiles, purgeStagedPhotos } from "@/lib/print-cleanup";
 
 // CORRECTIONS Orders §6f — scheduled purge: orders trashed more than 30 days
 // ago are deleted permanently. Row deletion cascades to items, payments,
@@ -50,8 +50,10 @@ export async function GET(req: Request) {
     });
     // PHOTO_PRINT PP-4 — photos uploaded on an order form that was never saved.
     const stagedPhotos = await purgeStagedPhotos();
+    // PP-7 — photos, cards and print PDFs 60 days after delivery / return.
+    const printKitsPurged = await purgeDeliveredPrintFiles();
     if (expired.length === 0) {
-      return NextResponse.json({ ok: true, purged: 0, stagedPhotos });
+      return NextResponse.json({ ok: true, purged: 0, stagedPhotos, printKitsPurged });
     }
 
     const systemUserId = await getSystemUserId(prisma);
@@ -71,6 +73,7 @@ export async function GET(req: Request) {
       const printFiles = await orderPrintFiles(order.id);
       await prisma.order.delete({ where: { id: order.id } });
       await deletePrintFiles(printFiles);
+      await deletePrintPdfs(order.orderNo);
       await logAudit({
         userId: systemUserId,
         action: "order.purge",
@@ -84,7 +87,7 @@ export async function GET(req: Request) {
       });
       purged.push(order.orderNo);
     }
-    return NextResponse.json({ ok: true, purged: purged.length, orders: purged, stagedPhotos });
+    return NextResponse.json({ ok: true, purged: purged.length, orders: purged, stagedPhotos, printKitsPurged });
   } catch (e) {
     console.error("Trash cleanup failed:", e);
     return NextResponse.json({ ok: false, error: "Cleanup failed" }, { status: 500 });

@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { prisma } from "@/lib/db";
 import { AuthzError, apiError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
@@ -8,6 +8,7 @@ import { requireEditableKit, requirePrintCtx } from "@/lib/print-access";
 import { PhotoError, makePrintFile, previewName, storeOriginal } from "@/lib/print-photos";
 import { assertSlotInSpec, firstFreeSlot, kitSpec, loadKitViews } from "@/lib/print-kit-ops";
 import { refreshKit } from "@/lib/print-kits";
+import { warmPrintPdf } from "@/lib/print-pdf-build";
 import type { PhotoSlot } from "@/lib/print-layouts";
 
 type Params = { params: Promise<{ kitId: string }> };
@@ -83,6 +84,7 @@ export async function POST(req: Request, { params }: Params) {
         lowRes: print.lowRes,
       },
     });
+    after(() => warmPrintPdf(order.id)); // PP-6: the PDF is ready before Packing clicks Print
     return NextResponse.json({ kits: await loadKitViews(order.id) }, { status: 201 });
   } catch (e) {
     if (e instanceof PhotoError) return NextResponse.json({ error: e.message }, { status: 400 });

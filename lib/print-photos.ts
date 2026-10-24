@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import sharp from "sharp";
 import { printFilePath, savePrintFile } from "./file-storage";
 import { slotPixels, type PhotoSlot, type PrintSizes } from "./print-layouts";
@@ -118,6 +118,13 @@ export async function makePrintFile(
     .update(JSON.stringify([slot, size, box]))
     .digest("hex")
     .slice(0, 10);
+  const base = photo.originalPath.replace(/\.[a-z]+$/, "");
+  const name = `${base}-print-${rev}.jpg`;
+  const lowRes = cropDpi(box, size.w) < LOW_RES_DPI;
+  // Same name = same slot, size and crop = same pixels: reuse it (PP-6 asks
+  // for every photo's file on each PDF build).
+  const existing = printFilePath(name);
+  if (existing && (await stat(existing).catch(() => null))?.isFile()) return { printPath: name, lowRes };
   const jpg = await sharp(await readFile(file))
     .rotate() // EXIF first — the box is in upright pixels
     .extract(box)
@@ -126,7 +133,6 @@ export async function makePrintFile(
     .withMetadata({ density: 300 })
     .jpeg({ quality: 92 })
     .toBuffer();
-  const base = photo.originalPath.replace(/\.[a-z]+$/, "");
-  const printPath = await savePrintFile(`${base}-print-${rev}.jpg`, jpg);
-  return { printPath, lowRes: cropDpi(box, size.w) < LOW_RES_DPI };
+  const printPath = await savePrintFile(name, jpg);
+  return { printPath, lowRes };
 }

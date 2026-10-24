@@ -144,7 +144,7 @@ export async function getOccasionReminderLeadDays(): Promise<number> {
 }
 
 // PHOTO_PRINT.md PP-1 — the four print sizes (mm) and the chosen layout.
-// Missing row or fields → the owner's measured sizes and "3 pages (safe)".
+// Missing row or fields → the owner's measured sizes and "2 pages (borderless)".
 export async function getPrintSettings(): Promise<PrintSettings> {
   const row = await prisma.setting.findUnique({
     where: { key: SETTING_KEYS.printSettings },

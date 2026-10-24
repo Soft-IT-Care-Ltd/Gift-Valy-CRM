@@ -12,7 +12,7 @@
     "postinstall": "prisma generate",
     "lint": "eslint",
     "test:bom": "tsx --test tests/bom.test.ts",
-    "test:print": "tsx --test tests/print.test.ts tests/print-photos.test.ts",
+    "test:print": "tsx --test tests/print.test.ts tests/print-photos.test.ts tests/print-pdf.test.ts",
     "test:order-paths": "tsx --test tests/order-creation-paths.test.ts",
     "test:shadow-db": "tsx --test tests/shadow-db.test.ts",
     "test:platform": "tsx --test tests/platform.test.ts tests/billing-lock.test.ts tests/platform.integration.test.ts",

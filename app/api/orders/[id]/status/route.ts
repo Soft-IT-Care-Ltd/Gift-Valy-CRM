@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { PACKED_UNPRINTED_WARNING } from "@/lib/print-kit";
 import { prisma } from "@/lib/db";
 import { requireUser, apiError, AuthzError } from "@/lib/authz";
 import { getEffectivePermissions } from "@/lib/rbac";
@@ -150,6 +151,13 @@ export async function POST(req: Request, { params }: Params) {
         select: { id: true },
       });
       if (!existing) await generateInvoiceSafe(id, session.user.id);
+    }
+    // PHOTO_PRINT PP-7 — packed with photos/cards not printed: a warning, never a block.
+    if (to === "PACKED") {
+      const notPrinted = await prisma.orderPrintKit.count({
+        where: { orderId: id, orphanedAt: null, status: { not: "PRINTED" } },
+      });
+      if (notPrinted > 0) return NextResponse.json({ ok: true, warning: PACKED_UNPRINTED_WARNING });
     }
     return NextResponse.json({ ok: true });
   } catch (e) {

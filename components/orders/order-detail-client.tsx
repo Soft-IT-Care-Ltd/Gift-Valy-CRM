@@ -438,6 +438,8 @@ export function OrderDetailClient({
       return;
     }
     toast.success(`Order moved to ${ORDER_STATUS_LABELS[statusTo]}`);
+    const done = await res.json().catch(() => null);
+    if (done?.warning) toast.warning(done.warning); // PP-7: photos not printed
     setStatusOpen(false);
     router.refresh();
   }

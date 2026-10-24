@@ -693,6 +693,7 @@ export function OrdersListClient({
           ok: res.ok,
           error: res.ok ? undefined : (data?.error ?? "Failed"),
         });
+        if (data?.warning) toast.warning(`${o.orderNo}: ${data.warning}`); // PP-7
       }
       const okCount = outcomes.filter((r) => r.ok).length;
       if (okCount > 0) {

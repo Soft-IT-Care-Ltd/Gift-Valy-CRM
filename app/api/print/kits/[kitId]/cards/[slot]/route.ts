@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { prisma } from "@/lib/db";
 import { AuthzError, apiError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
@@ -8,6 +8,7 @@ import { requireEditableKit, requirePrintCtx } from "@/lib/print-access";
 import { cardChoiceSchema, prepareCard } from "@/lib/print-cards";
 import { kitSpec, loadKitViews } from "@/lib/print-kit-ops";
 import { refreshKit } from "@/lib/print-kits";
+import { warmPrintPdf } from "@/lib/print-pdf-build";
 import type { CardSlot } from "@/lib/print-layouts";
 
 type Params = { params: Promise<{ kitId: string; slot: string }> };
@@ -49,6 +50,7 @@ export async function PUT(req: Request, { params }: Params) {
         : undefined,
       after: { orderNo: order.orderNo, slot, designId: card.designId, messageId: card.messageId, text: card.text, toName: card.toName, fromName: card.fromName, fontPt: card.fontPt },
     });
+    after(() => warmPrintPdf(order.id)); // PP-6: the PDF is ready before Packing clicks Print
     return NextResponse.json({ kits: await loadKitViews(order.id) });
   } catch (e) {
     return apiError(e);
@@ -75,6 +77,7 @@ export async function DELETE(_req: Request, { params }: Params) {
         before: { orderNo: order.orderNo, slot, designId: before.designId, messageId: before.messageId, text: before.text },
       });
     }
+    after(() => warmPrintPdf(order.id)); // PP-6: the PDF is ready before Packing clicks Print
     return NextResponse.json({ kits: await loadKitViews(order.id) });
   } catch (e) {
     return apiError(e);

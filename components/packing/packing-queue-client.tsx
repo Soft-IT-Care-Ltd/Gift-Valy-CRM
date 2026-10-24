@@ -21,6 +21,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatDate, formatDateTime } from "@/lib/format";
+import { PACKED_UNPRINTED_WARNING, type OrderPrintSummary } from "@/lib/print-kit";
 
 export interface PickLine {
   sku: string;
@@ -65,14 +66,111 @@ export interface PackingOrder {
   }[];
   pickList: PickLine[];
   perOrderItems: PickLine[];
+  /** PHOTO_PRINT PP-7 — null when the order has no photo kit. */
+  print: PackingPrint | null;
 }
 
-export function PackingQueueClient({ queue }: { queue: PackingOrder[] }) {
+export interface PackingPrint extends OrderPrintSummary {
+  printedAt: string | null;
+  printedBy: string | null;
+  /** Most times any kit was printed (> 1 = reprinted). */
+  printCount: number;
+}
+
+const PRINT_BADGE: Record<OrderPrintSummary["state"], string> = {
+  PENDING: "border-amber-500 text-amber-700 dark:text-amber-300",
+  READY: "border-sky-500 text-sky-700 dark:text-sky-300",
+  PRINTED: "border-emerald-500 text-emerald-700 dark:text-emerald-300",
+  CHANGED_AFTER_PRINT: "border-destructive text-destructive",
+};
+
+// PP-7 — the "Photos & cards" row of one order: state, the printing rule,
+// Print (opens the cached PDF in a new tab) and Mark printed / reprinted.
+function PrintRow({
+  order,
+  print,
+  canPrint,
+  borderless,
+}: {
+  order: PackingOrder;
+  print: PackingPrint;
+  canPrint: boolean;
+  borderless: boolean;
+}) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const pending = print.state === "PENDING";
+
+  async function markPrinted() {
+    setBusy(true);
+    const res = await fetch(`/api/orders/${order.id}/print-pdf/printed`, { method: "POST" });
+    setBusy(false);
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      toast.error(data?.error ?? "Failed to mark printed");
+      return;
+    }
+    toast.success(data?.reprint ? `${order.orderNo} — reprint recorded` : `${order.orderNo} — marked printed`);
+    router.refresh();
+  }
+
+  return (
+    <div className="space-y-2 rounded-md border px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="font-medium">📷 Photos &amp; cards</span>
+        <Badge variant="outline" className={PRINT_BADGE[print.state]}>
+          {print.labelBn} / {print.label}
+        </Badge>
+        {print.printedAt && (
+          <span className="text-xs text-muted-foreground">
+            {print.printCount > 1 ? `Printed ${print.printCount}×, last` : "Printed"}{" "}
+            {formatDateTime(print.printedAt)}
+            {print.printedBy ? ` by ${print.printedBy}` : ""}
+          </span>
+        )}
+      </div>
+      {canPrint && !pending && (
+        <>
+          <p className="text-xs text-muted-foreground">
+            A4 ফটো পেপার · 100% / Actual size — কখনো &quot;Fit to page&quot; নয়
+            {borderless ? " · Borderless চালু রাখুন" : ""}
+            <br />
+            A4 photo paper · print at 100% / Actual size — never &quot;Fit to page&quot;
+            {borderless ? " · Borderless on (2-page layout)" : ""}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button asChild size="sm">
+              <a href={`/api/orders/${order.id}/print-pdf`} target="_blank" rel="noopener">
+                Print photos &amp; cards
+              </a>
+            </Button>
+            <Button size="sm" variant="outline" onClick={markPrinted} disabled={busy}>
+              {busy ? "Saving…" : print.printCount > 0 ? "Mark reprinted" : "Mark printed"}
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function PackingQueueClient({
+  queue,
+  canPrint,
+  borderless,
+}: {
+  queue: PackingOrder[];
+  canPrint: boolean;
+  borderless: boolean;
+}) {
   const router = useRouter();
   const [packingId, setPackingId] = useState<number | null>(null);
 
   async function markPacked(order: PackingOrder) {
-    if (!confirm(`Mark ${order.orderNo} as PACKED? This deducts stock.`)) return;
+    // PP-7 — not-printed photos/cards: a warning, never a block.
+    const unprinted = order.print && order.print.state !== "PRINTED";
+    const ask = `Mark ${order.orderNo} as PACKED? This deducts stock.`;
+    if (!confirm(unprinted ? `${PACKED_UNPRINTED_WARNING}\n\n${ask}` : ask)) return;
     setPackingId(order.id);
     const res = await fetch(`/api/orders/${order.id}/status`, {
       method: "POST",
@@ -206,6 +304,9 @@ export function PackingQueueClient({ queue }: { queue: PackingOrder[] }) {
                   </div>
                 ))}
               </div>
+              {o.print && (
+                <PrintRow order={o} print={o.print} canPrint={canPrint} borderless={borderless} />
+              )}
               {o.notes && (
                 <div className="rounded-md bg-muted px-3 py-2 text-sm">
                   <span className="font-medium">Order note:</span> {o.notes}

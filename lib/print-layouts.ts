@@ -155,7 +155,8 @@ export const PRINT_LAYOUTS: Record<PrintLayoutId, PrintLayout> = {
   },
 };
 
-export const DEFAULT_PRINT_LAYOUT: PrintLayoutId = "SAFE_3";
+// The owner chose 2 pages (borderless) as the default for PP3 (24 Oct 2026).
+export const DEFAULT_PRINT_LAYOUT: PrintLayoutId = "BORDERLESS_2";
 
 // ---------- the layout check (PP-1 save guard + PP-6 test) ----------
 

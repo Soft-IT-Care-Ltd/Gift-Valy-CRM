@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
+import { warmPrintPdf } from "@/lib/print-pdf-build";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requirePermissionCtx, apiError, AuthzError } from "@/lib/authz";
@@ -375,6 +376,11 @@ export async function POST(req: Request) {
     // download route regenerates on demand if this fails.
     if (initialStatus === "CONFIRMED") {
       await generateInvoiceSafe(created!.id, session.user.id);
+    }
+    // PHOTO_PRINT PP-6 — a kit complete at creation gets its PDF built now.
+    if (preparedPrint) {
+      const orderId = created!.id;
+      after(() => warmPrintPdf(orderId));
     }
     return NextResponse.json(created, { status: 201 });
   } catch (e) {

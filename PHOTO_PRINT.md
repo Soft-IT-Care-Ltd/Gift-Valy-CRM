@@ -1,7 +1,7 @@
 # Gift Valy — Customize Chocolate Box: photo + wishing-card print
 
 **Raised by:** the owner, 24 Oct 2026. **Goes in:** the root of the Gift Valy CRM repo, next to `CORRECTIONS.md` and `FUNNEL_LINER.md`.
-**Sample layouts:** `docs/print-layout-3-pages.pdf` (default) and `docs/print-layout-2-pages-borderless.pdf` — the owner's own sample photos and cards, every piece at its real size.
+**Sample layouts:** `docs/print-layout-3-pages.pdf` and `docs/print-layout-2-pages-borderless.pdf` (default since PP3) — the owner's own sample photos and cards, every piece at its real size.
 
 > **কীভাবে ব্যবহার করবেন:** নিচের "Build order" এর prompt গুলো **Gift Valy CRM repo** (`Soft-IT-Care-Ltd/Gift-Valy-CRM`) তে, Claude Code এ, একটা একটা করে দিন। প্রতিটার পর `/clear`। প্রতিটা prompt আগে plan দেখাবে — পড়ে OK দিলে তবেই build করবে। শেষ prompt টা staging এ test করে তারপর live এ দেবে।
 
@@ -49,7 +49,7 @@ The sizes were measured from the owner's sample pages (±0.5 mm). They are **sto
 
 Every piece keeps its exact size. Around every piece there is **white space for the scissors** (the gap), and a hairline light-grey outline on the piece's exact edge shows where to cut. Each sheet has **one info box** (dashed outline) in one place: order number, recipient name, recipient phone, delivery date, "Page N of M". Nothing is written on a photo or a card. Positions are the top-left corner in mm from the top-left of the A4 page.
 
-### "3 pages (safe)" — the default. Any printer. Gap 4 mm, margin 5 mm.
+### "3 pages (safe)" — any printer. Gap 4 mm, margin 5 mm.
 
 **Page 1 — 6 big + 4 small + info box**
 
@@ -80,7 +80,7 @@ Every piece keeps its exact size. Around every piece there is **white space for 
 | Card 1 | 5.00 | 5.00 |
 | Info box (60 × 48) | 135.30 | 5.00 |
 
-### "2 pages (borderless)" — optional. Gap 3 mm.
+### "2 pages (borderless)" — the default (owner's choice for PP3, 24 Oct 2026). Gap 3 mm.
 
 Card 1 (126.3) + a big photo (76.2) must sit side by side on one sheet: 126.3 + 3 + 76.2 = 205.5 mm on a 210 mm sheet, so the outer pieces are only **2.25 mm** from the left and right edges. Every other 2-page arrangement was checked: without that, only 9 of the 10 big photos fit. Use this layout only if the printer prints **borderless without enlarging** (Epson/Canon borderless mode usually enlarges the page a little — that would change every size; set the enlargement/extension to the minimum or zero and check one test print with a ruler).
 
@@ -146,7 +146,7 @@ Read PHOTO_PRINT.md items PP-6 and PP-7, and the section "The layout". Look at d
 
 Before writing code, show me: (a) the function that turns a kit + a layout into PDF pages, and the test that checks every piece is at its exact mm size and position, inside the page, and never overlaps another; (b) how the PDF is cached and when it is rebuilt; (c) the Packing screen changes.
 
-Then build PP-6 and PP-7. Default layout "3 pages (safe)". The PDF page is exactly A4 (595.28 × 841.89 pt), images placed at exact mm with no scaling of the page, 300 DPI images. Render one PDF from test photos at both layouts and look at it as an image before you finish. Mark the items [DONE], commit, push.
+Then build PP-6 and PP-7. Default layout "2 pages (borderless)". The PDF page is exactly A4 (595.28 × 841.89 pt), images placed at exact mm with no scaling of the page, 300 DPI images. Render one PDF from test photos at both layouts and look at it as an image before you finish. Mark the items [DONE], commit, push.
 ```
 
 ### Verify PP, staging, then production (Gift Valy repo, then `ssh antu`)
@@ -174,7 +174,7 @@ After my OK: deploy to production (scripts/deploy.sh main) and run db:seed-card-
 
 ### PP-1. Print sizes and layouts — in Settings — [DONE]
 
-- Settings → **Gift print** (Admin only): the four sizes from "The sizes" in mm (one decimal) and the layout choice ("3 pages (safe)" default / "2 pages (borderless)").
+- Settings → **Gift print** (Admin only): the four sizes from "The sizes" in mm (one decimal) and the layout choice ("2 pages (borderless)" default since PP3 / "3 pages (safe)").
 - The two layouts from "The layout" are stored as data: per page, a list of `{ slot, x, y }` in mm. Sizes come from the size settings.
 - Saving a size runs the layout check (PP-6) and refuses a size that makes the chosen layout overlap or run off the page — it says which piece and by how much.
 - **Done (24 Oct 2026):** `lib/print-layouts.ts` (both layouts as data, `checkLayout`, 300 DPI pixels), `print_settings` key read by `getPrintSettings()`, `PUT /api/settings/print` (settings.manage; refuses with the pieces + mm, warns about the other layout), Settings → Gift Print → Sizes & layout with a live A4 preview. Tests: `npm run test:print`.
@@ -252,7 +252,7 @@ After my OK: deploy to production (scripts/deploy.sh main) and run db:seed-card-
 - Every upload, replace, delete, crop change and card change writes an audit row.
 - **Done (24 Oct 2026):** new order form → "C2 · Photos & cards" (kits from `/api/print/kits-preview`, photos staged under the form's token and attached in the create transaction via `printKits`); order page → "Photos & cards" under Items (every change saved at once); the edit form only points to the order page. One `KitPanel` for both (components/orders/print/): multi-select upload, 3 at a time with per-photo progress + Retry; the browser re-encodes HEIC / anything > 10 MB to a ≤ 4000 px JPEG (Nginx allows 12 MB per request); tap a photo then another slot to move/swap (big ↔ small); crop dialog = the same `lib/print-crop.ts` math as the print file (drag, zoom 1–4×, Reset to sharp's attention focus, live DPI); card picker = design → occasion → message by language, or custom text, names only for slot messages, live preview from the print renderer, too-long refused. Print files: `lib/print-photos.ts` (EXIF rotate, sRGB, exact pixels, JPEG 92, 300 DPI) in `UPLOAD_DIR/print/`, served only by `/uploads/print/<name>` after the scope + permission check (`private, no-store`). Order list: 📷 badge ("Photos pending 17/28") + "Photos & cards" filter. Order edits: an empty kit whose line is gone is deleted, a kit with content moves to a new kit of the same product (package swapped) or is kept as "Line removed" (Admin/Manager delete it). Nightly cleanup: staged photos > 24 h, and the photo files of purged orders. Tests: `npm run test:print` (48, incl. portrait/landscape/square/tiny/EXIF-rotated → exact pixels, upright). Checked on dev: 2-kit draft with 17 photos + 2 cards saved in one go; crop, move, upload, delete, card set/clear/refuse; edit → orphan → package swap moved 14 photos + 2 cards.
 
-### PP-5. Who can do what — [PARTLY DONE]
+### PP-5. Who can do what — [DONE]
 
 New permissions in `lib/permissions.ts`:
 
@@ -264,10 +264,10 @@ New permissions in `lib/permissions.ts`:
 
 Photos are the customer's private pictures: stored only in `UPLOAD_DIR` (never `public/`), served only through the signed-in route, and only to a role with `print.edit` or `print.print`.
 
-- **Done (24 Oct 2026, PP2):** `lib/print-access.ts` — see: print.print (all orders) or print.edit within the order scope; change: print.edit only before PACKED (DRAFT/LEAD/FOLLOW_UP/CONFIRMED/ON_HOLD), `orders.edit` (Admin/Manager) at any status; photo/card files the same, a staged photo only its uploader. Checked per role on dev (TL/SE: not another SE's order; Packing: sees, can't change; Accounts: nothing). **Left for PP3:** `print.print` on the PDF + "mark printed".
+- **Done (24 Oct 2026, PP2):** `lib/print-access.ts` — see: print.print (all orders) or print.edit within the order scope; change: print.edit only before PACKED (DRAFT/LEAD/FOLLOW_UP/CONFIRMED/ON_HOLD), `orders.edit` (Admin/Manager) at any status; photo/card files the same, a staged photo only its uploader. Checked per role on dev (TL/SE: not another SE's order; Packing: sees, can't change; Accounts: nothing). **Done in PP3:** `print.print` on the PDF and on "Mark printed".
 - **Done (24 Oct 2026, PP1):** the three permissions in `lib/permissions.ts` and granted to the existing roles by the PP1 migration (bootstrap only seeds roles that don't exist yet). Sizes & layouts are on `settings.manage` (Admin) — one `print.settings` can't be "Admin" and "Admin + Manager" at once; designs/messages on `print.settings`. **Left for PP2/PP3:** ~~the PACKED lock on `print.edit`, the photo route check~~ (PP2), `print.print` on the PDF.
 
-### PP-6. The print PDF — [OPEN]
+### PP-6. The print PDF — [DONE]
 
 - One PDF per order (all its kits; each kit starts on a new page). Exactly A4 (595.28 × 841.89 pt). Every piece placed at its exact mm position and size from PP-1 — **never scaled**.
 - Photos: the 300 DPI print file from PP-4 (EXIF-rotated, sRGB, crop-to-fill, JPEG quality 92). Cards: background + text, rendered at 300 DPI.
@@ -275,14 +275,16 @@ Photos are the customer's private pictures: stored only in `UPLOAD_DIR` (never `
 - **Nothing is printed on a photo or a card.** Each sheet has **one info box** at the layout's info-box position, dashed outline, Noto Sans Bengali (names may be Bangla): **order number** (bold, large), **recipient name**, **recipient phone** (the BD recipient number, not the customer abroad), **delivery date** (or "ASAP" / "Any day" per the order's delivery-date mode), and "Page 1 of 3". Packing reads it, then cuts it off.
 - **Layout check** (used by PP-1 and a test): every piece inside the page, no two pieces closer than the gap, sizes exact.
 - The PDF is built when the kit becomes ready and cached in `INVOICE_DIR/print/` (private, like invoices); any change to a photo, crop, card or setting rebuilds it.
+- **Done (24 Oct 2026):** `lib/print-pdf-plan.ts` `planPrintPages(kits, layout, sizes, info)` (pure: each piece at the layout's x/y and the size setting's w/h, 300 DPI px; refuses a layout that fails `checkLayout`; per kit, pages with nothing on them dropped, "Kit 1 of 2 · Page 1 of 2"). `lib/print-pdf.ts` `renderPrintPdf` (pdfkit, page exactly 595.28 × 841.89 pt, margin 0, images at exact mm, refuses an image that is not exactly the slot's pixels; 0.25 pt grey cut line; dashed info box whose text is drawn by sharp/Pango with the order number always on one line). `lib/print-pdf-build.ts`: content hash (layout, sizes, photos + crops, cards + design change, info) → `INVOICE_DIR/print/<orderNo>-<hash12>.pdf`, built once per hash, older PDFs of the order removed; stale photo print files / card renders (size or design changed) rebuilt first; warmed via `after()` on every kit change and on order create. `GET /api/orders/[id]/print-pdf` (print.print; 409 while a kit is incomplete, 410 after the 60-day purge). **Default layout is now "2 pages (borderless)"** (owner, 24 Oct) — a `print_settings` row already saved with "3 pages" keeps it (dev has one). Tests: `tests/print-pdf.test.ts` in `npm run test:print` — every piece's mm size/position exact, inside A4, ≥ gap apart (info box included), each piece once; the real PDF parsed back: MediaBox exactly A4 and every image at its planned mm (± 0.001) from exactly its 300 DPI pixels. Sample: `scripts/print-pdf-sample.ts` (run in Docker Linux) — both layouts rendered and checked as images (pdfimages: every image 300 × 300 ppi); on dev, DRAFT-0003 built in the app (first build 107 s on macOS = Pango start-up, cached reopen 2.2 s).
 
-### PP-7. Packing screen — [OPEN]
+### PP-7. Packing screen — [DONE]
 
 - The Packing queue shows a **"Photos & cards"** column: Pending / Ready to print / Printed / Changed after print.
 - **"Print photos & cards"** opens the PDF in a new tab, with the reminder above it: "A4 photo paper · 100% / Actual size (and Borderless, only for the 2-page layout)" in Bangla and English.
 - **"Mark printed"** records who and when; reprinting is allowed and logged. A kit changed after it was printed shows **"Changed after print — reprint"**.
 - An order with a kit that is not "Printed" shows a warning (not a block) when it is marked PACKED.
 - **Cleanup:** the nightly trash-cleanup also deletes original and print photos of kits whose order was DELIVERED or RETURNED more than 60 days ago (and the cached PDF), and does nothing while the account is suspended (FUNNEL_LINER GV-7).
+- **Done (24 Oct 2026):** the Packing queue card has a "📷 Photos & cards" row (the queue is cards, not a table): Bangla/English state badge, who/when/how many times printed, the printing rule (Bangla + English; the Borderless line only for the 2-page layout), "Print photos & cards" (new tab) and "Mark printed" / "Mark reprinted" (`POST /api/orders/[id]/print-pdf/printed`, print.print: kits → PRINTED, printed_by/at, print_count + 1, print_hash; audit `print.printed` / `print.reprinted`). Packing a kit that is not Printed: the packing confirm shows the warning, and the status API returns `warning` (toast on the order page and the order list) — never a block. Cleanup: `purgeDeliveredPrintFiles` in the nightly trash-cleanup — kits of orders delivered/returned > 60 days ago (by status history: panel-sent parcels have no shipment row) lose originals, previews, print files, cards and the cached PDF; `files_purged_at` set, rows kept; the order purge also removes its PDFs. **Not checked in the browser:** the row with a real kit — dev has no CONFIRMED order with a kit (check on staging).
 
 ---
 

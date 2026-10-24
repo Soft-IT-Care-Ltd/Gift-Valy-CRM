@@ -333,7 +333,7 @@ describe("PP-1 sizes and the layout check", () => {
   });
 
   test("settings JSON falls back to defaults per field", () => {
-    assert.deepEqual(normalizePrintSettings(null), { sizes: DEFAULT_PRINT_SIZES, layout: "SAFE_3" });
+    assert.deepEqual(normalizePrintSettings(null), { sizes: DEFAULT_PRINT_SIZES, layout: "BORDERLESS_2" });
     const s = normalizePrintSettings({ layout: "BORDERLESS_2", sizes: { PHOTO_L: { w: 76.24, h: 77.6 }, PHOTO_S: { w: 1, h: 2 } } });
     assert.equal(s.layout, "BORDERLESS_2");
     assert.deepEqual(s.sizes.PHOTO_L, { w: 76.2, h: 77.6 });

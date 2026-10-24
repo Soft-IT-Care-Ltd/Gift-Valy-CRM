@@ -13,6 +13,10 @@ import {
 } from "@/lib/bom";
 import { loadBomCatalog } from "@/lib/bom-db";
 import { dhakaTomorrow } from "@/lib/delivery-schedule";
+import { getEffectivePermissions } from "@/lib/rbac";
+import { getPrintSettings } from "@/lib/settings";
+import { orderPrintSummary } from "@/lib/print-kit";
+import { PRINT_LAYOUTS } from "@/lib/print-layouts";
 import {
   PackingQueueClient,
   type BreakdownLine,
@@ -29,9 +33,9 @@ export const dynamic = "force-dynamic";
 // deducts stock and freezes cost snapshots via the status API. No cost fields
 // are exposed here.
 export default async function PackingQueuePage() {
-  await requirePagePermission("orders.pack");
+  const session = await requirePagePermission("orders.pack");
 
-  const [orders, catalog, productMeta] = await Promise.all([
+  const [orders, catalog, productMeta, permissions, printSettings] = await Promise.all([
     prisma.order.findMany({
       where: { status: "CONFIRMED" },
       orderBy: { createdAt: "asc" },
@@ -42,13 +46,39 @@ export default async function PackingQueuePage() {
             package: { select: { name: true } },
           },
         },
+        // PHOTO_PRINT PP-7 — the "Photos & cards" state of every live kit.
+        printKits: {
+          select: {
+            status: true,
+            photoCount: true,
+            cardCount: true,
+            spec: true,
+            orphanedAt: true,
+            printedAt: true,
+            printCount: true,
+            printedBy: true,
+          },
+        },
       },
     }),
     loadBomCatalog(prisma),
     prisma.product
       .findMany({ select: { id: true, sku: true, unit: true } })
       .then((rows) => new Map(rows.map((r) => [r.id, r]))),
+    getEffectivePermissions(session.user.id),
+    getPrintSettings(),
   ]);
+
+  // Who printed — one lookup for the whole queue.
+  const printerIds = [
+    ...new Set(orders.flatMap((o) => o.printKits.map((k) => k.printedBy).filter((v): v is number => v != null))),
+  ];
+  const printers = new Map(
+    (printerIds.length
+      ? await prisma.user.findMany({ where: { id: { in: printerIds } }, select: { id: true, name: true } })
+      : []
+    ).map((u) => [u.id, u.name])
+  );
 
   // §3 — a fixed-date order due today/tomorrow, still in the packing queue
   // (CONFIRMED), is at risk of missing its promised date.
@@ -182,6 +212,20 @@ export default async function PackingQueuePage() {
       perOrderItems: [...perOrder.values()].sort((a, b) =>
         a.name.localeCompare(b.name)
       ),
+      print: (() => {
+        const summary = orderPrintSummary(o.printKits);
+        if (!summary) return null;
+        const live = o.printKits.filter((k) => !k.orphanedAt);
+        const last = live
+          .filter((k) => k.printedAt)
+          .sort((a, b) => b.printedAt!.getTime() - a.printedAt!.getTime())[0];
+        return {
+          ...summary,
+          printedAt: last?.printedAt?.toISOString() ?? null,
+          printedBy: last?.printedBy != null ? (printers.get(last.printedBy) ?? null) : null,
+          printCount: Math.max(0, ...live.map((k) => k.printCount)),
+        };
+      })(),
     };
   });
 
@@ -198,5 +242,11 @@ export default async function PackingQueuePage() {
       a.createdAt.localeCompare(b.createdAt)
   );
 
-  return <PackingQueueClient queue={queue} />;
+  return (
+    <PackingQueueClient
+      queue={queue}
+      canPrint={permissions.includes("print.print")}
+      borderless={PRINT_LAYOUTS[printSettings.layout].borderless}
+    />
+  );
 }
