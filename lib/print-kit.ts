@@ -213,6 +213,41 @@ export function orderPrintSummary(
   return { state: "READY", label: "Ready to print", labelBn: "প্রিন্টের জন্য তৈরি" };
 }
 
+/** PP-7 — the badge plus who printed last, when, and how many times (> 1 =
+ *  reprinted). Shared by the Packing queue and the order page. */
+export interface OrderPrintStatus extends OrderPrintSummary {
+  printedAt: string | null;
+  printedBy: string | null;
+  printCount: number;
+}
+
+export function orderPrintStatus(
+  kits: {
+    status: string;
+    photoCount: number;
+    cardCount: number;
+    spec: unknown;
+    orphanedAt: Date | string | null;
+    printedAt: Date | null;
+    printCount: number;
+    printedBy: number | null;
+  }[],
+  nameOf: (userId: number) => string | null
+): OrderPrintStatus | null {
+  const summary = orderPrintSummary(kits);
+  if (!summary) return null;
+  const live = kits.filter((k) => !k.orphanedAt);
+  const last = live
+    .filter((k) => k.printedAt)
+    .sort((a, b) => b.printedAt!.getTime() - a.printedAt!.getTime())[0];
+  return {
+    ...summary,
+    printedAt: last?.printedAt?.toISOString() ?? null,
+    printedBy: last?.printedBy != null ? nameOf(last.printedBy) : null,
+    printCount: Math.max(0, ...live.map((k) => k.printCount)),
+  };
+}
+
 /** PP-7 — shown (never blocking) when an order is packed before its photos
  *  and cards were printed. */
 export const PACKED_UNPRINTED_WARNING =

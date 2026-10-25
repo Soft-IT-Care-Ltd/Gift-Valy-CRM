@@ -15,7 +15,7 @@ import { loadBomCatalog } from "@/lib/bom-db";
 import { dhakaTomorrow } from "@/lib/delivery-schedule";
 import { getEffectivePermissions } from "@/lib/rbac";
 import { getPrintSettings } from "@/lib/settings";
-import { orderPrintSummary } from "@/lib/print-kit";
+import { orderPrintStatus } from "@/lib/print-kit";
 import { PRINT_LAYOUTS } from "@/lib/print-layouts";
 import {
   PackingQueueClient,
@@ -212,20 +212,7 @@ export default async function PackingQueuePage() {
       perOrderItems: [...perOrder.values()].sort((a, b) =>
         a.name.localeCompare(b.name)
       ),
-      print: (() => {
-        const summary = orderPrintSummary(o.printKits);
-        if (!summary) return null;
-        const live = o.printKits.filter((k) => !k.orphanedAt);
-        const last = live
-          .filter((k) => k.printedAt)
-          .sort((a, b) => b.printedAt!.getTime() - a.printedAt!.getTime())[0];
-        return {
-          ...summary,
-          printedAt: last?.printedAt?.toISOString() ?? null,
-          printedBy: last?.printedBy != null ? (printers.get(last.printedBy) ?? null) : null,
-          printCount: Math.max(0, ...live.map((k) => k.printCount)),
-        };
-      })(),
+      print: orderPrintStatus(o.printKits, (id) => printers.get(id) ?? null),
     };
   });
 

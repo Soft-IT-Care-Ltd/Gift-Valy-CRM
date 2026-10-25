@@ -195,18 +195,22 @@ export function KitPanel({
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <p className="text-sm font-medium">{kit.label}</p>
-        <Badge
-          variant="outline"
-          className={
-            progress.state === "READY"
-              ? "border-emerald-400 text-emerald-700 dark:text-emerald-400"
-              : "border-amber-400 text-amber-700 dark:text-amber-400"
-          }
-          title={label.bn}
-        >
-          {label.en}
-        </Badge>
-        {kit.status === "PRINTED" && <Badge variant="secondary">Printed</Badge>}
+        {/* Printed replaces "Ready to print" — one clear state. */}
+        {kit.status === "PRINTED" ? (
+          <Badge className="bg-emerald-600 text-white hover:bg-emerald-600">✓ প্রিন্ট হয়েছে / Printed</Badge>
+        ) : (
+          <Badge
+            variant="outline"
+            className={
+              progress.state === "READY"
+                ? "border-emerald-400 text-emerald-700 dark:text-emerald-400"
+                : "border-amber-400 text-amber-700 dark:text-amber-400"
+            }
+            title={label.bn}
+          >
+            {label.en}
+          </Badge>
+        )}
         {kit.status === "CHANGED_AFTER_PRINT" && (
           <Badge variant="outline" className="border-destructive text-destructive">
             Changed after print — reprint

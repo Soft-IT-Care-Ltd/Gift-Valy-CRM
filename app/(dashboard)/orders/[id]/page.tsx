@@ -26,6 +26,8 @@ import { getCurrencyForCountry } from "@/lib/currency";
 import { OrderDetailClient } from "@/components/orders/order-detail-client";
 import { OrderPrintKits } from "@/components/orders/print/order-print-kits";
 import { loadKitViews } from "@/lib/print-kit-ops";
+import { orderPrintStatus } from "@/lib/print-kit";
+import { PRINT_LAYOUTS } from "@/lib/print-layouts";
 import { canEditPrintAt } from "@/lib/print-access";
 
 export const dynamic = "force-dynamic";
@@ -91,9 +93,10 @@ export default async function OrderDetailPage({
   const showCosts = canSeeCosts(permissions);
   // PHOTO_PRINT PP-4 — the order's photo/card kits (print.edit / print.print).
   const canSeePrint = permissions.includes("print.edit") || permissions.includes("print.print");
-  const [printKits, printSizes] = canSeePrint
-    ? await Promise.all([loadKitViews(order.id), getPrintSettings().then((s) => s.sizes)])
-    : [[], null];
+  const [printKits, printSettings, printStatus] = canSeePrint
+    ? await Promise.all([loadKitViews(order.id), getPrintSettings(), loadOrderPrintStatus(order.id)])
+    : [[], null, null];
+  const printSizes = printSettings?.sizes ?? null;
   const [waIntegration, currency, overchargeTolerancePct, stuckThresholds] =
     await Promise.all([
       getWhatsAppIntegration(),
@@ -128,9 +131,43 @@ export default async function OrderDetailPage({
             canEdit={canEditPrintAt(order.status, permissions)}
             canDeleteKit={permissions.includes("orders.edit") && permissions.includes("print.edit")}
             locked={permissions.includes("print.edit") && !canEditPrintAt(order.status, permissions)}
+            print={
+              printStatus && printSettings
+                ? {
+                    orderId: order.id,
+                    orderNo: order.orderNo,
+                    status: printStatus,
+                    canPrint: permissions.includes("print.print"),
+                    borderless: PRINT_LAYOUTS[printSettings.layout].borderless,
+                  }
+                : undefined
+            }
           />
         ) : null
       }
     />
   );
+}
+
+/** PP-7 — the print state + who printed last, for the order page's print bar. */
+async function loadOrderPrintStatus(orderId: number) {
+  const kits = await prisma.orderPrintKit.findMany({
+    where: { orderId },
+    select: {
+      status: true,
+      photoCount: true,
+      cardCount: true,
+      spec: true,
+      orphanedAt: true,
+      printedAt: true,
+      printCount: true,
+      printedBy: true,
+    },
+  });
+  const ids = [...new Set(kits.map((k) => k.printedBy).filter((v): v is number => v != null))];
+  const users = ids.length
+    ? await prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } })
+    : [];
+  const names = new Map(users.map((u) => [u.id, u.name]));
+  return orderPrintStatus(kits, (id) => names.get(id) ?? null);
 }

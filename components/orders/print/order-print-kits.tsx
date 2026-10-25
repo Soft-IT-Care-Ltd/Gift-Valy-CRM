@@ -1,11 +1,13 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import type { KitView } from "@/lib/print-kit";
+import type { KitView, OrderPrintStatus } from "@/lib/print-kit";
 import type { PrintSizes } from "@/lib/print-layouts";
 import { KitPanel, type KitAdapter, type PanelKit } from "./kit-panel";
 import { uploadWithProgress } from "./upload";
+import { PrintBar } from "./print-bar";
 
 // PHOTO_PRINT.md PP-4 — "Photos & cards" on the order page. Every change is
 // saved at once (and audited); each call answers with the order's kits.
@@ -51,6 +53,7 @@ export function OrderPrintKits({
   canEdit,
   canDeleteKit,
   locked,
+  print,
 }: {
   initialKits: KitView[];
   sizes: PrintSizes;
@@ -58,9 +61,24 @@ export function OrderPrintKits({
   canDeleteKit: boolean;
   /** Shown when print.edit is held but the order is past PACKED. */
   locked: boolean;
+  /** PP-7 — print / mark printed right here (not only on the Packing queue). */
+  print?: { orderId: number; orderNo: string; status: OrderPrintStatus; canPrint: boolean; borderless: boolean };
 }) {
-  const [kits, setKits] = useState(initialKits);
+  const router = useRouter();
+  const [kits, setKitsState] = useState(initialKits);
   const [tab, setTab] = useState(0);
+  // A server refresh (e.g. after Mark printed) brings new kits — show them.
+  const [seen, setSeen] = useState(initialKits);
+  if (initialKits !== seen) {
+    setSeen(initialKits);
+    setKitsState(initialKits);
+  }
+  // Every change also refreshes the page, so the print bar above shows
+  // "Changed after print — reprint" at once.
+  const setKits = (next: KitView[]) => {
+    setKitsState(next);
+    router.refresh();
+  };
   if (kits.length === 0) return null;
 
   const adapter: KitAdapter = {
@@ -110,6 +128,15 @@ export function OrderPrintKits({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {print && (
+          <PrintBar
+            orderId={print.orderId}
+            orderNo={print.orderNo}
+            print={print.status}
+            canPrint={print.canPrint}
+            borderless={print.borderless}
+          />
+        )}
         {kits.length > 1 && (
           <div className="flex gap-1 overflow-x-auto border-b">
             {kits.map((k, i) => (
