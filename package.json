@@ -20,6 +20,7 @@
     "db:diff": "tsx scripts/db-diff.ts",
     "db:bootstrap": "bash scripts/db-bootstrap.sh",
     "db:seed-card-messages": "tsx prisma/seed-card-messages.ts",
+    "db:seed-card-designs": "tsx prisma/seed-card-designs.ts",
     "verify:stock": "tsx scripts/verify-stock.ts",
     "verify:steadfast": "tsx scripts/verify-steadfast.ts",
     "verify:steadfast-payments": "tsx scripts/verify-steadfast-payments.ts",
