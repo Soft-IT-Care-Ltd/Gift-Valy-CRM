@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import {
   BomError,
+  assertPackagePricesNonNegative,
   assertValidPackageBom,
   type BomCatalog,
   type BomLine,
@@ -60,18 +61,22 @@ export interface PackageItemInput {
   childPackageId?: number | null;
   choiceLabel?: string | null;
   qty: number;
-  options?: { productId: number; isDefault?: boolean }[];
+  /** extraPrice (ROUND3 R3-2): ৳ per piece when this option is picked. */
+  options?: { productId: number; isDefault?: boolean; extraPrice?: number }[];
 }
 
 // Full structural validation of a package BOM before it is written: per-kind
 // field shape, referenced rows exist, one default per choice group, and —
 // via the engine — cycle prevention + the nesting cap (§5). Returns a
 // human-readable error or null. `packageId` is null on create (a brand-new
-// package cannot be contained by anything yet).
+// package cannot be contained by anything yet). `sellingPrice` = the price the
+// package will have after the save (undefined = unchanged) — with the choice
+// extras it must never allow a price below ৳0 (ROUND3 R3-2).
 export async function validatePackageBomInput(
   tx: Tx,
   packageId: number | null,
-  items: PackageItemInput[]
+  items: PackageItemInput[],
+  sellingPrice?: number
 ): Promise<string | null> {
   if (items.length === 0) return "A package needs at least one BOM line";
 
@@ -150,10 +155,11 @@ export async function validatePackageBomInput(
     options: (it.options ?? []).map((o) => ({
       productId: o.productId,
       isDefault: !!o.isDefault,
+      extraPrice: o.extraPrice ?? 0,
     })),
   }));
   try {
-    assertValidPackageBom(catalog, simulatedId, lines);
+    assertValidPackageBom(catalog, simulatedId, lines, sellingPrice);
   } catch (e) {
     if (e instanceof BomError) return e.message;
     throw e;
@@ -185,6 +191,7 @@ export async function writePackageItems(
                   data: (it.options ?? []).map((o) => ({
                     productId: o.productId,
                     isDefault: !!o.isDefault,
+                    extraPrice: Math.round((o.extraPrice ?? 0) * 100) / 100,
                   })),
                 },
               }
@@ -192,6 +199,28 @@ export async function writePackageItems(
       },
     });
   }
+}
+
+// ROUND3 R3-2 — a price-only change (no BOM in the request): the package's
+// own choice extras, cheapest picks, must still leave it at ৳0 or more.
+// (A child's selling price never enters its parent's price, so only this
+// package needs the check.)
+export async function validatePackagePrice(
+  tx: Tx,
+  packageId: number,
+  sellingPrice: number
+): Promise<string | null> {
+  const catalog = await loadBomCatalog(tx);
+  const pkg = catalog.packages.get(packageId);
+  if (!pkg) return null;
+  catalog.packages.set(packageId, { ...pkg, sellingPrice });
+  try {
+    assertPackagePricesNonNegative(catalog, [packageId]);
+  } catch (e) {
+    if (e instanceof BomError) return e.message;
+    throw e;
+  }
+  return null;
 }
 
 export async function loadBomCatalog(tx: Tx): Promise<BomCatalog> {
@@ -215,6 +244,8 @@ export async function loadBomCatalog(tx: Tx): Promise<BomCatalog> {
         name: true,
         weightKg: true,
         printKit: true,
+        sellingPrice: true,
+        priceFloor: true,
         items: {
           orderBy: { id: "asc" },
           select: {
@@ -226,7 +257,7 @@ export async function loadBomCatalog(tx: Tx): Promise<BomCatalog> {
             qty: true,
             options: {
               orderBy: { id: "asc" },
-              select: { productId: true, isDefault: true },
+              select: { productId: true, isDefault: true, extraPrice: true },
             },
           },
         },
@@ -259,6 +290,8 @@ export async function loadBomCatalog(tx: Tx): Promise<BomCatalog> {
           name: p.name,
           weightKg: p.weightKg == null ? null : Number(p.weightKg),
           printKit: normalizePrintKit(p.printKit),
+          sellingPrice: Number(p.sellingPrice),
+          priceFloor: Number(p.priceFloor),
           items: p.items.map((it) => ({
             id: it.id,
             kind: it.kind as BomLineKind,
@@ -266,7 +299,11 @@ export async function loadBomCatalog(tx: Tx): Promise<BomCatalog> {
             childPackageId: it.childPackageId,
             choiceLabel: it.choiceLabel,
             qty: it.qty,
-            options: it.options,
+            options: it.options.map((o) => ({
+              productId: o.productId,
+              isDefault: o.isDefault,
+              extraPrice: Number(o.extraPrice),
+            })),
           })),
         },
       ])

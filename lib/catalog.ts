@@ -4,6 +4,7 @@ import {
   collectChoiceGroups,
   packageAvailability,
   packageCost,
+  packagePrice,
   packageWeightKg,
   packagePrintKitNeeds,
   productAvailability,
@@ -147,6 +148,11 @@ export function serializePackage(
     () => packageAvailability(catalog, pkg.id),
     null
   );
+  // ROUND3 R3-2 — price with the default picks (selling price + their extras).
+  const defaultPrice = safe(
+    () => packagePrice(catalog, pkg.id).unitPrice,
+    Number(pkg.sellingPrice)
+  );
 
   // Choice groups across the whole nested tree, each option annotated with the
   // availability the package would have if that variant were picked (§5).
@@ -163,6 +169,7 @@ export function serializePackage(
             productId: o.productId,
             name: product?.name ?? `#${o.productId}`,
             isDefault: o.isDefault,
+            extraPrice: o.extraPrice,
             stockQty: product?.stockQty ?? 0,
             availability: safe<number | null>(
               () =>
@@ -185,6 +192,7 @@ export function serializePackage(
         productId: number;
         name: string;
         isDefault: boolean;
+        extraPrice: number;
         stockQty: number;
         availability: number | null;
       }[];
@@ -231,6 +239,7 @@ export function serializePackage(
     photoUrl: pkg.photoUrl,
     sellingPrice: Number(pkg.sellingPrice),
     priceFloor: Number(pkg.priceFloor),
+    defaultPrice,
     isActive: pkg.isActive,
     availableToSell: availability,
     weightKg: pkg.weightKg == null ? null : Number(pkg.weightKg), // manual override
@@ -271,6 +280,7 @@ export function serializePackage(
         productId: o.productId,
         name: o.product.name,
         isDefault: o.isDefault,
+        extraPrice: Number(o.extraPrice),
       })),
       ...(showCosts && it.kind === "PRODUCT" && it.product
         ? { unitCost: Number(it.product.avgCost) }
@@ -279,7 +289,7 @@ export function serializePackage(
     choiceGroups,
     explosion,
     ...(showCosts && cost != null
-      ? { cost, margin: Number(pkg.sellingPrice) - cost }
+      ? { cost, margin: Math.round((defaultPrice - cost) * 100) / 100 }
       : {}),
   };
 }

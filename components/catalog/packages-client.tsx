@@ -41,6 +41,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { money } from "./products-client";
+import { signedMoney } from "@/lib/format";
 import { PhotoField } from "./photo-field";
 
 type LineKind = "PRODUCT" | "PACKAGE" | "CHOICE";
@@ -57,7 +58,7 @@ interface PackageItemRow {
   qty: number;
   isStockTracked: boolean;
   stockQty: number | null;
-  options: { productId: number; name: string; isDefault: boolean }[];
+  options: { productId: number; name: string; isDefault: boolean; extraPrice: number }[];
   unitCost?: number;
 }
 
@@ -70,6 +71,7 @@ interface ChoiceGroupRow {
     productId: number;
     name: string;
     isDefault: boolean;
+    extraPrice: number;
     stockQty: number;
     availability: number | null;
   }[];
@@ -90,6 +92,7 @@ interface PackageRow {
   photoUrl: string | null;
   sellingPrice: number;
   priceFloor: number;
+  defaultPrice: number; // R3-2 — selling price + the default picks' extras
   isActive: boolean;
   availableToSell: number | null;
   weightKg: number | null; // manual override
@@ -120,6 +123,7 @@ interface ProductOption {
 interface OptionState {
   productId: string;
   isDefault: boolean;
+  extraPrice: string; // R3-2 — ৳ per piece, "" = 0, may be negative
 }
 
 interface BomLineState {
@@ -184,7 +188,8 @@ export function PackagesClient({
     childPackageId: "",
     choiceLabel: "",
     qty: "1",
-    options: kind === "CHOICE" ? [{ productId: "", isDefault: true }] : [],
+    options:
+      kind === "CHOICE" ? [{ productId: "", isDefault: true, extraPrice: "" }] : [],
   });
 
   function openCreate() {
@@ -234,6 +239,7 @@ export function PackagesClient({
           options: it.options.map((o) => ({
             productId: String(o.productId),
             isDefault: o.isDefault,
+            extraPrice: o.extraPrice ? String(o.extraPrice) : "",
           })),
         }))
     );
@@ -306,6 +312,33 @@ export function PackagesClient({
   // total minus its own) — shown so a box kit isn't doubled by mistake.
   const inheritedKits = editing ? editing.printKitUnits - (editing.printKit ? 1 : 0) : 0;
 
+  // ROUND3 R3-2 — what the choice extras do to the price: this package's own
+  // choice groups plus those inside its sub-packages (qty × per-piece extra).
+  // The server re-checks the whole tree on save (never below ৳0).
+  const packageRowById = new Map(packages.map((p) => [p.id, p]));
+  const extraRange = lines.reduce(
+    (acc, l) => {
+      const qty = Number(l.qty) || 0;
+      if (l.kind === "CHOICE" && l.options.length > 0) {
+        const extras = l.options.map((o) => Number(o.extraPrice) || 0);
+        acc.min += qty * Math.min(...extras);
+        acc.max += qty * Math.max(...extras);
+      } else if (l.kind === "PACKAGE" && l.childPackageId) {
+        for (const g of packageRowById.get(Number(l.childPackageId))?.choiceGroups ?? []) {
+          if (g.options.length === 0) continue;
+          const extras = g.options.map((o) => o.extraPrice);
+          acc.min += qty * g.qty * Math.min(...extras);
+          acc.max += qty * g.qty * Math.max(...extras);
+        }
+      }
+      return acc;
+    },
+    { min: 0, max: 0 }
+  );
+  const basePrice = Number(sellingPrice) || 0;
+  const minPrice = Math.round((basePrice + extraRange.min) * 100) / 100;
+  const maxPrice = Math.round((basePrice + extraRange.max) * 100) / 100;
+
   async function save() {
     setSaving(true);
     const payload = {
@@ -331,6 +364,7 @@ export function PackagesClient({
               ? l.options.map((o) => ({
                   productId: Number(o.productId),
                   isDefault: o.isDefault,
+                  extraPrice: Number(o.extraPrice) || 0,
                 }))
               : [],
         })),
@@ -389,7 +423,12 @@ export function PackagesClient({
       .map((it) =>
         it.kind === "CHOICE"
           ? `${it.qty}× [${it.choiceLabel}: ${it.options
-              .map((o) => o.name + (o.isDefault ? "*" : ""))
+              .map(
+                (o) =>
+                  o.name +
+                  (o.extraPrice ? ` ${signedMoney(o.extraPrice)}` : "") +
+                  (o.isDefault ? "*" : "")
+              )
               .join(" / ")}]`
           : `${it.qty}× ${it.name}${it.kind === "PACKAGE" ? " (pkg)" : ""}`
       )
@@ -458,7 +497,12 @@ export function PackagesClient({
                   </div>
                 </TableCell>
                 <TableCell className="text-right">
-                  {money(pkg.sellingPrice)}
+                  {money(pkg.defaultPrice)}
+                  {pkg.defaultPrice !== pkg.sellingPrice && (
+                    <div className="text-xs text-muted-foreground">
+                      list {money(pkg.sellingPrice)} + default options
+                    </div>
+                  )}
                 </TableCell>
                 {showCosts && (
                   <TableCell className="text-right">
@@ -585,6 +629,20 @@ export function PackagesClient({
                 />
               </div>
             </div>
+            {(extraRange.min !== 0 || extraRange.max !== 0) && (
+              <p
+                className={`-mt-2 text-xs ${
+                  minPrice < 0 ? "text-destructive" : "text-muted-foreground"
+                }`}
+              >
+                Price with the choice options:{" "}
+                {minPrice === maxPrice
+                  ? money(minPrice)
+                  : `${money(minPrice)} – ${money(maxPrice)}`}
+                {minPrice < 0 &&
+                  " — the cheapest options take it below ৳0; raise the price or an extra"}
+              </p>
+            )}
             <PhotoField value={photoUrl} onChange={setPhotoUrl} />
 
             <div className="grid gap-2">
@@ -600,7 +658,7 @@ export function PackagesClient({
                           kind,
                           options:
                             kind === "CHOICE" && line.options.length === 0
-                              ? [{ productId: "", isDefault: true }]
+                              ? [{ productId: "", isDefault: true, extraPrice: "" }]
                               : line.options,
                         });
                       }}
@@ -694,7 +752,9 @@ export function PackagesClient({
                     <div className="grid gap-1 pl-2">
                       <span className="text-xs text-muted-foreground">
                         Options — pick one as default (used for catalog
-                        estimates; the SE picks the real one at order entry)
+                        estimates; the SE picks the real one at order entry).
+                        Extra ৳ is added to the package price, per piece, when
+                        that option is chosen (0 = same price; may be minus).
                       </span>
                       {line.options.map((opt, oIdx) => (
                         <div key={oIdx} className="flex items-center gap-2">
@@ -739,6 +799,28 @@ export function PackagesClient({
                               </SelectContent>
                             </Select>
                           </div>
+                          <div className="flex items-center gap-1">
+                            <span className="text-xs text-muted-foreground">
+                              Extra ৳
+                            </span>
+                            <Input
+                              type="number"
+                              step="any"
+                              className="w-24"
+                              placeholder="0"
+                              aria-label="Extra price (৳)"
+                              value={opt.extraPrice}
+                              onChange={(e) =>
+                                setLine(idx, {
+                                  options: line.options.map((o, i) =>
+                                    i === oIdx
+                                      ? { ...o, extraPrice: e.target.value }
+                                      : o
+                                  ),
+                                })
+                              }
+                            />
+                          </div>
                           <Button
                             variant="outline"
                             size="sm"
@@ -763,7 +845,7 @@ export function PackagesClient({
                           setLine(idx, {
                             options: [
                               ...line.options,
-                              { productId: "", isDefault: false },
+                              { productId: "", isDefault: false, extraPrice: "" },
                             ],
                           })
                         }
@@ -985,9 +1067,9 @@ export function PackagesClient({
                       {g.options
                         .map(
                           (o) =>
-                            `${o.name}${o.isDefault ? "*" : ""} (can make ${
-                              o.availability ?? "∞"
-                            })`
+                            `${o.name}${o.isDefault ? "*" : ""}${
+                              o.extraPrice ? ` ${signedMoney(o.extraPrice)}` : ""
+                            } (can make ${o.availability ?? "∞"})`
                         )
                         .join(" · ")}
                     </li>

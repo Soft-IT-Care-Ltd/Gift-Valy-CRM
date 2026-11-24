@@ -27,7 +27,8 @@ import {
   ItemCombobox,
   type ComboOption,
 } from "@/components/orders/item-combobox";
-import { money } from "@/lib/format";
+import { money, signedMoney } from "@/lib/format";
+import { choiceExtraTotal, frozenKey, optionExtra } from "@/lib/bom";
 import {
   CUSTOMER_COUNTRIES,
   DELIVERY_DATE_MODES,
@@ -76,10 +77,14 @@ export interface ChoiceGroupOption {
   groupId: number;
   label: string;
   path: string[];
+  /** Pieces of this group per ONE package (ROUND3 R3-2: extra × qty). */
+  qty: number;
   options: {
     productId: number;
     name: string;
     isDefault: boolean;
+    /** ROUND3 R3-2 — ৳ per piece added to the package price when picked. */
+    extraPrice: number;
     stockQty: number;
   }[];
 }
@@ -124,7 +129,10 @@ export interface OrderFormInitial {
     packageId: number | null;
     qty: number;
     unitPrice: number;
-    choiceSelections?: { groupId: number; productId: number }[] | null;
+    // extraPrice: what the pick was sold at (R3-2; absent on older orders = 0).
+    choiceSelections?:
+      | { groupId: number; productId: number; extraPrice?: number }[]
+      | null;
   }[];
   discount: number;
   courierCharge: number;
@@ -167,6 +175,12 @@ const ADVANCE_METHODS: PaymentMethodValue[] = [
 ];
 
 let lineKey = 1;
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/** Catalog price of a package with the default picks (combobox hint, R3-2). */
+function defaultPackagePrice(p: PackageOption, frozen: ReadonlyMap<string, number>): number {
+  return round2(p.sellingPrice + choiceExtraTotal(p.choiceGroups, undefined, frozen));
+}
 
 export function OrderForm({
   mode,
@@ -259,6 +273,20 @@ export function OrderForm({
     },
     [packages]
   );
+  // ROUND3 R3-2 — on edit, the extras the order's picks were sold at (older
+  // orders: +৳0). An unchanged pick keeps its saved extra — the server
+  // applies the same map (frozenExtrasForOrder), so price and floor agree.
+  const frozenExtras = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const it of initial?.items ?? []) {
+      for (const sel of it.choiceSelections ?? []) {
+        m.set(frozenKey(sel.groupId, sel.productId), sel.extraPrice ?? 0);
+      }
+    }
+    return m;
+    // initial is fixed for the form's lifetime
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [lines, setLines] = useState<LineState[]>(() =>
     initial
       ? initial.items.map((it) => ({
@@ -343,12 +371,12 @@ export function OrderForm({
         label: p.name,
         code: p.code,
         hint:
-          money(p.sellingPrice) +
+          money(defaultPackagePrice(p, frozenExtras)) +
           (p.availableToSell != null
             ? ` · can build ${p.availableToSell}`
             : ""),
       })),
-    [packages]
+    [packages, frozenExtras]
   );
 
   // ---- repeat-customer lookup (§4.1 A) ----
@@ -405,33 +433,74 @@ export function OrderForm({
     if (sum > 0) setCourierCharge(String(sum));
   }
 
+  // ROUND3 R3-2 — Σ qty × extra price of a package line's picks, for ONE
+  // package: the same function (lib/bom.ts choiceExtraTotal) the server and
+  // the website price with.
+  function choiceExtra(
+    itemType: LineState["itemType"],
+    itemId: string,
+    selections: Record<string, string>
+  ): number {
+    if (itemType !== "PACKAGE") return 0;
+    const pkg = packageById.get(itemId);
+    if (!pkg || pkg.choiceGroups.length === 0) return 0;
+    const picks: Record<string, number> = {};
+    for (const [k, v] of Object.entries(selections)) if (v !== "") picks[k] = Number(v);
+    return choiceExtraTotal(pkg.choiceGroups, picks, frozenExtras);
+  }
+
   function selectItem(line: LineState, itemId: string) {
     const opt =
       line.itemType === "PRODUCT"
         ? productById.get(itemId)
         : packageById.get(itemId);
+    const selections =
+      line.itemType === "PACKAGE" ? defaultSelections(Number(itemId)) : {};
     const nextLines = lines.map((l) =>
       l.key === line.key
         ? {
             ...l,
             itemId,
-            unitPrice: opt ? String(opt.sellingPrice) : l.unitPrice,
-            selections:
-              line.itemType === "PACKAGE"
-                ? defaultSelections(Number(itemId))
-                : {},
+            // The default options' extra prices are in the starting price.
+            unitPrice: opt
+              ? String(
+                  round2(
+                    opt.sellingPrice + choiceExtra(line.itemType, itemId, selections)
+                  )
+                )
+              : l.unitPrice,
+            selections,
           }
         : l
     );
     setLines(nextLines);
     autofillCharge(deliveryZone, nextLines);
   }
+  // A changed pick moves the price by the difference between the two
+  // options' extras — a price the SE typed by hand keeps its discount.
+  function selectChoice(line: LineState, groupId: number, productId: string) {
+    const selections = { ...line.selections, [String(groupId)]: productId };
+    const before = choiceExtra(line.itemType, line.itemId, line.selections);
+    const after = choiceExtra(line.itemType, line.itemId, selections);
+    updateLine(line.key, {
+      selections,
+      unitPrice:
+        line.unitPrice === ""
+          ? line.unitPrice
+          : String(round2((Number(line.unitPrice) || 0) + after - before)),
+    });
+  }
   function lineFloor(line: LineState): number | null {
     const opt =
       line.itemType === "PRODUCT"
         ? productById.get(line.itemId)
         : packageById.get(line.itemId);
-    return opt ? opt.priceFloor : null;
+    if (!opt) return null;
+    // R3-2 — the floor rises (or falls) with the picks' extras, never below 0.
+    return Math.max(
+      0,
+      round2(opt.priceFloor + choiceExtra(line.itemType, line.itemId, line.selections))
+    );
   }
 
   // ---- totals (mirror of server math; server recomputes authoritatively) ----
@@ -976,6 +1045,30 @@ export function OrderForm({
                     ×
                   </Button>
                 </div>
+                {line.itemId && Number(line.qty) > 0 && (() => {
+                  const qty = Number(line.qty) || 0;
+                  const unit = Number(line.unitPrice) || 0;
+                  const pkg =
+                    line.itemType === "PACKAGE"
+                      ? packageById.get(line.itemId)
+                      : undefined;
+                  const extra = choiceExtra(line.itemType, line.itemId, line.selections);
+                  return (
+                    <p className="text-xs text-muted-foreground">
+                      Line total: {qty} × {money(unit)} ={" "}
+                      <span className="font-medium text-foreground">
+                        {money(round2(qty * unit))}
+                      </span>
+                      {pkg && extra !== 0 && (
+                        <>
+                          {" "}
+                          · list price {money(pkg.sellingPrice)} + options{" "}
+                          {signedMoney(extra)}
+                        </>
+                      )}
+                    </p>
+                  );
+                })()}
                 {below && (
                   <p className="text-xs text-destructive">
                     Below price floor ({money(floor!)}) —{" "}
@@ -1002,28 +1095,34 @@ export function OrderForm({
                             <Select
                               value={line.selections[String(g.groupId)] ?? ""}
                               onValueChange={(v) =>
-                                updateLine(line.key, {
-                                  selections: {
-                                    ...line.selections,
-                                    [String(g.groupId)]: v,
-                                  },
-                                })
+                                selectChoice(line, g.groupId, v)
                               }
                             >
                               <SelectTrigger>
                                 <SelectValue placeholder="Choose…" />
                               </SelectTrigger>
                               <SelectContent>
-                                {g.options.map((o) => (
-                                  <SelectItem
-                                    key={o.productId}
-                                    value={String(o.productId)}
-                                  >
-                                    {o.name}
-                                    {o.isDefault ? " (default)" : ""} — stock{" "}
-                                    {o.stockQty}
-                                  </SelectItem>
-                                ))}
+                                {g.options.map((o) => {
+                                  // R3-2 — every option shows its extra price
+                                  // once any option of the group has one.
+                                  const priced = g.options.some(
+                                    (x) => optionExtra(g.groupId, x, frozenExtras) !== 0
+                                  );
+                                  const extra = optionExtra(g.groupId, o, frozenExtras);
+                                  return (
+                                    <SelectItem
+                                      key={o.productId}
+                                      value={String(o.productId)}
+                                    >
+                                      {o.name}
+                                      {priced
+                                        ? ` (${signedMoney(extra)}${g.qty > 1 ? ` × ${g.qty}` : ""})`
+                                        : ""}
+                                      {o.isDefault ? " (default)" : ""} — stock{" "}
+                                      {o.stockQty}
+                                    </SelectItem>
+                                  );
+                                })}
                               </SelectContent>
                             </Select>
                           </div>

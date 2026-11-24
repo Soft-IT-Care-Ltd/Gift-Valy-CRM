@@ -37,9 +37,13 @@ export async function GET() {
   }
 }
 
+// ROUND3 R3-2 — extraPrice: ৳ per piece added to the package price when this
+// option is picked (+/−; the package may never go below ৳0 — checked with
+// the whole tree in validatePackageBomInput).
 const optionSchema = z.object({
   productId: z.number().int().positive(),
   isDefault: z.boolean().default(false),
+  extraPrice: z.number().finite().min(-9_999_999).max(9_999_999).default(0),
 });
 
 // CORRECTIONS Products §5 — a BOM line is a product, a nested sub-package, or
@@ -80,7 +84,12 @@ export async function POST(req: Request) {
     const session = await requirePermission("catalog.manage");
     const data = createSchema.parse(await req.json());
 
-    const bomError = await validatePackageBomInput(prisma, null, data.items);
+    const bomError = await validatePackageBomInput(
+      prisma,
+      null,
+      data.items,
+      data.sellingPrice
+    );
     if (bomError) {
       return NextResponse.json({ error: bomError }, { status: 400 });
     }

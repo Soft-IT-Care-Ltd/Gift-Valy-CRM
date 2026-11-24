@@ -8,7 +8,8 @@ import type {
 type Tx = Prisma.TransactionClient | PrismaClient;
 
 // Catalog options for the order form (§4.1 C) — price + floor + zone charges
-// only, never costs (CLAUDE.md rule 1). Component-only products are excluded
+// (+ each choice option's extra price, ROUND3 R3-2) only, never costs
+// (CLAUDE.md rule 1). Component-only products are excluded
 // from the picker entirely (CORRECTIONS Products §1); packages carry their
 // choice groups so the form can prompt for variants (§5).
 export async function loadOrderFormOptions(
@@ -49,12 +50,14 @@ export async function loadOrderFormOptions(
           groupId: g.groupId,
           label: g.label,
           path: g.path,
+          qty: g.qty, // pieces per package — the extra price counts per piece (R3-2)
           options: g.options.map((o) => {
             const product = catalog.products.get(o.productId);
             return {
               productId: o.productId,
               name: product?.name ?? `#${o.productId}`,
               isDefault: o.isDefault,
+              extraPrice: o.extraPrice,
               stockQty: product?.stockQty ?? 0,
             };
           }),

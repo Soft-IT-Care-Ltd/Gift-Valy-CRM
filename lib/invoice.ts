@@ -1,7 +1,7 @@
 import path from "path";
 import { existsSync } from "fs";
 import PDFDocument from "pdfkit";
-import { Prisma, type Invoice } from "@prisma/client";
+import { Prisma, type Invoice, type PrismaClient } from "@prisma/client";
 import { prisma } from "./db";
 import { logAudit } from "./audit";
 import { PAYMENT_METHOD_LABELS } from "./order-constants";
@@ -125,13 +125,15 @@ function flattenContents(node: BomTreeNode, depth = 0): PackageContentLine[] {
   return out;
 }
 
+type Tx = Prisma.TransactionClient | PrismaClient;
+
 // Enriches loaded orders in place. A broken/edited BOM must never block an
 // invoice — those items simply print without a contents list.
-async function attachPackageContents(orders: InvoiceOrder[]): Promise<void> {
+async function attachPackageContents(orders: InvoiceOrder[], db: Tx = prisma): Promise<void> {
   if (!orders.some((o) => o.items.some((it) => it.itemType === "PACKAGE"))) {
     return;
   }
-  const catalog = await loadBomCatalog(prisma);
+  const catalog = await loadBomCatalog(db);
   for (const order of orders) {
     for (const it of order.items) {
       if (it.itemType !== "PACKAGE" || it.packageId == null) continue;
@@ -683,24 +685,30 @@ export async function renderInvoiceBatchPdf(
 
 // ---------- generation + versioning ----------
 
-export async function loadInvoiceOrder(orderId: number): Promise<InvoiceOrder> {
-  const order = await prisma.order.findUniqueOrThrow({
+export async function loadInvoiceOrder(
+  orderId: number,
+  db: Tx = prisma
+): Promise<InvoiceOrder> {
+  const order = await db.order.findUniqueOrThrow({
     where: { id: orderId },
     include: invoiceOrderInclude,
   });
-  await attachPackageContents([order]);
+  await attachPackageContents([order], db);
   return order;
 }
 
 // Bulk print (§6h) — ordered by order number so the printed stack is sorted.
 // The lib/db.ts trash auto-filter silently drops trashed ids.
-export async function loadInvoiceOrders(orderIds: number[]): Promise<InvoiceOrder[]> {
-  const orders = await prisma.order.findMany({
+export async function loadInvoiceOrders(
+  orderIds: number[],
+  db: Tx = prisma
+): Promise<InvoiceOrder[]> {
+  const orders = await db.order.findMany({
     where: { id: { in: orderIds } },
     include: invoiceOrderInclude,
     orderBy: { orderNo: "asc" },
   });
-  await attachPackageContents(orders);
+  await attachPackageContents(orders, db);
   return orders;
 }
 

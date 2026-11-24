@@ -219,6 +219,9 @@ model LeadDailyCount {
 model Category {
   id        Int      @id @default(autoincrement())
   name      String   @unique
+  // ROUND3 R3-1 — optional photo, "/uploads/category-<uuid>.webp" (≤1200 px,
+  // WebP, EXIF stripped by POST /api/categories/photo). null = plain tile.
+  photoUrl  String?  @map("photo_url")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
   createdBy Int?     @map("created_by")
@@ -510,6 +513,10 @@ model PackageItemOption {
   packageItemId Int     @map("package_item_id")
   productId     Int     @map("product_id")
   isDefault     Boolean @default(false) @map("is_default")
+  // ROUND3 R3-2 — added to the package price per piece of this option when it
+  // is the pick (+/−, never so that a package can go below ৳0). Snapshotted on
+  // order_items.choice_selections so a later change never reprices an order.
+  extraPrice    Decimal @default(0) @map("extra_price") @db.Decimal(12, 2)
 
   item    PackageItem @relation(fields: [packageItemId], references: [id], onDelete: Cascade)
   product Product     @relation(fields: [productId], references: [id])

@@ -8,6 +8,7 @@ import {
   applyOrderEdit,
   orderCoreSchema,
   orderScopeWhere,
+  frozenExtrasForOrder,
   resolveItemsAndTotals,
 } from "@/lib/orders";
 import { EDITABLE_STATUSES } from "@/lib/order-constants";
@@ -75,7 +76,10 @@ export async function POST(req: Request, { params }: Params) {
       );
     }
     const payload = orderCoreSchema.parse(request.changesJson);
-    const totals = await resolveItemsAndTotals(prisma, payload);
+    // R3-2 — unchanged picks keep the extra price the order was sold with.
+    const totals = await resolveItemsAndTotals(prisma, payload, {
+      frozenExtras: await frozenExtrasForOrder(prisma, request.orderId),
+    });
 
     await prisma.$transaction(async (tx) => {
       await applyOrderEdit(tx, request.orderId, payload, totals, session.user.id);

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Card,
   CardContent,
@@ -23,6 +24,11 @@ import {
 import { formatDate, formatDateTime } from "@/lib/format";
 import { PACKED_UNPRINTED_WARNING, type OrderPrintStatus } from "@/lib/print-kit";
 import { PrintBar } from "@/components/orders/print/print-bar";
+import {
+  openInvoicePdf,
+  openInvoicesPrintJob,
+} from "@/components/orders/print/invoice-print-job";
+import { ORDER_STATUS_LABELS, type OrderStatusValue } from "@/lib/order-constants";
 
 export interface PickLine {
   sku: string;
@@ -74,17 +80,80 @@ export interface PackingOrder {
 /** PP-7 — the order's print state (shared with the order page). */
 export type PackingPrint = OrderPrintStatus;
 
+/** ROUND3 R3-3 — an order already packed and on its way (Packed, Handed to
+ *  courier, In transit): what Packing needs to find it and reprint its
+ *  invoice. No money, no customer abroad phone. */
+export interface ShippingOrder {
+  id: number;
+  orderNo: string;
+  status: OrderStatusValue;
+  recipientName: string;
+  recipientPhoneBd: string;
+  area: string;
+  deliveryDateMode: "ASAP" | "ANY_DAY" | "FIXED";
+  requestedDeliveryDate: string | null;
+  items: string[];
+}
+
+type Tab = "pack" | "shipping";
+
 export function PackingQueueClient({
   queue,
+  shipping,
+  shippingCapped,
   canPrint,
+  canPrintInvoices,
   borderless,
 }: {
   queue: PackingOrder[];
+  shipping: ShippingOrder[];
+  shippingCapped: boolean;
   canPrint: boolean;
+  /** R3-3 — single + bulk invoice print (invoice.print with orders.pack). */
+  canPrintInvoices: boolean;
   borderless: boolean;
 }) {
   const router = useRouter();
   const [packingId, setPackingId] = useState<number | null>(null);
+  const [tab, setTab] = useState<Tab>("pack");
+  // Selection for the bulk print — per tab, cleared when the tab changes.
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [openingId, setOpeningId] = useState<number | null>(null);
+  const [bulkPrinting, setBulkPrinting] = useState(false);
+
+  const tabIds = tab === "pack" ? queue.map((o) => o.id) : shipping.map((o) => o.id);
+  const selectedIds = tabIds.filter((id) => selected.has(id));
+  const allSelected = tabIds.length > 0 && selectedIds.length === tabIds.length;
+
+  function switchTab(next: Tab) {
+    setTab(next);
+    setSelected(new Set());
+  }
+  function toggle(id: number, on: boolean) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+  async function printOne(id: number, orderNo: string) {
+    setOpeningId(id);
+    try {
+      await openInvoicePdf(id, orderNo);
+    } finally {
+      setOpeningId(null);
+    }
+  }
+  async function printSelected() {
+    if (selectedIds.length === 0 || bulkPrinting) return;
+    setBulkPrinting(true);
+    try {
+      await openInvoicesPrintJob(selectedIds);
+    } finally {
+      setBulkPrinting(false);
+    }
+  }
 
   async function markPacked(order: PackingOrder) {
     // PP-7 — not-printed photos/cards: a warning, never a block.
@@ -112,19 +181,157 @@ export function PackingQueueClient({
       <div>
         <h1 className="text-2xl font-bold">Packing Queue</h1>
         <p className="text-sm text-muted-foreground">
-          {queue.length === 0
-            ? "No confirmed orders waiting to be packed."
-            : `${queue.length} confirmed order${queue.length === 1 ? "" : "s"} waiting — ASAP first, then fixed dates, then flexible.`}
+          {tab === "pack"
+            ? queue.length === 0
+              ? "No confirmed orders waiting to be packed."
+              : `${queue.length} confirmed order${queue.length === 1 ? "" : "s"} waiting — ASAP first, then fixed dates, then flexible.`
+            : shipping.length === 0
+              ? "No packed orders on their way."
+              : `${shipping.length} order${shipping.length === 1 ? "" : "s"} packed or with the courier — newest first.`}
         </p>
       </div>
 
-      {queue.map((o) => {
+      {/* R3-3 — tabs + the bulk invoice print for the selected rows */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="inline-flex rounded-md border p-0.5">
+          <Button
+            size="sm"
+            variant={tab === "pack" ? "default" : "ghost"}
+            onClick={() => switchTab("pack")}
+          >
+            To pack ({queue.length})
+          </Button>
+          <Button
+            size="sm"
+            variant={tab === "shipping" ? "default" : "ghost"}
+            onClick={() => switchTab("shipping")}
+          >
+            Packed &amp; with courier ({shipping.length}
+            {shippingCapped ? "+" : ""})
+          </Button>
+        </div>
+        {canPrintInvoices && tabIds.length > 0 && (
+          <>
+            <label className="ml-auto flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={allSelected}
+                onCheckedChange={(v) =>
+                  setSelected(v === true ? new Set(tabIds) : new Set())
+                }
+                aria-label="Select all orders on this tab"
+              />
+              Select all
+            </label>
+            <Button
+              variant="outline"
+              onClick={printSelected}
+              disabled={selectedIds.length === 0 || bulkPrinting}
+            >
+              {bulkPrinting
+                ? "Preparing…"
+                : `Print invoices (${selectedIds.length})`}
+            </Button>
+          </>
+        )}
+      </div>
+
+      {tab === "shipping" && (
+        <Card>
+          <CardContent className="pt-6">
+            {shipping.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Nothing packed or with the courier right now.
+              </p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    {canPrintInvoices && <TableHead className="w-8" />}
+                    <TableHead>Order</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>To</TableHead>
+                    <TableHead>Items</TableHead>
+                    <TableHead>Deliver</TableHead>
+                    {canPrintInvoices && <TableHead />}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {shipping.map((o) => (
+                    <TableRow key={o.id}>
+                      {canPrintInvoices && (
+                        <TableCell>
+                          <Checkbox
+                            checked={selected.has(o.id)}
+                            onCheckedChange={(v) => toggle(o.id, v === true)}
+                            aria-label={`Select ${o.orderNo}`}
+                          />
+                        </TableCell>
+                      )}
+                      <TableCell className="font-medium whitespace-nowrap">
+                        {o.orderNo}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline">
+                          {ORDER_STATUS_LABELS[o.status]}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {o.recipientName}
+                        <span className="block text-xs text-muted-foreground">
+                          {o.recipientPhoneBd}
+                          {o.area ? ` · ${o.area}` : ""}
+                        </span>
+                      </TableCell>
+                      <TableCell className="max-w-[320px] text-sm">
+                        {o.items.join(", ")}
+                      </TableCell>
+                      <TableCell className="text-sm whitespace-nowrap">
+                        {o.deliveryDateMode === "FIXED" && o.requestedDeliveryDate
+                          ? formatDate(o.requestedDeliveryDate)
+                          : o.deliveryDateMode === "ASAP"
+                            ? "ASAP"
+                            : "Any day"}
+                      </TableCell>
+                      {canPrintInvoices && (
+                        <TableCell className="text-right">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => printOne(o.id, o.orderNo)}
+                            disabled={openingId === o.id}
+                          >
+                            {openingId === o.id ? "Opening…" : "Print invoice"}
+                          </Button>
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+            {shippingCapped && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Showing the newest {shipping.length}.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {tab === "pack" && queue.map((o) => {
         const shortage = o.pickList.some((l) => (l.onHand ?? 0) < l.qty);
         return (
           <Card key={o.id}>
             <CardHeader className="flex flex-row items-start justify-between gap-4">
               <div>
                 <CardTitle className="flex flex-wrap items-center gap-2">
+                  {canPrintInvoices && (
+                    <Checkbox
+                      checked={selected.has(o.id)}
+                      onCheckedChange={(v) => toggle(o.id, v === true)}
+                      aria-label={`Select ${o.orderNo}`}
+                    />
+                  )}
                   {o.orderNo}
                   {shortage && <Badge variant="destructive">Stock short</Badge>}
                   {/* Delivery timing (CORRECTIONS Orders §1): fixed dates are
@@ -152,13 +359,24 @@ export function PackingQueueClient({
                   {o.occasion ? ` · ${o.occasion}` : ""}
                 </CardDescription>
               </div>
-              <Button
-                onClick={() => markPacked(o)}
-                disabled={packingId === o.id || shortage}
-                title={shortage ? "Not enough stock on hand — purchase or adjust first" : undefined}
-              >
-                {packingId === o.id ? "Packing…" : "Mark as PACKED"}
-              </Button>
+              <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                {canPrintInvoices && (
+                  <Button
+                    variant="outline"
+                    onClick={() => printOne(o.id, o.orderNo)}
+                    disabled={openingId === o.id}
+                  >
+                    {openingId === o.id ? "Opening…" : "Print invoice"}
+                  </Button>
+                )}
+                <Button
+                  onClick={() => markPacked(o)}
+                  disabled={packingId === o.id || shortage}
+                  title={shortage ? "Not enough stock on hand — purchase or adjust first" : undefined}
+                >
+                  {packingId === o.id ? "Packing…" : "Mark as PACKED"}
+                </Button>
+              </div>
             </CardHeader>
             <CardContent className="space-y-3">
               {/* §2.2 — each item with its FULL BOM explosion: what goes

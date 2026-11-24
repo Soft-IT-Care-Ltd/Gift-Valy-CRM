@@ -6,13 +6,20 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 
 // Direct image upload for catalog dialogs — picks a file, POSTs it to
-// /api/uploads, and hands the stored URL back to the form state.
+// /api/uploads (or `uploadUrl`, e.g. the category photo endpoint that
+// resizes + strips EXIF, R3-1), and hands the stored URL back to the form.
 export function PhotoField({
   value,
   onChange,
+  uploadUrl = "/api/uploads",
+  label = "Photo (optional)",
+  hint,
 }: {
   value: string;
   onChange: (url: string) => void;
+  uploadUrl?: string;
+  label?: string;
+  hint?: string;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -24,7 +31,7 @@ export function PhotoField({
     setUploading(true);
     const form = new FormData();
     form.append("file", file);
-    const res = await fetch("/api/uploads", { method: "POST", body: form });
+    const res = await fetch(uploadUrl, { method: "POST", body: form });
     setUploading(false);
     if (!res.ok) {
       const data = await res.json().catch(() => null);
@@ -37,7 +44,7 @@ export function PhotoField({
 
   return (
     <div className="grid gap-2">
-      <Label>Photo (optional)</Label>
+      <Label>{label}</Label>
       <div className="flex items-center gap-2">
         {value && (
           // eslint-disable-next-line @next/next/no-img-element
@@ -74,6 +81,7 @@ export function PhotoField({
           onChange={handleFile}
         />
       </div>
+      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
     </div>
   );
 }

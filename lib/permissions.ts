@@ -56,6 +56,11 @@ export const PERMISSION_DEFS: PermissionDef[] = [
   },
   { key: "orders.pack", label: "Packing queue & mark packed", group: "Orders" },
   { key: "invoice.generate", label: "Generate invoices", group: "Orders" },
+  // ROUND3 R3-3 — open/print existing invoices (single + bulk half-A4). Within
+  // the person's order scope; together with orders.pack it also covers every
+  // order in the Packing queue's statuses (lib/invoice-access.ts). Generating
+  // a new invoice version stays with invoice.generate.
+  { key: "invoice.print", label: "Print invoices", group: "Orders" },
   // PHOTO_PRINT.md PP-5 — the Customize Chocolate Box photos + wishing cards.
   // print.edit works only until the order is PACKED (Admin/Manager any time);
   // print.settings covers card designs + messages — print sizes and layouts
@@ -114,7 +119,7 @@ export const ROLE_MATRIX: Record<RoleName, string[]> = {
     "orders.create", "orders.view_own", "orders.view_team", "orders.view_all",
     "orders.edit", "orders.approve_edit", "orders.cancel", "orders.trash",
     "orders.pack",
-    "invoice.generate",
+    "invoice.generate", "invoice.print",
     "print.edit", "print.print", "print.settings",
     "payments.create", "payments.verify", "wallets.manage",
     "expenses.create", "purchases.create",
@@ -128,7 +133,7 @@ export const ROLE_MATRIX: Record<RoleName, string[]> = {
   TeamLeader: [
     "leads.create", "leads.bulk", "leads.view_own", "leads.view_team", "leads.edit", "leads.reassign",
     "orders.create", "orders.view_own", "orders.view_team", "orders.approve_edit",
-    "invoice.generate",
+    "invoice.generate", "invoice.print",
     "print.edit",
     "payments.create",
     "catalog.view",
@@ -139,7 +144,7 @@ export const ROLE_MATRIX: Record<RoleName, string[]> = {
   SalesExecutive: [
     "leads.create", "leads.view_own",
     "orders.create", "orders.view_own",
-    "invoice.generate",
+    "invoice.generate", "invoice.print",
     "print.edit",
     "payments.create",
     "catalog.view",
@@ -149,6 +154,7 @@ export const ROLE_MATRIX: Record<RoleName, string[]> = {
   ],
   Packing: [
     "orders.pack",
+    "invoice.print",
     "print.print",
     "catalog.view",
     "stock.view",

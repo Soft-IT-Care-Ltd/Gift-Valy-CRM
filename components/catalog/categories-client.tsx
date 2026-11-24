@@ -29,10 +29,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { PhotoField } from "./photo-field";
 
 interface CategoryRow {
   id: number;
   name: string;
+  photoUrl: string | null; // ROUND3 R3-1 — optional
   productsCount: number;
 }
 
@@ -41,17 +43,20 @@ export function CategoriesClient({ categories }: { categories: CategoryRow[] }) 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<CategoryRow | null>(null);
   const [name, setName] = useState("");
+  const [photoUrl, setPhotoUrl] = useState("");
   const [saving, setSaving] = useState(false);
 
   function openCreate() {
     setEditing(null);
     setName("");
+    setPhotoUrl("");
     setDialogOpen(true);
   }
 
   function openEdit(c: CategoryRow) {
     setEditing(c);
     setName(c.name);
+    setPhotoUrl(c.photoUrl ?? "");
     setDialogOpen(true);
   }
 
@@ -62,7 +67,7 @@ export function CategoriesClient({ categories }: { categories: CategoryRow[] }) 
       {
         method: editing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, photoUrl: photoUrl || null }),
       }
     );
     setSaving(false);
@@ -103,6 +108,7 @@ export function CategoriesClient({ categories }: { categories: CategoryRow[] }) 
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-14">Photo</TableHead>
               <TableHead>Name</TableHead>
               <TableHead>Products</TableHead>
               <TableHead className="text-right">Actions</TableHead>
@@ -111,6 +117,23 @@ export function CategoriesClient({ categories }: { categories: CategoryRow[] }) 
           <TableBody>
             {categories.map((c) => (
               <TableRow key={c.id}>
+                <TableCell>
+                  {c.photoUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={c.photoUrl}
+                      alt={c.name}
+                      className="h-10 w-10 rounded-md border object-cover"
+                    />
+                  ) : (
+                    <div
+                      className="flex h-10 w-10 items-center justify-center rounded-md border bg-muted text-xs font-medium text-muted-foreground"
+                      title="No photo"
+                    >
+                      {c.name.slice(0, 1).toUpperCase()}
+                    </div>
+                  )}
+                </TableCell>
                 <TableCell className="font-medium">{c.name}</TableCell>
                 <TableCell>{c.productsCount}</TableCell>
                 <TableCell className="text-right">
@@ -131,7 +154,7 @@ export function CategoriesClient({ categories }: { categories: CategoryRow[] }) 
             ))}
             {categories.length === 0 && (
               <TableRow>
-                <TableCell colSpan={3} className="text-center text-muted-foreground">
+                <TableCell colSpan={4} className="text-center text-muted-foreground">
                   No categories yet.
                 </TableCell>
               </TableRow>
@@ -147,12 +170,22 @@ export function CategoriesClient({ categories }: { categories: CategoryRow[] }) 
               {editing ? `Edit ${editing.name}` : "New category"}
             </DialogTitle>
             <DialogDescription>
-              Categories group products in the catalog and reports.
+              Categories group products in the catalog and reports. The photo
+              is the category&apos;s tile on the website.
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-2">
-            <Label>Category name</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} />
+          <div className="grid gap-4">
+            <div className="grid gap-2">
+              <Label>Category name</Label>
+              <Input value={name} onChange={(e) => setName(e.target.value)} />
+            </div>
+            <PhotoField
+              value={photoUrl}
+              onChange={setPhotoUrl}
+              uploadUrl="/api/categories/photo"
+              label="Category photo (optional)"
+              hint="JPEG, PNG or WebP up to 10 MB — saved at most 1200 px on the longest side, as WebP. Without a photo the website shows a plain tile with the name."
+            />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>

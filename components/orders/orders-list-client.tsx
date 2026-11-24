@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { openInvoicesPrintJob } from "@/components/orders/print/invoice-print-job";
 import {
   Card,
   CardContent,
@@ -410,7 +411,7 @@ export function OrdersListClient({
   canEditOrders: boolean; // orders.edit
   canCancelOrders: boolean; // orders.cancel
   canPackOrders: boolean; // orders.pack
-  canPrintInvoices: boolean; // invoice.generate — bulk print (§6h)
+  canPrintInvoices: boolean; // invoice.print / invoice.generate — bulk print (§6h)
   canSeeCosts: boolean; // cost-visible roles see the SF Delivery Charge column (§6l)
 }) {
   const router = useRouter();
@@ -627,26 +628,7 @@ export function OrdersListClient({
     if (selectedOrders.length === 0 || printing) return;
     setPrinting(true);
     try {
-      const res = await fetch("/api/orders/print-invoices", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderIds: selectedOrders.map((o) => o.id) }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        toast.error(data?.error ?? "Failed to build the print job");
-        return;
-      }
-      const skipped = Number(res.headers.get("X-Skipped-Count") ?? 0);
-      const blob = await res.blob();
-      window.open(URL.createObjectURL(blob), "_blank");
-      const count = selectedOrders.length - skipped;
-      toast.success(
-        `Print job ready — ${count} invoice${count === 1 ? "" : "s"} on ${Math.ceil(count / 2)} A4 page${count > 2 ? "s" : ""}`
-      );
-      if (skipped > 0) {
-        toast.warning(`${skipped} selected order${skipped === 1 ? "" : "s"} had nothing to print`);
-      }
+      await openInvoicesPrintJob(selectedOrders.map((o) => o.id));
     } finally {
       setPrinting(false);
     }

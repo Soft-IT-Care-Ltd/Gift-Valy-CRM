@@ -17,6 +17,7 @@ export default async function CategoriesPage() {
       categories={categories.map((c) => ({
         id: c.id,
         name: c.name,
+        photoUrl: c.photoUrl,
         productsCount: c._count.products,
       }))}
     />

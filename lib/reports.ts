@@ -4,6 +4,7 @@ import {
   explodePackage,
   packageAvailability,
   packageCost,
+  packagePrice,
 } from "@/lib/bom";
 import { loadBomCatalog } from "@/lib/bom-db";
 import { dhakaDateBound, dhakaDayStart, dhakaMonthStart } from "@/lib/orders";
@@ -243,7 +244,11 @@ export async function buildPackageReport(
     let leaves: [number, number][] = [];
     let buildable: number | null = null;
     let cost: number | undefined;
+    // ROUND3 R3-2 — the price with the default picks (selling price + their
+    // choice extras), the same picks the cost and components use.
+    let price = Number(pkg.sellingPrice);
     try {
+      price = packagePrice(catalog, pkg.id).unitPrice;
       leaves = [...explodePackage(catalog, pkg.id, 1)];
       buildable = packageAvailability(catalog, pkg.id);
       cost = showCosts ? packageCost(catalog, pkg.id) : undefined;
@@ -282,12 +287,12 @@ export async function buildPackageReport(
       code: pkg.code,
       name: pkg.name,
       isActive: pkg.isActive,
-      sellingPrice: Number(pkg.sellingPrice),
+      sellingPrice: price,
       componentCount: components.length,
       buildable,
       limitedBy,
       ...(showCosts
-        ? { cost, margin: round2(Number(pkg.sellingPrice) - (cost ?? 0)) }
+        ? { cost, margin: round2(price - (cost ?? 0)) }
         : {}),
       components,
     };

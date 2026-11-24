@@ -58,12 +58,16 @@ export interface BomLine {
   childPackageId: number | null;
   choiceLabel: string | null;
   qty: number;
-  options: { productId: number; isDefault: boolean }[];
+  /** extraPrice (ROUND3 R3-2): ৳ per piece of the option when picked; absent = 0. */
+  options: { productId: number; isDefault: boolean; extraPrice?: number }[];
 }
 
 export interface BomPackage {
   id: number;
   name: string;
+  /** ROUND3 R3-2 — list price / floor before choice extras (absent = 0). */
+  sellingPrice?: number;
+  priceFloor?: number;
   /** Manual weight override — null means auto-sum from the explosion. */
   weightKg: number | null;
   items: BomLine[];
@@ -86,6 +90,11 @@ export interface StoredChoiceSelection {
   label: string;
   productId: number;
   name: string;
+  /** ROUND3 R3-2 — the option's extra price (৳ per piece) when the line was
+   *  saved, and the pieces per ONE package. Absent on lines saved before
+   *  R3-2 — those count as +৳0 (their price never included an extra). */
+  extraPrice?: number;
+  qty?: number;
 }
 
 /** order_items.choice_selections (JSON) → groupId→productId map. Tolerates
@@ -624,7 +633,7 @@ export interface ChoiceGroupInfo {
   qty: number; // per one root package (line qty × parent multipliers)
   /** Path of package names from the root (["Probashi Combo", "Chocolate Box"]). */
   path: string[];
-  options: { productId: number; isDefault: boolean }[];
+  options: { productId: number; isDefault: boolean; extraPrice: number }[];
 }
 
 /** Every CHOICE group in the package's tree, root-first — what the order form
@@ -656,6 +665,7 @@ export function collectChoiceGroups(
         options: line.options.map((o) => ({
           productId: o.productId,
           isDefault: o.isDefault,
+          extraPrice: o.extraPrice ?? 0,
         })),
       });
     } else if (line.kind === "PACKAGE") {
@@ -673,6 +683,187 @@ export function collectChoiceGroups(
   return groups;
 }
 
+// ---------- choice prices (ROUND3 R3-2) ----------
+//
+// Price of ONE package = its selling price + Σ over every choice group in the
+// whole nested tree of (pieces of that group per package × the picked
+// option's extra price). The floor rises (or falls) by the same amount, never
+// below 0. A line's total is that × the line qty — the caller's job.
+//
+// choiceExtraTotal is THE rule. It is pure and client-safe, so the order form
+// prices with the very function the server (packagePrice → order API) and,
+// later, the website and website orders use.
+
+/** The client-safe shape choiceExtraTotal prices over (collectChoiceGroups
+ *  output, or the order form's copy of it). */
+export interface PricedChoiceGroup {
+  groupId: number;
+  /** Pieces of this group per ONE root package. */
+  qty: number;
+  options: { productId: number; isDefault: boolean; extraPrice?: number }[];
+}
+
+/** groupId:productId → extra price saved on the order (edits keep it). */
+export type FrozenExtras = ReadonlyMap<string, number>;
+
+export const frozenKey = (groupId: number, productId: number) =>
+  `${groupId}:${productId}`;
+
+/** A saved order's picks → the extras frozen on them. Lines saved before
+ *  R3-2 carry no extraPrice and freeze at 0: their price never had one. */
+export function frozenExtrasFromJson(jsons: unknown[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const json of jsons) {
+    if (!Array.isArray(json)) continue;
+    for (const row of json) {
+      if (
+        row &&
+        typeof row === "object" &&
+        typeof (row as StoredChoiceSelection).groupId === "number" &&
+        typeof (row as StoredChoiceSelection).productId === "number"
+      ) {
+        const r = row as StoredChoiceSelection;
+        out.set(
+          frozenKey(r.groupId, r.productId),
+          typeof r.extraPrice === "number" && Number.isFinite(r.extraPrice) ? r.extraPrice : 0
+        );
+      }
+    }
+  }
+  return out;
+}
+
+/** The extra price of one option of a group, frozen value first. */
+export function optionExtra(
+  groupId: number,
+  option: { productId: number; extraPrice?: number },
+  frozen?: FrozenExtras
+): number {
+  const f = frozen?.get(frozenKey(groupId, option.productId));
+  return f !== undefined ? f : option.extraPrice ?? 0;
+}
+
+/** The option a group is priced at: a valid pick, else the default, else the
+ *  first option (resolveChoice without the throw — the server validates). */
+export function pricedOption<O extends { productId: number; isDefault: boolean }>(
+  group: { groupId: number; options: O[] },
+  selections?: ChoiceSelections
+): O | undefined {
+  const chosen = selectionFor(selections, group.groupId);
+  return (
+    (chosen !== undefined ? group.options.find((o) => o.productId === chosen) : undefined) ??
+    group.options.find((o) => o.isDefault) ??
+    group.options[0]
+  );
+}
+
+/** Σ qty × extra of the picked option over all groups, for ONE package. */
+export function choiceExtraTotal(
+  groups: readonly PricedChoiceGroup[],
+  selections?: ChoiceSelections,
+  frozen?: FrozenExtras
+): number {
+  let extra = 0;
+  for (const g of groups) {
+    const o = pricedOption(g, selections);
+    if (o) extra += g.qty * optionExtra(g.groupId, o, frozen);
+  }
+  return round2(extra);
+}
+
+export interface PackagePrice {
+  /** Selling price / floor before choice extras. */
+  basePrice: number;
+  baseFloor: number;
+  /** Σ extras of the picks, for ONE package. */
+  extra: number;
+  /** basePrice + extra — the suggested unit price. */
+  unitPrice: number;
+  /** max(0, baseFloor + extra). */
+  floor: number;
+  /** Every group's resolved pick with its extra — what order_items stores. */
+  picks: StoredChoiceSelection[];
+}
+
+/** ROUND3 R3-2 — the one package price function (order API, website, website
+ *  order). Throws BomError for a pick that is not an option of its group. */
+export function packagePrice(
+  catalog: BomCatalog,
+  packageId: number,
+  selections?: ChoiceSelections,
+  frozen?: FrozenExtras
+): PackagePrice {
+  const pkg = packageOrThrow(catalog, packageId);
+  const groups = collectChoiceGroups(catalog, packageId);
+  const picks: StoredChoiceSelection[] = groups.map((g) => {
+    const productId = resolveChoice(
+      {
+        id: g.groupId,
+        kind: "CHOICE",
+        productId: null,
+        childPackageId: null,
+        choiceLabel: g.label,
+        qty: g.qty,
+        options: g.options,
+      },
+      selections
+    );
+    const option = g.options.find((o) => o.productId === productId)!;
+    return {
+      groupId: g.groupId,
+      label: g.label,
+      productId,
+      name: catalog.products.get(productId)?.name ?? `#${productId}`,
+      extraPrice: optionExtra(g.groupId, option, frozen),
+      qty: g.qty,
+    };
+  });
+  const basePrice = pkg.sellingPrice ?? 0;
+  const baseFloor = pkg.priceFloor ?? 0;
+  const extra = round2(picks.reduce((s, p) => s + p.qty! * p.extraPrice!, 0));
+  return {
+    basePrice,
+    baseFloor,
+    extra,
+    unitPrice: round2(basePrice + extra),
+    floor: Math.max(0, round2(baseFloor + extra)),
+    picks,
+  };
+}
+
+/** Throws BomError when the cheapest combination of picks would take any of
+ *  `packageIds` (default: every package) below ৳0 — a negative extra price
+ *  may lower a package's price, never past zero. */
+export function assertPackagePricesNonNegative(
+  catalog: BomCatalog,
+  packageIds?: Iterable<number>
+): void {
+  for (const id of packageIds ?? catalog.packages.keys()) {
+    const pkg = packageOrThrow(catalog, id);
+    let min = pkg.sellingPrice ?? 0;
+    let worst: { name: string; extra: number } | null = null;
+    for (const g of collectChoiceGroups(catalog, id)) {
+      let cheapest = g.options[0];
+      for (const o of g.options) if (o.extraPrice < cheapest.extraPrice) cheapest = o;
+      if (!cheapest || cheapest.extraPrice >= 0) continue;
+      min += g.qty * cheapest.extraPrice;
+      if (!worst || cheapest.extraPrice < worst.extra) {
+        worst = {
+          name: catalog.products.get(cheapest.productId)?.name ?? `#${cheapest.productId}`,
+          extra: cheapest.extraPrice,
+        };
+      }
+    }
+    if (round2(min) < 0) {
+      throw new BomError(
+        `"${pkg.name}" would cost −৳${Math.abs(round2(min))} with its cheapest options${
+          worst ? ` ("${worst.name}" −৳${Math.abs(worst.extra)})` : ""
+        } — an extra price may lower a package's price, but never below ৳0`
+      );
+    }
+  }
+}
+
 // ---------- validation (package save) ----------
 
 /** Throws BomError if adding `items` to package `packageId` would create a
@@ -681,7 +872,8 @@ export function collectChoiceGroups(
 export function assertValidPackageBom(
   catalog: BomCatalog,
   packageId: number,
-  items: BomLine[]
+  items: BomLine[],
+  sellingPrice?: number
 ): void {
   const simulated: BomCatalog = {
     products: catalog.products,
@@ -692,6 +884,8 @@ export function assertValidPackageBom(
     id: packageId,
     name: existing?.name ?? `#${packageId}`,
     weightKg: existing?.weightKg ?? null,
+    sellingPrice: sellingPrice ?? existing?.sellingPrice ?? 0,
+    priceFloor: existing?.priceFloor ?? 0,
     items,
   });
   // Explode once with defaults — walks every branch, so cycles and the depth
@@ -703,4 +897,7 @@ export function assertValidPackageBom(
   for (const [id] of simulated.packages) {
     if (id !== packageId) explodePackage(simulated, id, 1);
   }
+  // ROUND3 R3-2 — this package and every package containing it are priced
+  // with the new extras: none may drop below ৳0 with its cheapest picks.
+  assertPackagePricesNonNegative(simulated);
 }

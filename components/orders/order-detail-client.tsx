@@ -41,7 +41,7 @@ import {
 } from "@/components/ui/select";
 import { Download, MessageCircle, Printer } from "lucide-react";
 import { PhotoField } from "@/components/catalog/photo-field";
-import { money, formatDate, formatDateTime } from "@/lib/format";
+import { money, signedMoney, formatDate, formatDateTime } from "@/lib/format";
 import { StatusBadge } from "./orders-list-client";
 import {
   DELIVERY_DATE_MODE_LABELS,
@@ -102,7 +102,14 @@ export interface OrderDetail {
     unitPrice: number;
     lineTotal: number;
     choiceSelections?:
-      | { groupId: number; label: string; productId: number; name: string }[]
+      | {
+          groupId: number;
+          label: string;
+          productId: number;
+          name: string;
+          extraPrice?: number; // R3-2 — saved with the line
+          qty?: number;
+        }[]
       | null;
   }[];
   subtotal: number;
@@ -1046,7 +1053,13 @@ export function OrderDetailClient({
                     {(it.choiceSelections?.length ?? 0) > 0 && (
                       <span className="block text-xs text-muted-foreground">
                         {it.choiceSelections!
-                          .map((s) => `${s.label}: ${s.name}`)
+                          .map(
+                            (s) =>
+                              `${s.label}: ${s.name}` +
+                              (s.extraPrice
+                                ? ` (${signedMoney(s.extraPrice)}${(s.qty ?? 1) > 1 ? ` × ${s.qty}` : ""})`
+                                : "")
+                          )
                           .join(" · ")}
                       </span>
                     )}

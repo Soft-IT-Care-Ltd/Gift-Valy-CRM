@@ -5,7 +5,12 @@ import assert from "node:assert/strict";
 import {
   BomError,
   MAX_PACKAGE_DEPTH,
+  assertPackagePricesNonNegative,
   assertValidPackageBom,
+  choiceExtraTotal,
+  frozenExtrasFromJson,
+  frozenKey,
+  packagePrice,
   collectChoiceGroups,
   explodePackage,
   explodeProduct,
@@ -500,6 +505,149 @@ describe("cycle prevention (§5)", () => {
           line({ kind: "PACKAGE", childPackageId: 303 }),
         ]),
       /nesting/i
+    );
+  });
+});
+
+// ---------- ROUND3 R3-2 — extra price per choice option ----------
+//
+//   Saree Set (601, ৳0 own price): choice "Saree colour" Red +0* | Blue +300
+//   Eid Hamper (600, ৳1000, floor ৳800):
+//     1 Dairy Milk + 2 × Saree Set + choice "Card" Gold +150 | Silver −50*
+//   One hamper with Blue + Gold = 1000 + 2×300 + 150 = ৳1750 (floor ৳1550).
+describe("R3-2 choice prices", () => {
+  const G_SAREE = 700;
+  const G_CARD = 701;
+  function priced(
+    over: { hamperPrice?: number; silver?: number; setPrice?: number } = {}
+  ): BomCatalog {
+    return catalogOf(
+      [
+        product(1, "Dairy Milk"),
+        product(20, "Red saree"),
+        product(21, "Blue saree"),
+        product(30, "Gold card"),
+        product(31, "Silver card"),
+      ],
+      [
+        {
+          ...pkg(601, "Saree Set", [
+            line({
+              id: G_SAREE,
+              kind: "CHOICE",
+              choiceLabel: "Saree colour",
+              options: [
+                { productId: 20, isDefault: true, extraPrice: 0 },
+                { productId: 21, isDefault: false, extraPrice: 300 },
+              ],
+            }),
+          ]),
+          sellingPrice: over.setPrice ?? 0,
+        },
+        {
+          ...pkg(600, "Eid Hamper", [
+            line({ productId: 1 }),
+            line({ kind: "PACKAGE", childPackageId: 601, qty: 2 }),
+            line({
+              id: G_CARD,
+              kind: "CHOICE",
+              choiceLabel: "Card",
+              options: [
+                { productId: 30, isDefault: false, extraPrice: 150 },
+                { productId: 31, isDefault: true, extraPrice: over.silver ?? -50 },
+              ],
+            }),
+          ]),
+          sellingPrice: over.hamperPrice ?? 1000,
+          priceFloor: 800,
+        },
+      ]
+    );
+  }
+
+  test("default picks are in the starting price (nested × 2 counts twice)", () => {
+    const p = packagePrice(priced(), 600);
+    assert.equal(p.extra, -50); // 2 × Red(0) + Silver(−50)
+    assert.equal(p.unitPrice, 950);
+    assert.equal(p.floor, 750);
+  });
+
+  test("picks through a nested package × 2 — price, floor, snapshot", () => {
+    const p = packagePrice(priced(), 600, { [G_SAREE]: 21, [G_CARD]: 30 });
+    assert.equal(p.extra, 750); // 2 × 300 + 150
+    assert.equal(p.unitPrice, 1750);
+    assert.equal(p.floor, 1550);
+    assert.deepEqual(
+      p.picks.map((x) => [x.groupId, x.name, x.extraPrice, x.qty]),
+      [
+        [G_SAREE, "Blue saree", 300, 2],
+        [G_CARD, "Gold card", 150, 1],
+      ]
+    );
+  });
+
+  test("the client-safe rule gives the same extra as the server function", () => {
+    const c = priced();
+    const groups = collectChoiceGroups(c, 600);
+    const picks = { [G_SAREE]: 21, [G_CARD]: 30 };
+    assert.equal(choiceExtraTotal(groups, picks), packagePrice(c, 600, picks).extra);
+    assert.equal(choiceExtraTotal(groups), packagePrice(c, 600).extra);
+  });
+
+  test("frozen extras win for an unchanged pick; pre-R3-2 picks freeze at 0", () => {
+    const c = priced();
+    const frozen = frozenExtrasFromJson([
+      [
+        { groupId: G_SAREE, label: "Saree colour", productId: 21, name: "Blue saree", extraPrice: 200 },
+        { groupId: G_CARD, label: "Card", productId: 30, name: "Gold card" }, // legacy: no extraPrice
+      ],
+    ]);
+    assert.equal(frozen.get(frozenKey(G_SAREE, 21)), 200);
+    assert.equal(frozen.get(frozenKey(G_CARD, 30)), 0);
+    const p = packagePrice(c, 600, { [G_SAREE]: 21, [G_CARD]: 30 }, frozen);
+    assert.equal(p.extra, 400); // 2 × 200 + 0
+    assert.equal(p.unitPrice, 1400);
+    // A pick that changed uses today's catalog extra.
+    assert.equal(packagePrice(c, 600, { [G_SAREE]: 20, [G_CARD]: 31 }, frozen).extra, -50);
+  });
+
+  test("the floor never goes below 0", () => {
+    const c = priced({ silver: -900, hamperPrice: 1000 });
+    const p = packagePrice(c, 600); // floor 800 − 900
+    assert.equal(p.unitPrice, 100);
+    assert.equal(p.floor, 0);
+  });
+
+  test("an invalid pick is refused", () => {
+    assert.throws(() => packagePrice(priced(), 600, { [G_CARD]: 20 }), BomError);
+  });
+
+  test("a negative extra may not take a package below ৳0", () => {
+    assert.doesNotThrow(() => assertPackagePricesNonNegative(priced({ silver: -1000 })));
+    assert.throws(
+      () => assertPackagePricesNonNegative(priced({ silver: -1001 })),
+      /below ৳0/
+    );
+  });
+
+  test("a child's negative extra is checked against every parent", () => {
+    const c = priced({ hamperPrice: 100, silver: 0, setPrice: 500 });
+    // Saree Set (৳500) editing Red to −60 is fine on its own, but the hamper
+    // holds 2 sets → 100 − 120 < 0.
+    assert.throws(
+      () =>
+        assertValidPackageBom(c, 601, [
+          line({
+            id: G_SAREE,
+            kind: "CHOICE",
+            choiceLabel: "Saree colour",
+            options: [
+              { productId: 20, isDefault: true, extraPrice: -60 },
+              { productId: 21, isDefault: false, extraPrice: 300 },
+            ],
+          }),
+        ]),
+      /Eid Hamper.*below ৳0/
     );
   });
 });

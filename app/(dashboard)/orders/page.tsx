@@ -346,7 +346,10 @@ export default async function OrdersPage({
       canEditOrders={permissions.includes("orders.edit")}
       canCancelOrders={permissions.includes("orders.cancel")}
       canPackOrders={permissions.includes("orders.pack")}
-      canPrintInvoices={permissions.includes("invoice.generate")}
+      canPrintInvoices={
+        permissions.includes("invoice.print") ||
+        permissions.includes("invoice.generate")
+      }
       canSeeCosts={showCosts}
     />
   );

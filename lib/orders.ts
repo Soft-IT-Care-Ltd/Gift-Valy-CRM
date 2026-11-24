@@ -22,8 +22,9 @@ import { upsertRecipientOccasions } from "./occasions";
 import { timeSince } from "./lead-constants";
 import {
   BomError,
-  collectChoiceGroups,
-  resolveChoice,
+  frozenExtrasFromJson,
+  packagePrice,
+  type FrozenExtras,
   type StoredChoiceSelection,
 } from "./bom";
 import { loadBomCatalog } from "./bom-db";
@@ -344,10 +345,11 @@ export interface ResolvedLine {
   name: string;
   qty: number;
   unitPrice: number;
+  /** Package lines: the floor incl. the picks' extra prices (R3-2). */
   priceFloor: number;
   lineTotal: number;
   // Resolved variant picks (CORRECTIONS Products §5) — null for PRODUCT lines
-  // and packages without choice groups.
+  // and packages without choice groups. Each carries its extra price + qty.
   choiceSelections: StoredChoiceSelection[] | null;
 }
 
@@ -361,11 +363,38 @@ export interface ResolvedTotals {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+/** ROUND3 R3-2 — an existing order's picks → the extras frozen on them, so an
+ *  edit that keeps a pick keeps the price it was sold at (orders saved before
+ *  R3-2 freeze at +৳0). Pass to resolveItemsAndTotals on every edit path. */
+export function frozenExtrasOf(
+  items: { choiceSelections: unknown }[]
+): Map<string, number> {
+  return frozenExtrasFromJson(items.map((i) => i.choiceSelections));
+}
+
+/** frozenExtrasOf for an order by id (its current items). */
+export async function frozenExtrasForOrder(
+  db: Tx,
+  orderId: number
+): Promise<Map<string, number>> {
+  const items = await db.orderItem.findMany({
+    where: { orderId },
+    select: { choiceSelections: true },
+  });
+  return frozenExtrasOf(items);
+}
+
 // Resolves catalog items server-side (never trust client names/floors) and
-// computes subtotal → discount → courier → total.
+// computes subtotal → discount → courier → total. The unit price is the SE's
+// (pre-filled from the catalog); the server enforces the floor — for a package
+// the floor incl. the chosen options' extra prices (ROUND3 R3-2, via the one
+// price function packagePrice). `frozenExtras`: on an edit, the extras saved
+// with the order's current picks (frozenExtrasOf) — an unchanged pick keeps
+// its saved extra even if the catalog's changed since.
 export async function resolveItemsAndTotals(
   db: Tx,
-  payload: OrderCorePayload
+  payload: OrderCorePayload,
+  opts: { frozenExtras?: FrozenExtras } = {}
 ): Promise<ResolvedTotals> {
   const productIds = payload.items
     .filter((i) => i.itemType === "PRODUCT")
@@ -411,39 +440,18 @@ export async function resolveItemsAndTotals(
       if (!p) throw new AuthzError(400, `Package #${it.packageId} not found`);
       if (!p.isActive) throw new AuthzError(400, `Package "${p.name}" is inactive`);
       name = p.name;
-      priceFloor = Number(p.priceFloor);
       // Resolve every choice group in the package tree: the SE's pick must be
       // a real option; missing picks fall back to the group's default. The
-      // resolved set is snapshotted (label + product name) on the order item.
+      // resolved set is snapshotted (label + product name + extra price) on
+      // the order item, and the floor rises by the picks' extras (R3-2).
       try {
-        const groups = collectChoiceGroups(catalog!, p.id);
-        if (groups.length > 0) {
-          const picks = new Map<number, number>();
-          for (const [key, productId] of Object.entries(it.choiceSelections ?? {})) {
-            picks.set(Number(key), productId);
-          }
-          choiceSelections = groups.map((g) => {
-            const chosen = resolveChoice(
-              {
-                id: g.groupId,
-                kind: "CHOICE",
-                productId: null,
-                childPackageId: null,
-                choiceLabel: g.label,
-                qty: g.qty,
-                options: g.options,
-              },
-              picks
-            );
-            const product = catalog!.products.get(chosen);
-            return {
-              groupId: g.groupId,
-              label: g.label,
-              productId: chosen,
-              name: product?.name ?? `#${chosen}`,
-            };
-          });
+        const picks = new Map<number, number>();
+        for (const [key, productId] of Object.entries(it.choiceSelections ?? {})) {
+          picks.set(Number(key), productId);
         }
+        const price = packagePrice(catalog!, p.id, picks, opts.frozenExtras);
+        priceFloor = price.floor;
+        if (price.picks.length > 0) choiceSelections = price.picks;
       } catch (e) {
         if (e instanceof BomError) throw new AuthzError(400, e.message);
         throw e;
@@ -835,9 +843,7 @@ export function serializeOrderDetail(o: OrderWithRelations, showCosts: boolean) 
       unitPrice: Number(it.unitPrice),
       lineTotal: Number(it.lineTotal),
       // Chosen variants (CORRECTIONS Products §5) — label/name snapshots.
-      choiceSelections: (it.choiceSelections as
-        | { groupId: number; label: string; productId: number; name: string }[]
-        | null) ?? null,
+      choiceSelections: (it.choiceSelections as StoredChoiceSelection[] | null) ?? null,
       ...(showCosts && it.unitCostSnapshot != null
         ? { unitCostSnapshot: Number(it.unitCostSnapshot) }
         : {}),

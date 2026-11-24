@@ -11,6 +11,7 @@ import {
 import {
   loadBomCatalog,
   validatePackageBomInput,
+  validatePackagePrice,
   writePackageItems,
 } from "@/lib/bom-db";
 import { printKitInputSchema } from "@/lib/print-kit";
@@ -40,9 +41,13 @@ export async function GET(req: Request, { params }: Params) {
   }
 }
 
+// ROUND3 R3-2 — extraPrice: ৳ per piece added to the package price when this
+// option is picked (+/−; the package may never go below ৳0 — checked with
+// the whole tree in validatePackageBomInput).
 const optionSchema = z.object({
   productId: z.number().int().positive(),
   isDefault: z.boolean().default(false),
+  extraPrice: z.number().finite().min(-9_999_999).max(9_999_999).default(0),
 });
 
 const itemSchema = z.object({
@@ -91,10 +96,21 @@ export async function PATCH(req: Request, { params }: Params) {
       return NextResponse.json({ error: "Package not found" }, { status: 404 });
     }
     if (data.items) {
-      // Cycle + nesting + per-kind shape validation (CORRECTIONS Products §5).
-      const bomError = await validatePackageBomInput(prisma, id, data.items);
+      // Cycle + nesting + per-kind shape validation (CORRECTIONS Products §5),
+      // and no package below ৳0 with its cheapest choice extras (R3-2).
+      const bomError = await validatePackageBomInput(
+        prisma,
+        id,
+        data.items,
+        data.sellingPrice ?? Number(before.sellingPrice)
+      );
       if (bomError) {
         return NextResponse.json({ error: bomError }, { status: 400 });
+      }
+    } else if (data.sellingPrice !== undefined) {
+      const priceError = await validatePackagePrice(prisma, id, data.sellingPrice);
+      if (priceError) {
+        return NextResponse.json({ error: priceError }, { status: 400 });
       }
     }
 

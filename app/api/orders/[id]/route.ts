@@ -10,6 +10,7 @@ import {
   orderCoreSchema,
   orderDetailInclude,
   orderScopeWhere,
+  frozenExtrasForOrder,
   resolveItemsAndTotals,
   serializeOrderDetail,
   withinEditWindow,
@@ -73,7 +74,10 @@ export async function PATCH(req: Request, { params }: Params) {
     }
 
     const payload = orderCoreSchema.parse(await req.json());
-    const totals = await resolveItemsAndTotals(prisma, payload);
+    // R3-2 — unchanged picks keep the extra price the order was sold with.
+    const totals = await resolveItemsAndTotals(prisma, payload, {
+      frozenExtras: await frozenExtrasForOrder(prisma, id),
+    });
     if (
       totals.floorBreaches.length > 0 &&
       !permissions.includes("orders.approve_edit")

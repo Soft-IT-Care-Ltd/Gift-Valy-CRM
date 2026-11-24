@@ -6,6 +6,7 @@ import { logAudit } from "@/lib/audit";
 import {
   orderCoreSchema,
   orderScopeWhere,
+  frozenExtrasForOrder,
   resolveItemsAndTotals,
 } from "@/lib/orders";
 import { EDITABLE_STATUSES } from "@/lib/order-constants";
@@ -48,7 +49,9 @@ export async function POST(req: Request, { params }: Params) {
 
     const { changes, reason } = bodySchema.parse(await req.json());
     // Validate now so approvers never review a payload that can't apply.
-    await resolveItemsAndTotals(prisma, changes);
+    await resolveItemsAndTotals(prisma, changes, {
+      frozenExtras: await frozenExtrasForOrder(prisma, id),
+    });
 
     const request = await prisma.orderEditRequest.create({
       data: {

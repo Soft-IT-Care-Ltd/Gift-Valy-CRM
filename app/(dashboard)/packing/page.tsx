@@ -17,16 +17,31 @@ import { getEffectivePermissions } from "@/lib/rbac";
 import { getPrintSettings } from "@/lib/settings";
 import { orderPrintStatus } from "@/lib/print-kit";
 import { PRINT_LAYOUTS } from "@/lib/print-layouts";
+import { orderViewScope } from "@/lib/orders";
+import {
+  PACKING_PRINT_STATUSES,
+  canPrintInvoices,
+  hasPackingPrintReach,
+} from "@/lib/invoice-print";
 import {
   PackingQueueClient,
   type BreakdownLine,
   type PackingOrder,
   type PickLine,
+  type ShippingOrder,
 } from "@/components/packing/packing-queue-client";
+
+// ROUND3 R3-3 — the "Packed & with courier" tab: the rest of the Packing
+// queue's statuses, newest first, capped (only what's still on its way).
+const SHIPPING_STATUSES = PACKING_PRINT_STATUSES.filter((s) => s !== "CONFIRMED");
+const SHIPPING_LIMIT = 200;
 
 export const dynamic = "force-dynamic";
 
 // Packing Queue (SPEC §2.1 Packing role / §6.2): CONFIRMED orders oldest-first,
+// plus (ROUND3 R3-3) a "Packed & with courier" tab; both print invoices —
+// single and bulk half-A4 — for invoice.print holders (lib/invoice-print.ts).
+//
 // each with its BOM-expanded pick list — the FULL recursive explosion
 // (CORRECTIONS Products §2/§5): nested sub-packages, the chosen variant of
 // every choice group, and each product's own packing materials. Marking PACKED
@@ -35,7 +50,7 @@ export const dynamic = "force-dynamic";
 export default async function PackingQueuePage() {
   const session = await requirePagePermission("orders.pack");
 
-  const [orders, catalog, productMeta, permissions, printSettings] = await Promise.all([
+  const [orders, catalog, productMeta, permissions, printSettings, shippingRows] = await Promise.all([
     prisma.order.findMany({
       where: { status: "CONFIRMED" },
       orderBy: { createdAt: "asc" },
@@ -67,6 +82,32 @@ export default async function PackingQueuePage() {
       .then((rows) => new Map(rows.map((r) => [r.id, r]))),
     getEffectivePermissions(session.user.id),
     getPrintSettings(),
+    // Same fields the queue shows — names, picks, recipient, area. No money.
+    prisma.order.findMany({
+      where: { status: { in: SHIPPING_STATUSES } },
+      orderBy: { createdAt: "desc" },
+      take: SHIPPING_LIMIT + 1,
+      select: {
+        id: true,
+        orderNo: true,
+        status: true,
+        recipientName: true,
+        recipientPhoneBd: true,
+        district: true,
+        thana: true,
+        deliveryDateMode: true,
+        requestedDeliveryDate: true,
+        items: {
+          select: {
+            qty: true,
+            customName: true,
+            choiceSelections: true,
+            product: { select: { name: true } },
+            package: { select: { name: true } },
+          },
+        },
+      },
+    }),
   ]);
 
   // Who printed — one lookup for the whole queue.
@@ -229,10 +270,37 @@ export default async function PackingQueuePage() {
       a.createdAt.localeCompare(b.createdAt)
   );
 
+  const shipping: ShippingOrder[] = shippingRows.slice(0, SHIPPING_LIMIT).map((o) => ({
+    id: o.id,
+    orderNo: o.orderNo,
+    status: o.status,
+    recipientName: o.recipientName,
+    recipientPhoneBd: o.recipientPhoneBd,
+    area: [o.thana, o.district].filter(Boolean).join(", "),
+    deliveryDateMode: o.deliveryDateMode,
+    requestedDeliveryDate: o.requestedDeliveryDate
+      ? o.requestedDeliveryDate.toISOString().slice(0, 10)
+      : null,
+    items: o.items.map((it) => {
+      const picks = (it.choiceSelections as StoredChoiceSelection[] | null) ?? [];
+      const name = it.product?.name ?? it.package?.name ?? it.customName ?? "(custom)";
+      return `${it.qty} × ${name}${picks.length > 0 ? ` (${picks.map((p) => p.name).join(", ")})` : ""}`;
+    }),
+  }));
+
+  // R3-3 — invoice printing here: the Packing queue's reach (invoice.print +
+  // orders.pack), or someone who already prints every order (Admin/Manager).
+  const canPrintInvoiceHere =
+    hasPackingPrintReach(permissions) ||
+    (orderViewScope(permissions) === "all" && canPrintInvoices(permissions));
+
   return (
     <PackingQueueClient
       queue={queue}
+      shipping={shipping}
+      shippingCapped={shippingRows.length > SHIPPING_LIMIT}
       canPrint={permissions.includes("print.print")}
+      canPrintInvoices={canPrintInvoiceHere}
       borderless={PRINT_LAYOUTS[printSettings.layout].borderless}
     />
   );
