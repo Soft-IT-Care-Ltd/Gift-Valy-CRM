@@ -13,6 +13,8 @@ import {
   validatePackageBomInput,
   writePackageItems,
 } from "@/lib/bom-db";
+import { printKitInputSchema } from "@/lib/print-kit";
+import { printKitColumn } from "@/lib/print-kits";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -63,6 +65,8 @@ const updateSchema = z
     deliveryChargeInsideDhaka: z.number().min(0).optional(),
     deliveryChargeSubDhaka: z.number().min(0).optional(),
     deliveryChargeOutsideDhaka: z.number().min(0).optional(),
+    // PHOTO_PRINT PP-2 — the package's own photos / cards (null = none).
+    printKit: printKitInputSchema.nullable().optional(),
     items: z.array(itemSchema).min(1).optional(),
   })
   .refine(
@@ -114,6 +118,8 @@ export async function PATCH(req: Request, { params }: Params) {
           deliveryChargeInsideDhaka: data.deliveryChargeInsideDhaka,
           deliveryChargeSubDhaka: data.deliveryChargeSubDhaka,
           deliveryChargeOutsideDhaka: data.deliveryChargeOutsideDhaka,
+          // Existing orders keep the kit frozen on them; only new kits change.
+          printKit: data.printKit === undefined ? undefined : printKitColumn(data.printKit),
           updatedBy: session.user.id,
         },
         include: { items: true },
@@ -142,13 +148,14 @@ export async function DELETE(req: Request, { params }: Params) {
       where: { id },
       include: {
         items: true,
-        _count: { select: { orderItems: true, usedIn: true } },
+        _count: { select: { orderItems: true, usedIn: true, printKits: true } },
       },
     });
     if (!pkg) {
       return NextResponse.json({ error: "Package not found" }, { status: 404 });
     }
-    if (pkg._count.orderItems > 0) {
+    // printKits: its own kit sits on an order (also when it was a sub-package there).
+    if (pkg._count.orderItems > 0 || pkg._count.printKits > 0) {
       return NextResponse.json(
         {
           error:

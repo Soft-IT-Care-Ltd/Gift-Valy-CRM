@@ -159,7 +159,7 @@ const prodLine = (productId: number, qty = 1): OrderLineForKits => ({
 describe("PP-2 print kit inheritance", () => {
   test("the kit-carrying product itself", () => {
     const c = catalog();
-    assert.deepEqual(productPrintKitNeeds(c, 1), [{ productId: 1, path: "P1", units: 1, kit: KIT }]);
+    assert.deepEqual(productPrintKitNeeds(c, 1), [{ productId: 1, packageId: null, path: "P1", units: 1, kit: KIT }]);
     assert.deepEqual(productPrintKitNeeds(c, 2), []);
   });
 
@@ -196,6 +196,33 @@ describe("PP-2 print kit inheritance", () => {
 
   test("a package without the box gets none", () => {
     assert.deepEqual(packagePrintKitNeeds(catalog(), 205), []);
+  });
+
+  test("a package's own kit — alone, on top of the box, and as a sub-package", () => {
+    const c = catalog();
+    const OWN = { photos: { PHOTO_L: 4, PHOTO_S: 0 }, cards: ["CARD_1"] } as typeof KIT;
+    // "No kit" (205) gets its own kit: one kit, sourced from the package.
+    c.packages.set(205, { ...c.packages.get(205)!, printKit: OWN });
+    assert.deepEqual(packagePrintKitNeeds(c, 205), [
+      { productId: null, packageId: 205, path: "PKG", units: 1, kit: OWN },
+    ]);
+    // Box Package (200) with its own kit too: the box's kit AND its own.
+    c.packages.set(200, { ...c.packages.get(200)!, printKit: OWN });
+    assert.deepEqual(
+      packagePrintKitNeeds(c, 200).map((n) => [n.path, n.productId, n.packageId, n.units]),
+      [
+        ["PKG", null, 200, 1],
+        ["P1", 1, null, 1],
+      ]
+    );
+    // Inside Gift Combo (201), the sub-package's own kit comes along.
+    assert.deepEqual(
+      packagePrintKitNeeds(c, 201).map((n) => [n.path, n.packageId]),
+      [
+        ["K200/PKG", 200],
+        ["K200/P1", null],
+      ]
+    );
   });
 
   test("cycles still fail loudly", () => {
@@ -248,6 +275,19 @@ describe("PP-2 kits on an order", () => {
     const rebuilt = c.packages.get(200)!;
     c.packages.set(200, { ...rebuilt, items: rebuilt.items.map((it) => ({ ...it, id: it.id + 100000 })) });
     assert.deepEqual(desiredPrintKits(c, [pkgLine(201)]).map((k) => k.sourceKey), before);
+  });
+
+  test("a package's own kit on an order: one per unit, keyed to the package", () => {
+    const c = catalog();
+    c.packages.set(205, { ...c.packages.get(205)!, printKit: KIT });
+    const kits = desiredPrintKits(c, [pkgLine(205, 2)]);
+    assert.deepEqual(
+      kits.map((k) => [k.sourceKey, k.productId, k.packageId]),
+      [
+        ["K205.1/PKG#1", null, 205],
+        ["K205.1/PKG#2", null, 205],
+      ]
+    );
   });
 
   test("ad-hoc lines with no product/package are skipped", () => {

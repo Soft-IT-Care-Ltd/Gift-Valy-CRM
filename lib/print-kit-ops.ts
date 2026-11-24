@@ -20,6 +20,7 @@ const PRINT_URL = "/uploads/print/";
 
 export const kitViewInclude = {
   product: { select: { name: true } },
+  package: { select: { name: true } },
   photos: { orderBy: [{ slot: "asc" }, { position: "asc" }] },
   cards: { orderBy: { slot: "asc" }, include: { design: { select: { name: true } } } },
 } satisfies Prisma.OrderPrintKitInclude;
@@ -68,6 +69,11 @@ function cardView(c: KitRow["cards"][number]): KitCardView {
   };
 }
 
+/** The kit's source: the kit-carrying product, or the package (its own kit). */
+function kitName(k: { product: { name: string } | null; package: { name: string } | null }): string {
+  return k.product?.name ?? k.package?.name ?? "Photos & cards";
+}
+
 /** "Customize Chocolate Box — Kit 1 of 2 · Probashi Combo" for every kit. */
 async function kitLabels(kits: KitRow[]): Promise<Map<number, string>> {
   const pkgIds = new Set<number>();
@@ -82,14 +88,17 @@ async function kitLabels(kits: KitRow[]): Promise<Map<number, string>> {
   const live = kits.filter((k) => !k.orphanedAt);
   const labels = new Map<number, string>();
   for (const k of kits) {
+    const name = kitName(k);
     const root = /^K(\d+)\./.exec(k.sourceKey);
-    const via = root ? ` · ${pkgName.get(Number(root[1])) ?? "package"}` : "";
+    // "· Probashi Combo" — not repeated when the kit is that package's own.
+    const via =
+      root && Number(root[1]) !== k.packageId ? ` · ${pkgName.get(Number(root[1])) ?? "package"}` : "";
     const n = live.indexOf(k) + 1;
     labels.set(
       k.id,
       k.orphanedAt
-        ? `${k.product.name} — line removed`
-        : `${k.product.name} — Kit ${n} of ${live.length}${via}`
+        ? `${name} — line removed`
+        : `${name} — Kit ${n} of ${live.length}${via}`
     );
   }
   return labels;
@@ -107,7 +116,7 @@ export async function loadKitViews(orderId: number): Promise<KitView[]> {
     return {
       id: k.id,
       sourceKey: k.sourceKey,
-      label: labels.get(k.id) ?? k.product.name,
+      label: labels.get(k.id) ?? kitName(k),
       spec,
       status: k.status as PrintKitStatusValue,
       progress: kitProgress(spec, k.photoCount, k.cardCount),

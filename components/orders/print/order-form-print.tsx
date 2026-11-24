@@ -25,7 +25,9 @@ export interface FormItemForPrint {
 
 interface PreviewKit {
   sourceKey: string;
-  productId: number;
+  /** The kit-carrying product, or (packageId) a package's own kit. */
+  productId: number | null;
+  packageId: number | null;
   label: string;
   spec: PrintKitSpec;
 }
@@ -107,7 +109,11 @@ export function OrderFormPrint({
         delete next[g.sourceKey];
         if (!hasContent(had)) continue;
         const heir = kits.find(
-          (k) => k.productId === g.productId && !claimed.has(k.sourceKey) && !hasContent(next[k.sourceKey])
+          (k) =>
+            k.productId === g.productId &&
+            k.packageId === g.packageId &&
+            !claimed.has(k.sourceKey) &&
+            !hasContent(next[k.sourceKey])
         );
         if (heir) {
           claimed.add(heir.sourceKey);

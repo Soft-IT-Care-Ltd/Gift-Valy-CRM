@@ -47,19 +47,17 @@ export async function POST(req: Request) {
       if (e instanceof BomError) return NextResponse.json({ kits: [] });
       throw e;
     }
-    const names = new Map(
-      (
-        await prisma.product.findMany({
-          where: { id: { in: [...new Set(kits.map((k) => k.productId))] } },
-          select: { id: true, name: true },
-        })
-      ).map((p) => [p.id, p.name])
-    );
+    // The kit's source: the product, or the package (its own kit).
+    const nameOf = (k: (typeof kits)[number]) =>
+      (k.productId != null
+        ? catalog.products.get(k.productId)?.name
+        : catalog.packages.get(k.packageId!)?.name) ?? "Kit";
     return NextResponse.json({
       kits: kits.map((k, i) => ({
         sourceKey: k.sourceKey,
         productId: k.productId,
-        label: `${names.get(k.productId) ?? "Kit"} — Kit ${i + 1} of ${kits.length}`,
+        packageId: k.packageId,
+        label: `${nameOf(k)} — Kit ${i + 1} of ${kits.length}`,
         spec: k.spec,
       })),
     });

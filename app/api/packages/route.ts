@@ -15,6 +15,8 @@ import {
   validatePackageBomInput,
   writePackageItems,
 } from "@/lib/bom-db";
+import { printKitInputSchema } from "@/lib/print-kit";
+import { printKitColumn } from "@/lib/print-kits";
 
 export async function GET() {
   try {
@@ -64,6 +66,8 @@ const createSchema = z
     deliveryChargeInsideDhaka: z.number().min(0).default(0),
     deliveryChargeSubDhaka: z.number().min(0).default(0),
     deliveryChargeOutsideDhaka: z.number().min(0).default(0),
+    // PHOTO_PRINT PP-2 — the package's own photos / cards (null = none).
+    printKit: printKitInputSchema.nullable().optional(),
     items: z.array(itemSchema).min(1),
   })
   .refine((d) => d.priceFloor <= d.sellingPrice, {
@@ -95,6 +99,7 @@ export async function POST(req: Request) {
           deliveryChargeInsideDhaka: data.deliveryChargeInsideDhaka,
           deliveryChargeSubDhaka: data.deliveryChargeSubDhaka,
           deliveryChargeOutsideDhaka: data.deliveryChargeOutsideDhaka,
+          printKit: printKitColumn(data.printKit ?? null),
           createdBy: session.user.id,
           updatedBy: session.user.id,
         },

@@ -235,7 +235,9 @@ export function serializePackage(
     availableToSell: availability,
     weightKg: pkg.weightKg == null ? null : Number(pkg.weightKg), // manual override
     autoWeightKg: autoWeight, // BOM-summed
-    // PHOTO_PRINT PP-2 — photo/card kits one unit inherits (default picks).
+    // PHOTO_PRINT PP-2 — the package's own kit, and the photo/card kits one
+    // unit gets in all (its own + inherited, default picks).
+    printKit: normalizePrintKit(pkg.printKit),
     printKitUnits: safe(
       () => packagePrintKitNeeds(catalog, pkg.id).reduce((n, k) => n + k.units, 0),
       0

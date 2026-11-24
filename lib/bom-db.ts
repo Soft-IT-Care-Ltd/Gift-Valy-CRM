@@ -214,6 +214,7 @@ export async function loadBomCatalog(tx: Tx): Promise<BomCatalog> {
         id: true,
         name: true,
         weightKg: true,
+        printKit: true,
         items: {
           orderBy: { id: "asc" },
           select: {
@@ -257,6 +258,7 @@ export async function loadBomCatalog(tx: Tx): Promise<BomCatalog> {
           id: p.id,
           name: p.name,
           weightKg: p.weightKg == null ? null : Number(p.weightKg),
+          printKit: normalizePrintKit(p.printKit),
           items: p.items.map((it) => ({
             id: it.id,
             kind: it.kind as BomLineKind,

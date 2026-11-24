@@ -67,6 +67,8 @@ export interface BomPackage {
   /** Manual weight override — null means auto-sum from the explosion. */
   weightKg: number | null;
   items: BomLine[];
+  /** PHOTO_PRINT PP-2 — the package's own photos/cards per unit (null = none). */
+  printKit?: PrintKitSpec | null;
 }
 
 export interface BomCatalog {
@@ -520,13 +522,16 @@ export function packageContentsTree(
 
 // ---------- print kits (PHOTO_PRINT.md PP-2) ----------
 
-/** One kit-carrying product inside an item, per ONE unit of that item.
- *  `path` names where it sits — stable across catalog edits because it is
- *  built from package/product ids, never from package_items ids (a BOM save
- *  recreates those): "P5" (the product itself / a PRODUCT line),
- *  "K7/P5" (inside sub-package 7), "C5" (chosen option of a choice group). */
+/** One kit inside an item, per ONE unit of that item: a kit-carrying product,
+ *  or a package's own kit. `path` names where it sits — stable across catalog
+ *  edits because it is built from package/product ids, never from
+ *  package_items ids (a BOM save recreates those): "P5" (the product itself /
+ *  a PRODUCT line), "K7/P5" (inside sub-package 7), "C5" (chosen option of a
+ *  choice group), "PKG" / "K7/PKG" (the package's — or sub-package 7's — own
+ *  kit). Exactly one of productId / packageId is set. */
 export interface PrintKitNeed {
-  productId: number;
+  productId: number | null;
+  packageId: number | null;
   path: string;
   units: number;
   kit: PrintKitSpec;
@@ -539,12 +544,13 @@ export function productPrintKitNeeds(
   productId: number
 ): PrintKitNeed[] {
   const p = productOrThrow(catalog, productId);
-  return p.printKit ? [{ productId, path: `P${productId}`, units: 1, kit: p.printKit }] : [];
+  return p.printKit ? [{ productId, packageId: null, path: `P${productId}`, units: 1, kit: p.printKit }] : [];
 }
 
 /** Print kits for one unit of a package: the same walk as explodePackage
  *  (nested packages, the chosen — or default — option of each choice group),
- *  so a package inherits the kit of every kit-carrying product inside it. */
+ *  so a package inherits the kit of every kit-carrying product inside it —
+ *  plus its own kit, and the own kit of every sub-package. */
 export function packagePrintKitNeeds(
   catalog: BomCatalog,
   packageId: number,
@@ -576,13 +582,19 @@ function printKitsInto(
     );
   }
   const pkg = packageOrThrow(catalog, packageId);
+  if (pkg.printKit) {
+    const path = `${prefix}PKG`;
+    const prev = out.get(path);
+    if (prev) prev.units += qty;
+    else out.set(path, { productId: null, packageId, path, units: qty, kit: pkg.printKit });
+  }
   const add = (productId: number, path: string, units: number) => {
     const p = productOrThrow(catalog, productId);
     if (!p.printKit) return;
     const prev = out.get(path);
     // Two choice groups of one package may resolve to the same product.
     if (prev) prev.units += units;
-    else out.set(path, { productId, path, units, kit: p.printKit });
+    else out.set(path, { productId, packageId: null, path, units, kit: p.printKit });
   };
   for (const line of pkg.items) {
     if (line.kind === "PRODUCT") {

@@ -41,7 +41,9 @@ export interface OrderLineForKits {
 
 export interface DesiredPrintKit {
   sourceKey: string;
-  productId: number;
+  /** The kit-carrying product, or (packageId) a package's own kit. */
+  productId: number | null;
+  packageId: number | null;
   spec: PrintKitSpec;
 }
 
@@ -74,6 +76,7 @@ export function desiredPrintKits(
         kits.push({
           sourceKey: `${root}.${occurrence}/${need.path}#${u}`,
           productId: need.productId,
+          packageId: need.packageId,
           spec: need.kit,
         });
       }
@@ -112,14 +115,14 @@ export async function syncPrintKits(
     tx.orderPrintKit.findMany({
       where: { orderId },
       orderBy: { id: "asc" },
-      select: { id: true, sourceKey: true, productId: true, status: true, photoCount: true, cardCount: true, orphanedAt: true },
+      select: { id: true, sourceKey: true, productId: true, packageId: true, status: true, photoCount: true, cardCount: true, orphanedAt: true },
     }),
   ]);
   const desired = desiredPrintKits(catalog ?? (await loadBomCatalog(tx)), items);
   const want = new Set(desired.map((k) => k.sourceKey));
   const have = new Set(existing.map((k) => k.sourceKey));
 
-  const created: { id: number; productId: number }[] = [];
+  const created: { id: number; productId: number | null; packageId: number | null }[] = [];
   for (const k of desired.filter((d) => !have.has(d.sourceKey))) {
     created.push(
       await tx.orderPrintKit.create({
@@ -127,9 +130,10 @@ export async function syncPrintKits(
           orderId,
           sourceKey: k.sourceKey,
           productId: k.productId,
+          packageId: k.packageId,
           spec: k.spec as unknown as Prisma.InputJsonValue,
         },
-        select: { id: true, productId: true },
+        select: { id: true, productId: true, packageId: true },
       })
     );
   }
@@ -150,7 +154,10 @@ export async function syncPrintKits(
       removed++;
       continue;
     }
-    const target = created.find((c) => c.productId === kit.productId && !claimed.has(c.id));
+    // Same source: the same product, or the same package's own kit.
+    const target = created.find(
+      (c) => c.productId === kit.productId && c.packageId === kit.packageId && !claimed.has(c.id)
+    );
     if (target) {
       claimed.add(target.id);
       await tx.orderPrintPhoto.updateMany({ where: { kitId: kit.id }, data: { kitId: target.id } });

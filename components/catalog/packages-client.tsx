@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import type { PrintKitSpec } from "@/lib/print-kit";
+import { PrintKitFields, usePrintKitForm } from "./print-kit-fields";
 import {
   Card,
   CardContent,
@@ -92,7 +94,8 @@ interface PackageRow {
   availableToSell: number | null;
   weightKg: number | null; // manual override
   autoWeightKg: number | null; // BOM-summed
-  printKitUnits: number; // PHOTO_PRINT PP-2 — inherited photo kits per unit
+  printKit: PrintKitSpec | null; // PHOTO_PRINT PP-2 — the package's own kit
+  printKitUnits: number; // own + inherited photo kits per unit
   deliveryChargeInsideDhaka: number;
   deliveryChargeSubDhaka: number;
   deliveryChargeOutsideDhaka: number;
@@ -164,6 +167,8 @@ export function PackagesClient({
   const [chargeOutside, setChargeOutside] = useState("0");
   const [lines, setLines] = useState<BomLineState[]>([]);
   const [materialLines, setMaterialLines] = useState<MaterialLineState[]>([]);
+  // PHOTO_PRINT PP-2 — "This package needs customer photos / cards".
+  const kit = usePrintKitForm();
 
   const productById = new Map(products.map((p) => [p.id, p]));
   // Main BOM picker shows sellable products only; packing materials get their
@@ -195,6 +200,7 @@ export function PackagesClient({
     setChargeOutside("0");
     setLines([emptyLine()]);
     setMaterialLines([]);
+    kit.load(null);
     setDialogOpen(true);
   }
 
@@ -209,6 +215,7 @@ export function PackagesClient({
     setChargeInside(String(pkg.deliveryChargeInsideDhaka));
     setChargeSub(String(pkg.deliveryChargeSubDhaka));
     setChargeOutside(String(pkg.deliveryChargeOutsideDhaka));
+    kit.load(pkg.printKit);
     // Component-only PRODUCT lines are edited in the packing-materials
     // section; everything else stays in the main BOM list.
     const isMaterial = (it: PackageItemRow) =>
@@ -295,6 +302,10 @@ export function PackagesClient({
       0
     );
 
+  // Kits one unit already gets from the products inside (the saved package's
+  // total minus its own) — shown so a box kit isn't doubled by mistake.
+  const inheritedKits = editing ? editing.printKitUnits - (editing.printKit ? 1 : 0) : 0;
+
   async function save() {
     setSaving(true);
     const payload = {
@@ -307,6 +318,7 @@ export function PackagesClient({
       deliveryChargeInsideDhaka: Number(chargeInside) || 0,
       deliveryChargeSubDhaka: Number(chargeSub) || 0,
       deliveryChargeOutsideDhaka: Number(chargeOutside) || 0,
+      printKit: kit.payload,
       items: [
         ...lines.map((l) => ({
           kind: l.kind,
@@ -467,7 +479,7 @@ export function PackagesClient({
                     <Badge
                       variant="outline"
                       className="mr-1.5 border-primary/40 text-primary"
-                      title="Contains a product that needs customer photos / cards (default picks)"
+                      title={pkg.printKit ? "Needs customer photos / cards (its own, plus any product inside)" : "Contains a product that needs customer photos / cards (default picks)"}
                     >
                       Photo kit{pkg.printKitUnits > 1 ? ` ×${pkg.printKitUnits}` : ""}
                     </Badge>
@@ -983,6 +995,16 @@ export function PackagesClient({
                 </ul>
               </div>
             )}
+
+            <PrintKitFields
+              form={kit}
+              hint={
+                "The SE uploads the customer's photos and picks the wishing cards on the order; Packing prints them." +
+                (inheritedKits > 0
+                  ? ` This package already gets ${inheritedKits} kit${inheritedKits > 1 ? "s" : ""} from the products inside it — turn this on only for extra photos/cards.`
+                  : "")
+              }
+            />
 
             <div className="flex items-center justify-between rounded-md border p-3">
               <Label>Active</Label>
