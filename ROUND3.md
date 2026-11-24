@@ -41,7 +41,7 @@ How to use this file (for Claude Code):
 | # | Prompt | Runs in | Needs |
 |---|---|---|---|
 | 1 | R3-0 — Read the reference, plan | Gift Valy repo | — |
-| 2 | R3-A — Category photo, choice prices, packing invoices | Gift Valy repo | R3-0 |
+| 2 | R3-A — Category photo, choice prices, packing invoices — [DONE] | Gift Valy repo | R3-0 |
 | 3 | W1 — Website foundation: host, catalog Website panel, public catalog gate | Gift Valy repo | R3-A |
 | 4 | W2 — Website pages: home, category, product/package, search | Gift Valy repo | W1 |
 | 5 | W3 — Bag, checkout, website orders in the ERP | Gift Valy repo | W2 |
@@ -151,13 +151,14 @@ Part 2 — production, only after my OK. Add the giftvaly.com server block (www 
 
 ## Items
 
-### R3-1. Category photo — [OPEN]
+### R3-1. Category photo — [DONE]
 
 - A category gets an optional **photo** (upload on the category form, Create and Edit; JPEG / PNG / WebP up to 10 MB). Stored like other uploads (`UPLOAD_DIR`, resized to at most 1200 px, WebP, EXIF stripped); shown on the category list in the ERP and as the category tile on the website (W-4).
 - Remove / replace the photo at any time; a category without a photo works everywhere (the website draws a plain tile with the name).
 - Audit row on add / replace / remove.
+- **Done (25 Nov 2026, 067deaf):** `categories.photo_url`; `POST /api/categories/photo` (catalog.manage) re-encodes via `lib/category-photo.ts` — ≤1200 px on the longest side, WebP, metadata stripped — to `UPLOAD_DIR/category-<uuid>.webp`; create/PATCH take `photoUrl` (only such files), audit `category.photo.add|replace|remove`, the old file is deleted on replace/remove/category delete. Photo field on Create + Edit, thumbnail column on the list. Test: `npm run test:round3`.
 
-### R3-2. Extra price per choice option — [OPEN]
+### R3-2. Extra price per choice option — [DONE]
 
 - `package_item_options` gets **`extraPrice`** (Decimal, ৳, default 0, may be negative but never so that the package price goes below 0). Set in the package form, next to each option: "Red saree +৳0", "Blue saree +৳300".
 - **Price of a package line** = package selling price + the sum of the chosen options' extra prices across the whole nested tree (an option inside a child package counts too), × qty. The **price floor** rises by the same amount.
@@ -165,13 +166,15 @@ Part 2 — production, only after my OK. Add the giftvaly.com server block (www 
 - **Snapshot:** the chosen options and their extra prices are saved in `order_items.choiceSelections` with the line, so changing an extra price later never changes an existing order. Invoices print the chosen option ("Saree: Blue") as today; the line price already includes the extra.
 - Stock and cost already follow the chosen variant — unchanged.
 - The website shows the same price (W-4) from the same function — **one** price function used by the order form API, the website and the website order.
+- **Done (25 Nov 2026, 067deaf):** `package_item_options.extra_price`. The one price function is `packagePrice()` in `lib/bom.ts` (client-safe rule `choiceExtraTotal()` — the order form uses it too; W-4/W-5 must call `packagePrice`). Extra prices count **per piece**: a choice line of qty 2, or one inside a sub-package used twice, adds the extra twice per package. Saved picks carry `extraPrice` + `qty`; edits keep the extra a pick was sold at (`frozenExtrasForOrder` on PATCH, edit-request submit and approve), orders saved before R3-2 count as +৳0. Package save refuses any package — or a parent containing it — whose cheapest picks go below ৳0. Catalog list margin and the package report use the price with the default picks. Tests: `npm run test:bom` (R3-2 cases), `npm run test:round3`.
 
-### R3-3. Packing team prints invoices — [OPEN]
+### R3-3. Packing team prints invoices — [DONE]
 
 - New permission **`invoice.print`** for **Packing** (and every role that has `invoice.generate`): open an existing invoice PDF and print single or bulk invoices — **only for orders in the Packing queue's statuses** (Confirmed, Packed, Handed to courier, In transit). Generating a new invoice version stays with `invoice.generate`.
 - **Packing screen:** a **Print invoice** button on each order row and **Print invoices** for the selected rows (the same half-A4 bulk print the Confirmed/Packed tabs have).
 - Packing still never sees cost, profit, payment history or the customer's abroad phone beyond what the printed invoice itself shows.
 - Everything else about invoices is unchanged.
+- **Done (25 Nov 2026, 067deaf):** `invoice.print` seeded to Packing, Manager, TeamLeader, SalesExecutive (the migration also grants it to every role / per-user grant holding `invoice.generate`). Rule in `lib/invoice-print.ts`: the person's order scope exactly as before, **or**, with `invoice.print` + `orders.pack`, every order in Confirmed / Packed / Handed to courier / In transit — so the SEs' `invoice.print` never widens their own-orders scope. Packing gets 403 for any other status; an order with no invoice row yet is printed from current data without creating a version. Packing screen: "To pack" and "Packed & with courier" tabs, Print invoice per order, Print invoices for the selected rows. Test: `npm run test:round3`.
 
 ### W-1. Two front doors — [OPEN]
 
