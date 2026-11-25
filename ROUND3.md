@@ -44,7 +44,7 @@ How to use this file (for Claude Code):
 | 2 | R3-A — Category photo, choice prices, packing invoices — [DONE] | Gift Valy repo | R3-0 |
 | 3 | W1 — Website foundation: host, catalog Website panel, public catalog gate — [DONE] | Gift Valy repo | R3-A |
 | 4 | W2 — Website pages: home, category, product/package, search — [DONE] | Gift Valy repo | W1 |
-| 5 | W3 — Bag, checkout, website orders in the ERP | Gift Valy repo | W2 |
+| 5 | W3 — Bag, checkout, website orders in the ERP — [DONE] | Gift Valy repo | W2 |
 | 6 | W4 — Settings → Website, home page manager, SEO, Meta Pixel | Gift Valy repo | W3 |
 | 7 | Verify R3 | Gift Valy repo | W4 |
 | 8 | Deploy R3 — staging, then production | Gift Valy repo, on the server via `ssh antu` | Verify R3 |
@@ -228,7 +228,7 @@ On the **product form, the package form and the category form**, **Create and Ed
 - Optional approx. price in the visitor's currency (Defaults) — off by default.
 - **Done (25 Nov 2026, 8d2bdc9):** pages `/`, `/c/<slug>`, `/p/<slug>` (old address → 308), `/search?q=`, `/policy/<delivery|refund|privacy|terms>` (404 until the text is set), the website's own 404 for anything else (`[...missing]`). Home sections fixed until W-7: banner, category tiles (photo, or a plain tile with the name; categories with nothing shown stay out), featured, the Customize Chocolate Box highlight (first shown item whose print kit asks for photos), all gifts. Product/package page (`components/storefront/item-purchase.tsx`): live total = price + Σ the picks' `priceDelta`, which the gate works out with `packagePrice()` itself (`lib/storefront/picks.ts`); option stock = the option itself, the package's own stock = made with its starting picks (default, or first in stock); "what's inside" shows the current picks; delivery charges per zone from the item (times from Settings → Website); print-kit note with the kit's photo / card count. WhatsApp / Messenger from the `website_settings` row (`lib/storefront/settings-shape.ts`; the editor is W-7) — unset = no button; message template with `{product} {choices} {price} {link}`. Bag in the browser (`lib/storefront/bag-store.ts`); the Bag and Checkout pages are W-5. Theme from the logo: navy `#2C347C`, orange `#EC8C24` (navy text on orange for AA), cream `#FFFAF4`; Baloo Da 2 + Hind Siliguri (self-hosted); copy in `lib/storefront/copy.ts`. Approx. currency built, off until W-7's switch. Gate additions `relatedWebItems`, `getWebSettings`, `listWebCurrencies` — in the leak scan. Checked at 375 px and 1440 px: no sideways scroll, tap targets ≥ 48 px. Tests: `npm run test:storefront-pages`, `test:storefront-catalog`, `test:storefront`.
 
-### W-5. Bag and checkout — [OPEN]
+### W-5. Bag and checkout — [DONE]
 
 - **Bag** in the browser (no account). **Checkout** asks:
   - **Your details (sender):** name, country (default from the browser, editable: KSA, UAE, Qatar, Oman, Kuwait, Bahrain, Malaysia, Singapore, Italy, UK, USA, Bangladesh, other), WhatsApp number with country code.
@@ -238,14 +238,57 @@ On the **product form, the package form and the category form**, **Create and Ed
 - `POST /api/shop/order` — the website's only public write: same-site only, small body, Zod. **Prices, delivery charge, total are worked out from the database**; the request carries only who, where, which items, which choices, qty. The prices the page showed are sent only so a mismatch answers **409 "the price just changed"**. Limits: per phone and per IP per hour (Settings → Website).
 - In one transaction: find or create the customer by WhatsApp number (an existing customer's saved data is never overwritten; what was typed is kept on the order), create a **DRAFT** order (`DRAFT-XXXX`, source **Website**), lines with choiceSelections and their extra prices, the assignment (W-6), an audit row (actor: website, the visitor's IP). No stock reservation (Gift Valy reserves on confirm).
 - **Confirmation page** `/order/<private link>`: order reference, items, total, "Our team will contact you on WhatsApp to confirm your order and take the advance", WhatsApp button; later the live status (Confirmed → Packed → Shipped → Delivered) and the Steadfast tracking link. No phone or address on it.
+- **Done (25 Nov 2026, 97f692b):**
+  - **Pages:** `/bag` and `/checkout`, never cached. The bag is re-read through the gate (`webBagLines`: today's price for the picks, stock word, zone charges). A line that's gone is dropped, and a choice no longer offered falls back to its default; the page says so in both cases. Checkout fields and checks live in one file shared by the form and the server (`lib/storefront/checkout-shape.ts`):
+    - The sender's country (guessed from the browser's time zone) puts its WhatsApp code in front. A leading 0 or a retyped code is dropped; Bangla and Arabic digits are accepted; the number is stored as `+<code><number>`.
+    - The recipient's mobile is stored as `01XXXXXXXXX`.
+    - A fixed date runs from today (Dhaka) to a year ahead.
+    - Each zone shows this bag's charge (Σ qty × the item's zone charge).
+    - "Bangladesh" was added to the customer countries.
+  - **`POST /api/shop/order`** (`lib/storefront/place-order.ts`):
+    - Refusals: cross-site 403, non-JSON 415, body over 16 KB 413, strict Zod 400 (a `unitPrice`/`total` key is refused), honeypot 400.
+    - Limits: 5 orders an hour per WhatsApp number (any spelling) and 20 per IP → 429. Advisory locks stop two requests racing past a limit. The limits live in the `website_settings` row as `orderLimits`; W-7 adds the editor.
+    - The IP is `X-Real-IP`, as set by Nginx — W-10's giftvaly.com block must include the same `cloudflare-real-ip` + `antu-app-proxy` snippets.
+    - Prices come from `packagePrice()`. The whole bag is exploded against stock minus reserved; anything gone, a choice not offered, or sold out → 409. The shown prices are read only in `assertShownPrices()` → 409.
+    - Customer: found by any spelling of the number and never overwritten.
+    - Each order also gets a Lead (source WEBSITE, COMMITTED) and is a DRAFT from `nextDraftNo` (moved to `lib/draft-number.ts`). It carries a stable `W-XXXXXX` reference (DRAFT numbers are reused) and a private `web_token`.
+    - Nothing is reserved. The audit row's actor is the inactive "Website (system)" user, with the visitor's IP.
+    - The same number with the same items within 30 minutes is flagged `LIKELY_DUPLICATE`, not refused.
+  - **`/order/<token>`:** the reference (plus the GV number once confirmed), items with choices, money, paid/due, the steps, the tracking link once shipped, the photo/card note, and "Message us on WhatsApp/Messenger". No name, phone or address; trashed orders 404; noindex.
+  - **Tests:** `npm run test:website-orders`. `test:order-paths` now allows exactly two create sites and pins the website's to DRAFT-only. `test:storefront-catalog` scans `webBagLines` and lets `place-order.ts` (only) touch the database.
 
-### W-6. Website orders in the ERP — [OPEN]
+### W-6. Website orders in the ERP — [DONE]
 
 - **Orders → Website** tab ("Needs confirmation"), with a **Website** badge on the order. A bell notification to the assigned SE.
 - **Assignment:** round-robin among Sales Executives **checked in today** (attendance); none checked in → among all active SEs, and their Team Leader is notified. TL/Manager can reassign. An unassigned count on the Orders page and the dashboard.
 - **Website order panel** on the order page: what the customer typed, where it differs from the saved customer, **Confirm** (through the existing payment/confirm flow — `confirmDraftTx`, which gives the GV number, rule 6) and **Cancel** with a reason (Fake order / Unreachable / Changed mind / Duplicate). A website draft is edited freely before confirming.
 - Source **Website** appears as a filter on the Orders page and in the reports' by-source tables. Website orders count for an SE's target only if Settings → Website says so (off by default).
 - A Lead row with source WEBSITE is created and linked if R3-0 shows the lead→order reports need it.
+- **Done (25 Nov 2026, 97f692b):**
+  - **Assignment** (`lib/website-assignment.ts`, inside the order's transaction, under a lock):
+    1. A repeat customer → the SE of their latest order, if still an active SE (owner OK'd, 25 Nov).
+    2. Otherwise round-robin among SEs checked in today and not checked out: whoever got a website order longest ago.
+    3. Nobody in → the same among all active SEs, and their Team Leader (no TL → the Managers) gets a bell.
+    4. No active SE at all → held by "Website (system)" (`orders.sales_executive_id` is required). It's listed as unassigned and dealt out by `/api/cron/website-orders` (every 15 min, `deploy/cron/giftvaly`) and on every SE check-in.
+    - `orders.web_assigned_at` and `web_assign_reason` say who got it and why; the lead moves with the order.
+    - **Reassign:** new permission `orders.assign` (Manager, TL; Admin has everything). A TL works within their own teams plus unassigned orders. Draft only, audited, with a bell.
+  - **The bell:** new `notifications` table, a header bell (unread count every minute; opening the list marks it read), `/api/notifications`.
+  - **Orders list:**
+    - A "Website · Needs confirmation" tab: website drafts from all time, with no month default.
+    - A Website badge with the W- reference, a Source filter (All / Website / Staff), and search by reference.
+    - The unassigned list, with Assign, for `orders.assign` holders.
+    - A dashboard alert for SE, TL and Owner.
+  - **Order page Website panel:**
+    - What the customer typed, with name/country differences from the saved customer highlighted, the private link, flags, and who has it and why.
+    - "WhatsApp the customer".
+    - **Confirm — record the advance:** the existing payment dialog → `confirmDraftTx` → GV number, reserve, invoice.
+    - **Cancel…** with a reason (Fake order / Unreachable / Changed mind / Duplicate): DRAFT → CANCELLED, lead LOST (Unreachable = No response; new lost reasons FAKE_ORDER / DUPLICATE / CHANGED_MIND), audited. Allowed with `orders.cancel` or by the assigned SE.
+    - **Reassign.**
+    - A website draft skips the edit window.
+  - **Source in reports:** source WEBSITE is on the lead, so the lead report's by-source table shows Website.
+  - **Targets:** user/team gauges, the leaderboard and rewards count `source: STAFF` only, unless `website_settings.countForTargets` is on (off by default; W-7 adds the switch).
+  - **Migration** `20261125300000_w3_website_orders`.
+  - **Checked in the browser on dev:** a package with a choice at 375 and 1440 px — bag, checkout, the order, the confirmation page — then the ERP's Website tab, the panel, and Cancel (Fake order). The test order was then trashed.
 
 ### W-7. Settings → Website and the home page manager — [OPEN]
 
