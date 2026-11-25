@@ -43,7 +43,7 @@ How to use this file (for Claude Code):
 | 1 | R3-0 — Read the reference, plan | Gift Valy repo | — |
 | 2 | R3-A — Category photo, choice prices, packing invoices — [DONE] | Gift Valy repo | R3-0 |
 | 3 | W1 — Website foundation: host, catalog Website panel, public catalog gate — [DONE] | Gift Valy repo | R3-A |
-| 4 | W2 — Website pages: home, category, product/package, search | Gift Valy repo | W1 |
+| 4 | W2 — Website pages: home, category, product/package, search — [DONE] | Gift Valy repo | W1 |
 | 5 | W3 — Bag, checkout, website orders in the ERP | Gift Valy repo | W2 |
 | 6 | W4 — Settings → Website, home page manager, SEO, Meta Pixel | Gift Valy repo | W3 |
 | 7 | Verify R3 | Gift Valy repo | W4 |
@@ -219,13 +219,14 @@ On the **product form, the package form and the category form**, **Create and Ed
 - Product photos on the website are served at `/img/<photo>-<360|720|1080>.webp` (only photos of shown items; long cache — a new photo gets a new name); `/uploads` stays behind the staff login.
 - **Done (25 Nov 2026, 2fcdaed):** `lib/storefront/catalog.ts` — `listWebCategories`, `listWebItems`, `getWebCategory`, `searchWebItems`, `getWebItem` (with old-address redirects), `publicPhotoFile`; `select` only, outputs only the types in `lib/storefront/types.ts`. Price = `packagePrice()` with default picks (options carry `extraPrice`); stock = `IN_STOCK`/`OUT_OF_STOCK` from BOM availability **net of reserved**, per option too; "what's inside" leaves out COMPONENT packing materials. `/img` route `app/(store)/storefront/img/[file]` (sharp resize, EXIF dropped, cached in `UPLOAD_DIR/web-cache`, `immutable`); also serves a choice option's main photo when the option is inside a shown package. Test `npm run test:storefront-catalog` (rolled back, dev DB): sentinel SKU / code / avg + purchase cost / supplier / stock + reserved / floor / staff / customer values, every public read JSON-walked for forbidden keys and sentinel values; fails if the module exports an unscanned function; `app/(store)` + `components/storefront` may not import Prisma or ERP catalog code. W-4 pages must add their outputs to this scan.
 
-### W-4. Website pages — [OPEN]
+### W-4. Website pages — [DONE]
 
 - **Home** (sections from W-7: banners, featured categories, featured packages/products, "Customize Chocolate Box" highlight), **category** `/c/<slug>`, **product/package** `/p/<slug>`, **search** `/search?q=` (Bangla or English: name, slug, category), **policies** `/policy/<kind>`, 404.
 - **Product/package page:** swipeable gallery; name, price (live total as choices change), compare-at price, badge; **choice pickers** — each option with its photo (the option product's photo) and extra price; availability; "what's inside"; delivery info (zones, times, "delivered anywhere in Bangladesh"); for an item with a print kit the note "After you order, send us the 14 photos on WhatsApp — we print them for the box"; **Order on WhatsApp / Messenger** buttons with a prefilled message (product, choices, price, link); Add to bag / Buy now pinned to the bottom on phones.
 - Gift Valy brand theme (colours from the logo; a warm gift palette), never the ERP's violet; fonts that render Bangla names. **English** copy from one file (owner's decision).
 - **Order on WhatsApp** (green, full width on phones) under Add to bag / Buy now on every product and package page, and on the confirmation page; it opens `wa.me/<number>?text=…` with the product, the chosen options, the price and the link. The number comes only from **Settings → Website**; no number = no button.
 - Optional approx. price in the visitor's currency (Defaults) — off by default.
+- **Done (25 Nov 2026, 8d2bdc9):** pages `/`, `/c/<slug>`, `/p/<slug>` (old address → 308), `/search?q=`, `/policy/<delivery|refund|privacy|terms>` (404 until the text is set), the website's own 404 for anything else (`[...missing]`). Home sections fixed until W-7: banner, category tiles (photo, or a plain tile with the name; categories with nothing shown stay out), featured, the Customize Chocolate Box highlight (first shown item whose print kit asks for photos), all gifts. Product/package page (`components/storefront/item-purchase.tsx`): live total = price + Σ the picks' `priceDelta`, which the gate works out with `packagePrice()` itself (`lib/storefront/picks.ts`); option stock = the option itself, the package's own stock = made with its starting picks (default, or first in stock); "what's inside" shows the current picks; delivery charges per zone from the item (times from Settings → Website); print-kit note with the kit's photo / card count. WhatsApp / Messenger from the `website_settings` row (`lib/storefront/settings-shape.ts`; the editor is W-7) — unset = no button; message template with `{product} {choices} {price} {link}`. Bag in the browser (`lib/storefront/bag-store.ts`); the Bag and Checkout pages are W-5. Theme from the logo: navy `#2C347C`, orange `#EC8C24` (navy text on orange for AA), cream `#FFFAF4`; Baloo Da 2 + Hind Siliguri (self-hosted); copy in `lib/storefront/copy.ts`. Approx. currency built, off until W-7's switch. Gate additions `relatedWebItems`, `getWebSettings`, `listWebCurrencies` — in the leak scan. Checked at 375 px and 1440 px: no sideways scroll, tap targets ≥ 48 px. Tests: `npm run test:storefront-pages`, `test:storefront-catalog`, `test:storefront`.
 
 ### W-5. Bag and checkout — [OPEN]
 
@@ -257,10 +258,11 @@ On the **product form, the package form and the category form**, **Create and Ed
 - Titles, descriptions, Open Graph images (Facebook / WhatsApp link previews) per page; `sitemap.xml` (only shown items) and `robots.txt` on the website host; the ERP host stays `noindex`.
 - **Meta Pixel + Conversions API** (Settings → Website: Pixel ID, CAPI token — the token stored encrypted, never shown again): ViewContent, AddToCart, InitiateCheckout, and **Lead** when a website order is placed (it isn't a purchase until confirmed); one `event_id` per browser + server pair; value from the database; phone only hashed. Nothing fires while they are unset.
 
-### W-9. Caching — [OPEN]
+### W-9. Caching — [DONE]
 
 - Pages and their data cached on the server and cleared straight after any change to a shown product/package/category, a price or extra price, a photo, a website switch, Settings → Website or the home page; a 10-minute rebuild as a safety net only. Bag, checkout and `/api/shop/order` never cached.
 - One PM2 process per copy (production, staging) so one save clears every cache.
+- **Done (25 Nov 2026, 8d2bdc9):** `lib/storefront/cached.ts` (unstable_cache, tags `sf:catalog` / `sf:settings` / `sf:home`, 600 s) and `lib/storefront/revalidate.ts` (`revalidateTag(tag, { expire: 0 })` — gone at once, never served stale after a save). Cleared by: product / package / category create, edit, delete; the bulk Website switch; currency rates (`sf:settings`); every stock movement (`applyMovements` — In stock / Out of stock); W-7 adds Settings → Website and the home page. Pages `revalidate = 600`; search is per request. Checked on a production build: a page is a cache HIT, an ERP save makes the very next load a MISS with the new value. PM2 fork × 1 pinned in `test:deploy`; `test:storefront-pages` fails if a catalog-writing route forgets to clear the cache. **For W-10:** the pages send `s-maxage=600` — Cloudflare must not cache the website's HTML (only `/_next/static`, `/img`, `/shop`), or a save would wait for the CDN.
 
 ### W-10. Deploy — [OPEN]
 
