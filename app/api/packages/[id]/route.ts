@@ -16,6 +16,8 @@ import {
 } from "@/lib/bom-db";
 import { printKitInputSchema } from "@/lib/print-kit";
 import { printKitColumn } from "@/lib/print-kits";
+import { websiteInputSchema } from "@/lib/catalog-website-shape";
+import { applyWebsite } from "@/lib/catalog-website";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -73,6 +75,8 @@ const updateSchema = z
     // PHOTO_PRINT PP-2 — the package's own photos / cards (null = none).
     printKit: printKitInputSchema.nullable().optional(),
     items: z.array(itemSchema).min(1).optional(),
+    // ROUND3 W-2 — the Website panel (absent = unchanged).
+    website: websiteInputSchema.optional(),
   })
   .refine(
     (d) =>
@@ -122,7 +126,7 @@ export async function PATCH(req: Request, { params }: Params) {
       if (data.items) {
         await writePackageItems(tx, id, data.items);
       }
-      return tx.package.update({
+      const updated = await tx.package.update({
         where: { id },
         data: {
           name: data.name?.trim(),
@@ -138,8 +142,16 @@ export async function PATCH(req: Request, { params }: Params) {
           printKit: data.printKit === undefined ? undefined : printKitColumn(data.printKit),
           updatedBy: session.user.id,
         },
-        include: { items: true },
       });
+      await applyWebsite(tx, "package", id, data.website, {
+        userId: session.user.id,
+        name: updated.name,
+        code: updated.code,
+        price: Number(updated.sellingPrice),
+        notEligible: null,
+        isActive: updated.isActive,
+      });
+      return tx.package.findUniqueOrThrow({ where: { id }, include: { items: true } });
     });
 
     await logAudit({

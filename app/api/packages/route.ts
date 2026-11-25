@@ -17,6 +17,8 @@ import {
 } from "@/lib/bom-db";
 import { printKitInputSchema } from "@/lib/print-kit";
 import { printKitColumn } from "@/lib/print-kits";
+import { websiteInputSchema } from "@/lib/catalog-website-shape";
+import { applyWebsite } from "@/lib/catalog-website";
 
 export async function GET() {
   try {
@@ -73,6 +75,8 @@ const createSchema = z
     // PHOTO_PRINT PP-2 — the package's own photos / cards (null = none).
     printKit: printKitInputSchema.nullable().optional(),
     items: z.array(itemSchema).min(1),
+    // ROUND3 W-2 — the Website panel (a new package starts shown).
+    website: websiteInputSchema.optional(),
   })
   .refine((d) => d.priceFloor <= d.sellingPrice, {
     message: "Price floor cannot exceed selling price",
@@ -114,9 +118,21 @@ export async function POST(req: Request) {
         },
       });
       await writePackageItems(tx, created.id, data.items);
-      return tx.package.update({
+      const withCode = await tx.package.update({
         where: { id: created.id },
         data: { code: packageCodeFromId(created.id) },
+      });
+      await applyWebsite(tx, "package", created.id, data.website, {
+        userId: session.user.id,
+        name: withCode.name,
+        code: withCode.code,
+        price: data.sellingPrice,
+        notEligible: null,
+        isActive: data.isActive,
+        created: true,
+      });
+      return tx.package.findUniqueOrThrow({
+        where: { id: created.id },
         include: { items: true },
       });
     });

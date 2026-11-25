@@ -10,6 +10,8 @@ import {
   categoryPhotoAction,
   deleteCategoryPhoto,
 } from "@/lib/category-photo";
+import { websiteInputSchema } from "@/lib/catalog-website-shape";
+import { applyWebsite } from "@/lib/catalog-website";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -18,6 +20,8 @@ type Params = { params: Promise<{ id: string }> };
 const updateSchema = z.object({
   name: z.string().min(1),
   photoUrl: z.string().trim().nullable().optional(),
+  // ROUND3 W-2 — the Website panel (absent = unchanged).
+  website: websiteInputSchema.omit({ photos: true }).optional(),
 });
 
 export async function PATCH(req: Request, { params }: Params) {
@@ -35,9 +39,20 @@ export async function PATCH(req: Request, { params }: Params) {
     if (photoUrl && photoUrl !== before.photoUrl) assertCategoryPhotoUrl(photoUrl);
     let after;
     try {
-      after = await prisma.category.update({
-        where: { id },
-        data: { name: data.name.trim(), photoUrl, updatedBy: session.user.id },
+      after = await prisma.$transaction(async (tx) => {
+        const updated = await tx.category.update({
+          where: { id },
+          data: { name: data.name.trim(), photoUrl, updatedBy: session.user.id },
+        });
+        await applyWebsite(tx, "category", id, data.website, {
+          userId: session.user.id,
+          name: updated.name,
+          code: null,
+          price: null,
+          notEligible: null,
+          isActive: true,
+        });
+        return updated;
       });
     } catch (e) {
       // e.g. duplicate name — don't strand a freshly uploaded file

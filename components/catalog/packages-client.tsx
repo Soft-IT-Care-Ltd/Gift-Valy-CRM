@@ -42,7 +42,10 @@ import {
 } from "@/components/ui/select";
 import { money } from "./products-client";
 import { signedMoney } from "@/lib/format";
-import { PhotoField } from "./photo-field";
+import { Checkbox } from "@/components/ui/checkbox";
+import { WebsitePanel, useWebsiteForm } from "./website-panel";
+import { WebsiteBulkBar, WebsiteCell, WebsiteFilterTabs, matchesWebsiteFilter, type WebsiteFilter } from "./website-list";
+import type { WebsiteValues } from "@/lib/catalog-website-shape";
 
 type LineKind = "PRODUCT" | "PACKAGE" | "CHOICE";
 
@@ -99,6 +102,7 @@ interface PackageRow {
   autoWeightKg: number | null; // BOM-summed
   printKit: PrintKitSpec | null; // PHOTO_PRINT PP-2 — the package's own kit
   printKitUnits: number; // own + inherited photo kits per unit
+  website: WebsiteValues; // ROUND3 W-2 — the Website panel
   deliveryChargeInsideDhaka: number;
   deliveryChargeSubDhaka: number;
   deliveryChargeOutsideDhaka: number;
@@ -145,11 +149,14 @@ interface MaterialLineState {
 export function PackagesClient({
   packages,
   products,
+  categories,
   showCosts,
   canManage,
 }: {
   packages: PackageRow[];
   products: ProductOption[];
+  /** ROUND3 W-2 — website categories to choose from. */
+  categories: { id: number; name: string }[];
   showCosts: boolean;
   canManage: boolean;
 }) {
@@ -159,12 +166,15 @@ export function PackagesClient({
   const [saving, setSaving] = useState(false);
   // §2.3 — live name/code filter on the list.
   const [search, setSearch] = useState("");
+  // ROUND3 W-2 — Website column filter + bulk Show / Hide.
+  const [webFilter, setWebFilter] = useState<WebsiteFilter>("ALL");
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const web = useWebsiteForm();
 
   const [name, setName] = useState("");
   const [sellingPrice, setSellingPrice] = useState("");
   const [priceFloor, setPriceFloor] = useState("0");
   const [isActive, setIsActive] = useState(true);
-  const [photoUrl, setPhotoUrl] = useState("");
   const [weightKg, setWeightKg] = useState(""); // "" = auto
   const [chargeInside, setChargeInside] = useState("0");
   const [chargeSub, setChargeSub] = useState("0");
@@ -198,7 +208,7 @@ export function PackagesClient({
     setSellingPrice("");
     setPriceFloor("0");
     setIsActive(true);
-    setPhotoUrl("");
+    web.load(null);
     setWeightKg("");
     setChargeInside("0");
     setChargeSub("0");
@@ -215,7 +225,7 @@ export function PackagesClient({
     setSellingPrice(String(pkg.sellingPrice));
     setPriceFloor(String(pkg.priceFloor));
     setIsActive(pkg.isActive);
-    setPhotoUrl(pkg.photoUrl ?? "");
+    web.load(pkg.website);
     setWeightKg(pkg.weightKg == null ? "" : String(pkg.weightKg));
     setChargeInside(String(pkg.deliveryChargeInsideDhaka));
     setChargeSub(String(pkg.deliveryChargeSubDhaka));
@@ -346,12 +356,14 @@ export function PackagesClient({
       sellingPrice: Number(sellingPrice) || 0,
       priceFloor: Number(priceFloor) || 0,
       isActive,
-      photoUrl: photoUrl.trim() || null,
+      // ROUND3 W-2 — the main website photo is the ERP photo too.
+      photoUrl: web.mainPhoto,
       weightKg: weightKg.trim() === "" ? null : Number(weightKg) || 0,
       deliveryChargeInsideDhaka: Number(chargeInside) || 0,
       deliveryChargeSubDhaka: Number(chargeSub) || 0,
       deliveryChargeOutsideDhaka: Number(chargeOutside) || 0,
       printKit: kit.payload,
+      website: web.payload("package"),
       items: [
         ...lines.map((l) => ({
           kind: l.kind,
@@ -413,9 +425,10 @@ export function PackagesClient({
   const pkgQuery = search.trim().toLowerCase();
   const visiblePackages = packages.filter(
     (p) =>
-      pkgQuery === "" ||
-      p.name.toLowerCase().includes(pkgQuery) ||
-      p.code.toLowerCase().includes(pkgQuery)
+      (pkgQuery === "" ||
+        p.name.toLowerCase().includes(pkgQuery) ||
+        p.code.toLowerCase().includes(pkgQuery)) &&
+      matchesWebsiteFilter(p.website, webFilter)
   );
 
   const contentsLabel = (pkg: PackageRow) =>
@@ -452,13 +465,35 @@ export function PackagesClient({
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
+          <WebsiteFilterTabs value={webFilter} onChange={setWebFilter} />
           {canManage && <Button onClick={openCreate}>New package</Button>}
         </div>
       </CardHeader>
       <CardContent>
+        {canManage && (
+          <WebsiteBulkBar
+            kind="package"
+            ids={[...selected]}
+            onDone={() => {
+              setSelected(new Set());
+              router.refresh();
+            }}
+          />
+        )}
         <Table>
           <TableHeader>
             <TableRow>
+              {canManage && (
+                <TableHead className="w-8">
+                  <Checkbox
+                    aria-label="Select all"
+                    checked={visiblePackages.length > 0 && visiblePackages.every((p) => selected.has(p.id))}
+                    onCheckedChange={(on) =>
+                      setSelected(on ? new Set(visiblePackages.map((p) => p.id)) : new Set())
+                    }
+                  />
+                </TableHead>
+              )}
               <TableHead>Code</TableHead>
               <TableHead>Name</TableHead>
               <TableHead>Contents</TableHead>
@@ -468,12 +503,29 @@ export function PackagesClient({
               <TableHead className="text-right">Weight</TableHead>
               <TableHead className="text-right">Can make</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead>Website</TableHead>
               {canManage && <TableHead className="text-right">Actions</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
             {visiblePackages.map((pkg) => (
               <TableRow key={pkg.id}>
+                {canManage && (
+                  <TableCell>
+                    <Checkbox
+                      aria-label={`Select ${pkg.name}`}
+                      checked={selected.has(pkg.id)}
+                      onCheckedChange={(on) =>
+                        setSelected((prev) => {
+                          const next = new Set(prev);
+                          if (on) next.add(pkg.id);
+                          else next.delete(pkg.id);
+                          return next;
+                        })
+                      }
+                    />
+                  </TableCell>
+                )}
                 <TableCell className="font-mono text-xs">{pkg.code}</TableCell>
                 <TableCell className="font-medium">
                   <span className="flex items-center gap-2">
@@ -554,6 +606,9 @@ export function PackagesClient({
                     <Badge variant="outline">Inactive</Badge>
                   )}
                 </TableCell>
+                <TableCell>
+                  <WebsiteCell website={pkg.website} eligible={pkg.isActive} />
+                </TableCell>
                 {canManage && (
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
@@ -579,11 +634,11 @@ export function PackagesClient({
             {visiblePackages.length === 0 && (
               <TableRow>
                 <TableCell
-                  colSpan={showCosts ? 10 : 8}
+                  colSpan={(showCosts ? 11 : 9) + (canManage ? 1 : 0)}
                   className="text-center text-muted-foreground"
                 >
-                  {search.trim()
-                    ? "No packages match the search."
+                  {search.trim() || webFilter !== "ALL"
+                    ? "No packages match the search/filter."
                     : "No packages yet."}
                 </TableCell>
               </TableRow>
@@ -643,7 +698,6 @@ export function PackagesClient({
                   " — the cheapest options take it below ৳0; raise the price or an extra"}
               </p>
             )}
-            <PhotoField value={photoUrl} onChange={setPhotoUrl} />
 
             <div className="grid gap-2">
               <Label>Contents (BOM)</Label>
@@ -1088,6 +1142,15 @@ export function PackagesClient({
               }
             />
 
+            <WebsitePanel
+              kind="package"
+              form={web}
+              itemName={name}
+              code={editing?.code ?? null}
+              price={Number(sellingPrice) || 0}
+              isActive={isActive}
+              categories={categories}
+            />
             <div className="flex items-center justify-between rounded-md border p-3">
               <Label>Active</Label>
               <Switch checked={isActive} onCheckedChange={setIsActive} />

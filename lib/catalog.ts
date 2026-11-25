@@ -14,6 +14,7 @@ import {
   type BomCatalog,
 } from "./bom";
 import { normalizePrintKit } from "./print-kit";
+import { websiteValues } from "./catalog-website-values";
 
 // SPEC §6.1/§6.2 + CLAUDE.md rule 1: cost & margin fields are stripped in the
 // service layer for anyone without these permissions — Sales Executives (and
@@ -51,6 +52,7 @@ export type PackageWithItems = Prisma.PackageGetPayload<{
         options: { include: { product: true } };
       };
     };
+    websiteCategories: { select: { categoryId: true } };
   };
 }>;
 
@@ -68,6 +70,7 @@ export const packageSerializeInclude = {
     },
     orderBy: { id: "asc" as const },
   },
+  websiteCategories: { select: { categoryId: true }, orderBy: { categoryId: "asc" as const } },
 } satisfies Prisma.PackageInclude;
 
 export function serializeProduct(
@@ -96,6 +99,8 @@ export function serializeProduct(
     deliveryChargeOutsideDhaka: Number(p.deliveryChargeOutsideDhaka),
     // PHOTO_PRINT PP-2 — photos/cards one unit needs (null = none).
     printKit: normalizePrintKit(p.printKit),
+    // ROUND3 W-2 — the Website panel.
+    website: websiteValues(p),
     // CORRECTIONS Products §2 — the product's packing materials.
     components: p.components.map((c) => ({
       componentId: c.componentId,
@@ -254,6 +259,8 @@ export function serializePackage(
     deliveryChargeInsideDhaka: Number(pkg.deliveryChargeInsideDhaka),
     deliveryChargeSubDhaka: Number(pkg.deliveryChargeSubDhaka),
     deliveryChargeOutsideDhaka: Number(pkg.deliveryChargeOutsideDhaka),
+    // ROUND3 W-2 — the Website panel.
+    website: websiteValues(pkg),
     items: pkg.items.map((it) => ({
       id: it.id,
       kind: it.kind,

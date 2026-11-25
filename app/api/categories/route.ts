@@ -9,6 +9,9 @@ import {
   assertCategoryPhotoUrl,
   deleteCategoryPhoto,
 } from "@/lib/category-photo";
+import { websiteInputSchema } from "@/lib/catalog-website-shape";
+import { applyWebsite } from "@/lib/catalog-website";
+import { websiteValues } from "@/lib/catalog-website-values";
 
 export async function GET() {
   try {
@@ -23,6 +26,7 @@ export async function GET() {
         name: c.name,
         photoUrl: c.photoUrl,
         productsCount: c._count.products,
+        website: websiteValues(c),
       }))
     );
   } catch (e) {
@@ -34,6 +38,8 @@ export async function GET() {
 const createSchema = z.object({
   name: z.string().min(1),
   photoUrl: z.string().trim().nullable().optional(),
+  // ROUND3 W-2 — the Website panel (photo = the R3-1 photo above).
+  website: websiteInputSchema.omit({ photos: true }).optional(),
 });
 
 export async function POST(req: Request) {
@@ -44,13 +50,25 @@ export async function POST(req: Request) {
     if (photoUrl) assertCategoryPhotoUrl(photoUrl);
     let category;
     try {
-      category = await prisma.category.create({
-        data: {
-          name: data.name.trim(),
-          photoUrl,
-          createdBy: session.user.id,
-          updatedBy: session.user.id,
-        },
+      category = await prisma.$transaction(async (tx) => {
+        const created = await tx.category.create({
+          data: {
+            name: data.name.trim(),
+            photoUrl,
+            createdBy: session.user.id,
+            updatedBy: session.user.id,
+          },
+        });
+        await applyWebsite(tx, "category", created.id, data.website, {
+          userId: session.user.id,
+          name: created.name,
+          code: null,
+          price: null,
+          notEligible: null,
+          isActive: true,
+          created: true,
+        });
+        return created;
       });
     } catch (e) {
       await deleteCategoryPhoto(photoUrl); // e.g. duplicate name — don't strand the file

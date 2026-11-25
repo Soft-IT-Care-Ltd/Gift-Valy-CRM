@@ -29,13 +29,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
 import { PhotoField } from "./photo-field";
+import { WebsitePanel, useWebsiteForm } from "./website-panel";
+import type { WebsiteValues } from "@/lib/catalog-website-shape";
 
 interface CategoryRow {
   id: number;
   name: string;
   photoUrl: string | null; // ROUND3 R3-1 — optional
   productsCount: number;
+  website: WebsiteValues; // ROUND3 W-2
 }
 
 export function CategoriesClient({ categories }: { categories: CategoryRow[] }) {
@@ -45,11 +49,13 @@ export function CategoriesClient({ categories }: { categories: CategoryRow[] }) 
   const [name, setName] = useState("");
   const [photoUrl, setPhotoUrl] = useState("");
   const [saving, setSaving] = useState(false);
+  const web = useWebsiteForm();
 
   function openCreate() {
     setEditing(null);
     setName("");
     setPhotoUrl("");
+    web.load(null);
     setDialogOpen(true);
   }
 
@@ -57,6 +63,7 @@ export function CategoriesClient({ categories }: { categories: CategoryRow[] }) 
     setEditing(c);
     setName(c.name);
     setPhotoUrl(c.photoUrl ?? "");
+    web.load(c.website);
     setDialogOpen(true);
   }
 
@@ -67,7 +74,11 @@ export function CategoriesClient({ categories }: { categories: CategoryRow[] }) 
       {
         method: editing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, photoUrl: photoUrl || null }),
+        body: JSON.stringify({
+          name,
+          photoUrl: photoUrl || null,
+          website: web.payload("category"),
+        }),
       }
     );
     setSaving(false);
@@ -111,6 +122,7 @@ export function CategoriesClient({ categories }: { categories: CategoryRow[] }) 
               <TableHead className="w-14">Photo</TableHead>
               <TableHead>Name</TableHead>
               <TableHead>Products</TableHead>
+              <TableHead>Website</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
@@ -136,6 +148,15 @@ export function CategoriesClient({ categories }: { categories: CategoryRow[] }) 
                 </TableCell>
                 <TableCell className="font-medium">{c.name}</TableCell>
                 <TableCell>{c.productsCount}</TableCell>
+                <TableCell>
+                  {c.website.showOnWebsite ? (
+                    <Badge variant="secondary" title={c.website.slug ? `/c/${c.website.slug}` : undefined}>
+                      Shown{c.website.websiteFeatured ? " · featured" : ""}
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline">Hidden</Badge>
+                  )}
+                </TableCell>
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-1">
                     <Button variant="outline" size="sm" onClick={() => openEdit(c)}>
@@ -154,7 +175,7 @@ export function CategoriesClient({ categories }: { categories: CategoryRow[] }) 
             ))}
             {categories.length === 0 && (
               <TableRow>
-                <TableCell colSpan={4} className="text-center text-muted-foreground">
+                <TableCell colSpan={5} className="text-center text-muted-foreground">
                   No categories yet.
                 </TableCell>
               </TableRow>
@@ -164,7 +185,7 @@ export function CategoriesClient({ categories }: { categories: CategoryRow[] }) 
       </CardContent>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>
               {editing ? `Edit ${editing.name}` : "New category"}
@@ -179,12 +200,19 @@ export function CategoriesClient({ categories }: { categories: CategoryRow[] }) 
               <Label>Category name</Label>
               <Input value={name} onChange={(e) => setName(e.target.value)} />
             </div>
-            <PhotoField
-              value={photoUrl}
-              onChange={setPhotoUrl}
-              uploadUrl="/api/categories/photo"
-              label="Category photo (optional)"
-              hint="JPEG, PNG or WebP up to 10 MB — saved at most 1200 px on the longest side, as WebP. Without a photo the website shows a plain tile with the name."
+            <WebsitePanel
+              kind="category"
+              form={web}
+              itemName={name}
+              photoSlot={
+                <PhotoField
+                  value={photoUrl}
+                  onChange={setPhotoUrl}
+                  uploadUrl="/api/categories/photo"
+                  label="Category photo (optional)"
+                  hint="JPEG, PNG or WebP up to 10 MB — saved at most 1200 px on the longest side, as WebP. Without a photo the website shows a plain tile with the name."
+                />
+              }
             />
           </div>
           <DialogFooter>

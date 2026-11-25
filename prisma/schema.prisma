@@ -222,12 +222,24 @@ model Category {
   // ROUND3 R3-1 — optional photo, "/uploads/category-<uuid>.webp" (≤1200 px,
   // WebP, EXIF stripped by POST /api/categories/photo). null = plain tile.
   photoUrl  String?  @map("photo_url")
+  // ROUND3 W-2 — the category's Website panel (lib/catalog-website.ts).
+  showOnWebsite      Boolean   @default(true) @map("show_on_website")
+  websiteName        String?   @map("website_name")
+  slug               String?   @unique // /c/<slug>, its own address space
+  slugPublishedAt    DateTime? @map("slug_published_at") // fixed from here on; a change keeps a redirect
+  websiteDescription String?   @map("website_description")
+  websiteFeatured    Boolean   @default(false) @map("website_featured")
+  websiteSortOrder   Int       @default(0) @map("website_sort_order")
+  seoTitle           String?   @map("seo_title")
+  seoDescription     String?   @map("seo_description")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
   createdBy Int?     @map("created_by")
   updatedBy Int?     @map("updated_by")
 
-  products Product[]
+  products         Product[]
+  websitePackages  PackageWebsiteCategory[]
+  slugRedirects    WebsiteSlugRedirect[]
 
   @@map("categories")
 }
@@ -236,6 +248,14 @@ model Category {
 // COMPONENT products (packing materials: cartons, safety boxes, gift wrap) have
 // no selling price, are never sold standalone, but ARE stocked, purchased,
 // damaged, and consumed by BOMs like any other product.
+// ROUND3 W-2 — the badge a product/package card carries on the website.
+enum WebsiteBadge {
+  NONE
+  NEW
+  BEST_SELLER
+  LIMITED
+}
+
 enum ProductType {
   SELLABLE
   COMPONENT
@@ -274,6 +294,20 @@ model Product {
   // product needs: { photos: { PHOTO_L: 10, PHOTO_S: 4 }, cards: ["CARD_1",
   // "CARD_2"] }. Null = no print kit. Packages inherit it through lib/bom.ts.
   printKit                   Json?       @map("print_kit")
+  // ROUND3 W-2 — the Website panel (lib/catalog-website.ts). photos[0] is
+  // the main photo and is mirrored into photo_url for the ERP's own views.
+  photos                     String[]     @default([])
+  showOnWebsite              Boolean      @default(true) @map("show_on_website")
+  websiteName                String?      @map("website_name")
+  slug                       String?      @unique // /p/<slug>, shared with packages
+  slugPublishedAt            DateTime?    @map("slug_published_at")
+  websiteDescription         String?      @map("website_description")
+  compareAtPrice             Decimal?     @map("compare_at_price") @db.Decimal(12, 2)
+  websiteBadge               WebsiteBadge @default(NONE) @map("website_badge")
+  websiteFeatured            Boolean      @default(false) @map("website_featured")
+  websiteSortOrder           Int          @default(0) @map("website_sort_order")
+  seoTitle                   String?      @map("seo_title")
+  seoDescription             String?      @map("seo_description")
   // Caches — pure sums over stock_movements, written in the SAME transaction
   // as the movement rows (SPEC §14 integrity rule 2). stock_qty = physical
   // on-hand; reserved_qty = held by CONFIRMED orders; available = qty − reserved.
@@ -296,6 +330,7 @@ model Product {
   componentOf    ProductComponent[]  @relation("ComponentUsage")
   damageLogs     DamageLog[]
   printKits      OrderPrintKit[]
+  slugRedirects  WebsiteSlugRedirect[]
 
   @@map("products")
 }
@@ -460,6 +495,22 @@ model Package {
   // PHOTO_PRINT PP-2 — the package's OWN photos / cards per unit (same shape
   // as products.print_kit), on top of any kit its products carry. Null = none.
   printKit                   Json?    @map("print_kit")
+  // ROUND3 W-2 — the Website panel (lib/catalog-website.ts). photos[0] is
+  // the main photo and is mirrored into photo_url for the ERP's own views.
+  photos                     String[]     @default([])
+  showOnWebsite              Boolean      @default(true) @map("show_on_website")
+  websiteName                String?      @map("website_name")
+  slug                       String?      @unique // /p/<slug>, shared with packages
+  slugPublishedAt            DateTime?    @map("slug_published_at")
+  websiteDescription         String?      @map("website_description")
+  compareAtPrice             Decimal?     @map("compare_at_price") @db.Decimal(12, 2)
+  websiteBadge               WebsiteBadge @default(NONE) @map("website_badge")
+  websiteFeatured            Boolean      @default(false) @map("website_featured")
+  websiteSortOrder           Int          @default(0) @map("website_sort_order")
+  seoTitle                   String?      @map("seo_title")
+  seoDescription             String?      @map("seo_description")
+  // Show "what's inside" (BOM names and qty only) on the package page.
+  websiteShowContents        Boolean      @default(true) @map("website_show_contents")
   createdAt                  DateTime @default(now()) @map("created_at")
   updatedAt                  DateTime @updatedAt @map("updated_at")
   createdBy                  Int?     @map("created_by")
@@ -469,8 +520,49 @@ model Package {
   usedIn     PackageItem[]   @relation("SubPackageUsage")
   orderItems OrderItem[]
   printKits  OrderPrintKit[]
+  websiteCategories PackageWebsiteCategory[]
+  slugRedirects     WebsiteSlugRedirect[]
 
   @@map("packages")
+}
+
+// ROUND3 W-2 — a package has no category in the ERP; on the website it is
+// listed under one or more.
+model PackageWebsiteCategory {
+  packageId  Int @map("package_id")
+  categoryId Int @map("category_id")
+
+  package  Package  @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([packageId, categoryId])
+  @@index([categoryId])
+  @@map("package_website_categories")
+}
+
+// ROUND3 W-2 — an old website address kept as a permanent redirect after a
+// published slug changed. space ITEM = /p/ (products and packages share it),
+// CATEGORY = /c/. Exactly one target id is set.
+enum WebsiteSlugSpace {
+  ITEM
+  CATEGORY
+}
+
+model WebsiteSlugRedirect {
+  id         Int              @id @default(autoincrement())
+  space      WebsiteSlugSpace
+  slug       String
+  productId  Int?             @map("product_id")
+  packageId  Int?             @map("package_id")
+  categoryId Int?             @map("category_id")
+  createdAt  DateTime         @default(now()) @map("created_at")
+
+  product  Product?  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  package  Package?  @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  category Category? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([space, slug])
+  @@map("website_slug_redirects")
 }
 
 // CORRECTIONS Products §5 — a BOM line is a product, a nested sub-package, or a

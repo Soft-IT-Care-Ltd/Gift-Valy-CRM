@@ -6,7 +6,7 @@ import {
   Hind_Siliguri,
   Caveat,
 } from "next/font/google";
-import "./globals.css";
+import "../globals.css";
 import { cn } from "@/lib/utils";
 import { LEGACY_POLYFILLS } from "@/lib/legacy-polyfills";
 import { Toaster } from "@/components/ui/sonner";

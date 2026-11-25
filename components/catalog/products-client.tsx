@@ -38,7 +38,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { PhotoField } from "./photo-field";
+import { Checkbox } from "@/components/ui/checkbox";
+import { WebsitePanel, useWebsiteForm } from "./website-panel";
+import { WebsiteBulkBar, WebsiteCell, WebsiteFilterTabs, matchesWebsiteFilter, type WebsiteFilter } from "./website-list";
+import type { WebsiteValues } from "@/lib/catalog-website-shape";
 import { describePrintKit, type PrintKitSpec } from "@/lib/print-kit";
 import { PrintKitFields, usePrintKitForm } from "./print-kit-fields";
 
@@ -72,6 +75,8 @@ export interface ProductRow {
   deliveryChargeOutsideDhaka: number;
   components: ProductComponentRow[];
   printKit: PrintKitSpec | null;
+  /** ROUND3 W-2 — the Website panel. */
+  website: WebsiteValues;
   avgCost?: number; // absent for roles without cost visibility
   effectiveCost?: number | null; // avg cost + packing materials
 }
@@ -119,6 +124,10 @@ export function ProductsClient({
   );
   // §2.3 — live name/SKU filter on the list.
   const [search, setSearch] = useState("");
+  // ROUND3 W-2 — Website column filter + bulk Show / Hide.
+  const [webFilter, setWebFilter] = useState<WebsiteFilter>("ALL");
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const web = useWebsiteForm();
 
   const [name, setName] = useState("");
   const [productType, setProductType] = useState<"SELLABLE" | "COMPONENT">(
@@ -132,7 +141,6 @@ export function ProductsClient({
   const [lowStockThreshold, setLowStockThreshold] = useState("0");
   const [isStockTracked, setIsStockTracked] = useState(true);
   const [isActive, setIsActive] = useState(true);
-  const [photoUrl, setPhotoUrl] = useState("");
   const [weightKg, setWeightKg] = useState("");
   const [chargeInside, setChargeInside] = useState("0");
   const [chargeSub, setChargeSub] = useState("0");
@@ -155,7 +163,7 @@ export function ProductsClient({
     setLowStockThreshold("0");
     setIsStockTracked(true);
     setIsActive(true);
-    setPhotoUrl("");
+    web.load(null);
     setWeightKg("");
     setChargeInside("0");
     setChargeSub("0");
@@ -177,7 +185,7 @@ export function ProductsClient({
     setLowStockThreshold(String(p.lowStockThreshold));
     setIsStockTracked(p.isStockTracked);
     setIsActive(p.isActive);
-    setPhotoUrl(p.photoUrl ?? "");
+    web.load(p.website);
     setWeightKg(p.weightKg == null ? "" : String(p.weightKg));
     setChargeInside(String(p.deliveryChargeInsideDhaka));
     setChargeSub(String(p.deliveryChargeSubDhaka));
@@ -211,7 +219,8 @@ export function ProductsClient({
       lowStockThreshold: Number(lowStockThreshold) || 0,
       isStockTracked,
       isActive,
-      photoUrl: photoUrl.trim() || null,
+      // ROUND3 W-2 — the main website photo is the ERP photo too.
+      photoUrl: web.mainPhoto,
       weightKg: weightKg.trim() === "" ? null : Number(weightKg) || 0,
       deliveryChargeInsideDhaka: isComponent ? 0 : Number(chargeInside) || 0,
       deliveryChargeSubDhaka: isComponent ? 0 : Number(chargeSub) || 0,
@@ -223,6 +232,7 @@ export function ProductsClient({
             qty: Number(l.qty),
           })),
       printKit: kitPayload,
+      website: web.payload("product"),
     };
     const res = await fetch(
       editing ? `/api/products/${editing.id}` : "/api/products",
@@ -261,8 +271,10 @@ export function ProductsClient({
       (typeFilter === "ALL" || p.productType === typeFilter) &&
       (q === "" ||
         p.name.toLowerCase().includes(q) ||
-        p.sku.toLowerCase().includes(q))
+        p.sku.toLowerCase().includes(q)) &&
+      matchesWebsiteFilter(p.website, webFilter)
   );
+  const selectable = visible.filter((p) => p.productType === "SELLABLE");
 
   return (
     <Card>
@@ -299,13 +311,35 @@ export function ProductsClient({
               </Button>
             ))}
           </div>
+          <WebsiteFilterTabs value={webFilter} onChange={setWebFilter} />
           {canManage && <Button onClick={openCreate}>New product</Button>}
         </div>
       </CardHeader>
       <CardContent>
+        {canManage && (
+          <WebsiteBulkBar
+            kind="product"
+            ids={[...selected]}
+            onDone={() => {
+              setSelected(new Set());
+              router.refresh();
+            }}
+          />
+        )}
         <Table>
           <TableHeader>
             <TableRow>
+              {canManage && (
+                <TableHead className="w-8">
+                  <Checkbox
+                    aria-label="Select all"
+                    checked={selectable.length > 0 && selectable.every((p) => selected.has(p.id))}
+                    onCheckedChange={(on) =>
+                      setSelected(on ? new Set(selectable.map((p) => p.id)) : new Set())
+                    }
+                  />
+                </TableHead>
+              )}
               <TableHead>SKU</TableHead>
               <TableHead>Name</TableHead>
               <TableHead>Type</TableHead>
@@ -315,12 +349,31 @@ export function ProductsClient({
               <TableHead className="text-right">Weight</TableHead>
               <TableHead className="text-right">Stock</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead>Website</TableHead>
               {canManage && <TableHead className="text-right">Actions</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
             {visible.map((p) => (
               <TableRow key={p.id}>
+                {canManage && (
+                  <TableCell>
+                    {p.productType === "SELLABLE" && (
+                      <Checkbox
+                        aria-label={`Select ${p.name}`}
+                        checked={selected.has(p.id)}
+                        onCheckedChange={(on) =>
+                          setSelected((prev) => {
+                            const next = new Set(prev);
+                            if (on) next.add(p.id);
+                            else next.delete(p.id);
+                            return next;
+                          })
+                        }
+                      />
+                    )}
+                  </TableCell>
+                )}
                 <TableCell className="font-mono text-xs">{p.sku}</TableCell>
                 <TableCell className="font-medium">
                   <span className="flex items-center gap-2">
@@ -404,6 +457,12 @@ export function ProductsClient({
                     <Badge variant="outline">Inactive</Badge>
                   )}
                 </TableCell>
+                <TableCell>
+                  <WebsiteCell
+                    website={p.website}
+                    eligible={p.productType === "SELLABLE" && p.isActive}
+                  />
+                </TableCell>
                 {canManage && (
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
@@ -429,10 +488,10 @@ export function ProductsClient({
             {visible.length === 0 && (
               <TableRow>
                 <TableCell
-                  colSpan={showCosts ? 10 : 9}
+                  colSpan={(showCosts ? 11 : 10) + (canManage ? 1 : 0)}
                   className="text-center text-muted-foreground"
                 >
-                  {q || typeFilter !== "ALL"
+                  {q || typeFilter !== "ALL" || webFilter !== "ALL"
                     ? "No products match the search/filter."
                     : "No products yet."}
                 </TableCell>
@@ -701,9 +760,6 @@ export function ProductsClient({
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-3">
-              <PhotoField value={photoUrl} onChange={setPhotoUrl} />
-            </div>
             {!isComponent && (
               <PrintKitFields
                 form={kit}
@@ -722,6 +778,22 @@ export function ProductsClient({
                 onCheckedChange={setIsStockTracked}
               />
             </div>
+            <WebsitePanel
+              kind="product"
+              form={web}
+              itemName={name}
+              code={editing?.sku ?? null}
+              price={isComponent ? null : Number(sellingPrice) || 0}
+              notEligible={
+                isComponent
+                  ? "Component-only products (packing materials) are never sold on the website."
+                  : null
+              }
+              isActive={isActive}
+              productCategoryName={
+                categories.find((c) => String(c.id) === categoryId)?.name ?? null
+              }
+            />
             <div className="flex items-center justify-between rounded-md border p-3">
               <Label>Active</Label>
               <Switch checked={isActive} onCheckedChange={setIsActive} />

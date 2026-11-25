@@ -11,6 +11,8 @@ import {
   serializeProduct,
 } from "@/lib/catalog";
 import { loadBomCatalog, validateComponentRules } from "@/lib/bom-db";
+import { websiteInputSchema } from "@/lib/catalog-website-shape";
+import { applyWebsite, productWebsiteBlock } from "@/lib/catalog-website";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -69,6 +71,8 @@ const updateSchema = z
           new Set(cs.map((c) => c.componentId)).size === cs.length,
         { message: "Duplicate component — increase qty instead" }
       ),
+    // ROUND3 W-2 — the Website panel (absent = unchanged).
+    website: websiteInputSchema.optional(),
   })
   .refine(
     (d) =>
@@ -122,7 +126,7 @@ export async function PATCH(req: Request, { params }: Params) {
           });
         }
       }
-      return tx.product.update({
+      const updated = await tx.product.update({
         where: { id },
         data: {
           name: data.name?.trim(),
@@ -150,6 +154,15 @@ export async function PATCH(req: Request, { params }: Params) {
           updatedBy: session.user.id,
         },
       });
+      await applyWebsite(tx, "product", id, data.website, {
+        userId: session.user.id,
+        name: updated.name,
+        code: updated.sku,
+        price: isComponent ? null : Number(updated.sellingPrice),
+        notEligible: productWebsiteBlock(updated.productType),
+        isActive: updated.isActive,
+      });
+      return updated;
     });
     await logAudit({
       userId: session.user.id,

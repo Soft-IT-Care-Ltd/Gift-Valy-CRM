@@ -86,13 +86,27 @@ describe("GV-7 closed by default", () => {
   test("exactly the documented pages, routes and files stay open", () => {
     const all = everyAddress();
     assert.ok(all.length > 100, "the walk found the app");
-    const open = all.filter((a) => lockVerdict("GET", a.path) === "open").map((a) => a.path).sort();
+    const open = all
+      .filter((a) => !a.path.startsWith("/storefront"))
+      .filter((a) => lockVerdict("GET", a.path) === "open")
+      .map((a) => a.path)
+      .sort();
     assert.deepEqual([...new Set(open)], EXPECTED_OPEN);
+  });
+
+  // ROUND3 W-1 — the website (internal /storefront section, website host
+  // only) and its order endpoint stay open while suspended.
+  test("the whole website section stays open, reads and writes", () => {
+    const site = everyAddress().filter((a) => a.path === "/storefront" || a.path.startsWith("/storefront/"));
+    assert.ok(site.length > 0, "the walk found the website");
+    for (const a of site) assert.equal(lockVerdict("GET", a.path), "open", a.path);
+    assert.equal(lockVerdict("POST", "/storefront/api/shop/order"), "open");
+    assert.equal(lockVerdict("GET", "/storefrontx"), "redirect");
   });
 
   test("every other page redirects and every other API route refuses", () => {
     for (const a of everyAddress()) {
-      if (EXPECTED_OPEN.includes(a.path)) continue;
+      if (EXPECTED_OPEN.includes(a.path) || a.path.startsWith("/storefront")) continue;
       const v = lockVerdict("GET", a.path);
       if (a.kind === "api") assert.equal(v, "refuse", a.path);
       else assert.equal(v, "redirect", a.path);
@@ -123,7 +137,9 @@ describe("GV-7 closed by default", () => {
 
   test("proxy.ts calls the gate for everything but _next/static and _next/image", () => {
     const src = readFileSync(path.join(ROOT, "proxy.ts"), "utf8");
-    assert.match(src, /billingLockGate\(req\.method, req\.nextUrl\)/);
+    assert.match(src, /return frontDoor\(req\)/);
+    const door = readFileSync(path.join(ROOT, "lib/storefront/front-door.ts"), "utf8");
+    assert.match(door, /billingLockGate\(req\.method, req\.nextUrl, readState\)/);
     assert.match(src, /matcher: \["\/\(\(\?!_next\/static\|_next\/image\)\.\*\)"\]/);
   });
 });

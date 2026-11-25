@@ -13,6 +13,8 @@ import {
   skuFromId,
 } from "@/lib/catalog";
 import { loadBomCatalog, validateComponentRules } from "@/lib/bom-db";
+import { websiteInputSchema } from "@/lib/catalog-website-shape";
+import { applyWebsite, productWebsiteBlock } from "@/lib/catalog-website";
 
 export async function GET() {
   try {
@@ -59,6 +61,8 @@ const createSchema = z
     components: z.array(componentSchema).default([]),
     // PHOTO_PRINT PP-2 — "This product needs customer photos / cards".
     printKit: printKitInputSchema.nullable().optional(),
+    // ROUND3 W-2 — the Website panel (a new product starts shown).
+    website: websiteInputSchema.optional(),
   })
   .refine((d) => d.priceFloor <= d.sellingPrice, {
     message: "Price floor cannot exceed selling price",
@@ -124,10 +128,20 @@ export async function POST(req: Request) {
           },
         },
       });
-      return tx.product.update({
+      const withSku = await tx.product.update({
         where: { id: created.id },
         data: { sku: skuFromId(created.id) },
       });
+      await applyWebsite(tx, "product", created.id, data.website, {
+        userId: session.user.id,
+        name: withSku.name,
+        code: withSku.sku,
+        price: isComponent ? null : data.sellingPrice,
+        notEligible: productWebsiteBlock(data.productType),
+        isActive: data.isActive,
+        created: true,
+      });
+      return withSku;
     });
 
     await logAudit({

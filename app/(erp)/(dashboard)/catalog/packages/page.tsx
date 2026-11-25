@@ -17,7 +17,7 @@ export default async function PackagesPage() {
   const showCosts = canSeeCosts(permissions);
   const canManage = permissions.includes("catalog.manage");
 
-  const [packages, products, catalog] = await Promise.all([
+  const [packages, products, catalog, categories] = await Promise.all([
     prisma.package.findMany({
       orderBy: { name: "asc" },
       include: packageSerializeInclude,
@@ -30,6 +30,8 @@ export default async function PackagesPage() {
       orderBy: { name: "asc" },
     }),
     loadBomCatalog(prisma),
+    // ROUND3 W-2 — website categories for the Website panel.
+    prisma.category.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
   ]);
 
   return (
@@ -45,6 +47,7 @@ export default async function PackagesPage() {
         isStockTracked: p.isStockTracked,
         ...(showCosts ? { avgCost: Number(p.avgCost) } : {}),
       }))}
+      categories={categories}
       showCosts={showCosts}
       canManage={canManage}
     />

@@ -13,6 +13,12 @@ const OPEN_PAGES: OpenRule[] = [
   { path: /^\/billing(\/.*)?$/, why: "the bill and its print-ready invoices (the short message for roles without billing.view)" },
   { path: /^\/login$/, why: "sign in" },
   { path: /^\/change-password$/, why: "change own password (also the forced change after a reset)" },
+  // ROUND3 W-1 — the public website (reached only on the website host, whose
+  // proxy branch never consults the lock; the ERP host 404s this section).
+  // Customers keep ordering while suspended; POST /api/shop/* lives here too
+  // (/storefront/api/shop/*) and only ever creates drafts, which count for the
+  // bill only when an SE confirms them.
+  { path: /^\/storefront(\/.*)?$/, why: "the public website and its order endpoint (POST /api/shop/*) — customers can still order; orders wait as drafts" },
 ];
 
 /** API routes that still answer. Every other one → 423. */

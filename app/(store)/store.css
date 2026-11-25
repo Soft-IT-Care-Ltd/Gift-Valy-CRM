@@ -1,0 +1,24 @@
+/*
+ * ROUND3 W-1 — the website's own stylesheet. Never the ERP's violet theme:
+ * the two root layouts never share CSS. Tailwind scans only the storefront's
+ * files, so this stays small. The full brand theme lands with the pages (W-4).
+ */
+@import "tailwindcss" source(none);
+@source "./";
+@source "../../components/storefront";
+
+@theme {
+  --color-brand: #c2185b;
+  --color-brand-50: #fdf0f5;
+  --color-cream: #fffaf5;
+  --color-ink: #1f1a17;
+  --color-muted: #6b5f57;
+  --color-line: #eadfd6;
+  --font-sans: var(--font-hind), system-ui, sans-serif;
+}
+
+html,
+body {
+  background: var(--color-cream);
+  color: var(--color-ink);
+}

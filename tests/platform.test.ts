@@ -260,7 +260,7 @@ describe("GV-6 addresses", () => {
     const sources = walk("app").concat(walk("lib"), walk("components"));
     const builders = sources.filter((f) => f.text.includes("/api/webhooks/steadfast`"));
     assert.deepEqual(builders.map((f) => f.rel), ["lib/platform/addresses.ts"]);
-    for (const rel of ["app/(dashboard)/courier/page.tsx", "app/api/couriers/steadfast/settings/route.ts"]) {
+    for (const rel of ["app/(erp)/(dashboard)/courier/page.tsx", "app/api/couriers/steadfast/settings/route.ts"]) {
       const text = readFileSync(path.join(ROOT, rel), "utf8");
       assert.match(text, /steadfastCallbackUrl\(/, rel);
       // Code, not comments, must not build it from the people's address.

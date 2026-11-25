@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { requirePagePermission } from "@/lib/page-auth";
 import { CategoriesClient } from "@/components/catalog/categories-client";
+import { websiteValues } from "@/lib/catalog-website-values";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +20,7 @@ export default async function CategoriesPage() {
         name: c.name,
         photoUrl: c.photoUrl,
         productsCount: c._count.products,
+        website: websiteValues(c),
       }))}
     />
   );

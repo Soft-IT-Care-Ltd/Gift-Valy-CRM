@@ -26,6 +26,9 @@ const nextConfig: NextConfig = {
   // A stray lockfile in the home directory makes Next.js mis-infer the
   // workspace root — pin it to this app (cwd is the app dir under `npm run dev`).
   turbopack: { root: path.resolve(process.cwd()) },
+  // ROUND3 W-1 — two root layouts (app/(erp), app/(store)), so an address
+  // matching no route at all renders app/global-not-found.tsx.
+  experimental: { globalNotFound: true },
 };
 
 export default nextConfig;
