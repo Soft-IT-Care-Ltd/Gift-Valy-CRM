@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { requirePermission, apiError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
 import { serializeCurrencyRate } from "@/lib/currency";
+import { revalidateStorefrontSettings } from "@/lib/storefront/revalidate";
 
 // SPEC §5 — Admin-maintained currency rate table for the customer-currency
 // display on invoices. settings.manage, same gate as the other /settings pages.
@@ -68,6 +69,8 @@ export async function POST(req: Request) {
       entityId: rate.id,
       after: serializeCurrencyRate(rate),
     });
+    // ROUND3 W-9 — the website shows this on its very next page load.
+    revalidateStorefrontSettings();
     return NextResponse.json(serializeCurrencyRate(rate), { status: 201 });
   } catch (e) {
     if (

@@ -1,24 +1,273 @@
 /*
- * ROUND3 W-1 — the website's own stylesheet. Never the ERP's violet theme:
- * the two root layouts never share CSS. Tailwind scans only the storefront's
- * files, so this stays small. The full brand theme lands with the pages (W-4).
+ * ROUND3 W-4 — the website's own stylesheet: the Gift Valy brand from the
+ * logo (Settings → Invoice branding / public/shop/logo.png) — the navy of the
+ * lettering and the orange of the gift box, on a warm cream. Baloo Da 2
+ * (rounded, like the logo's letters) for headings, Hind Siliguri for text;
+ * both render Bangla names. Never the ERP's violet: the two root layouts
+ * never share CSS, and Tailwind scans only the storefront's files here.
  */
 @import "tailwindcss" source(none);
 @source "./";
 @source "../../components/storefront";
 
 @theme {
-  --color-brand: #c2185b;
-  --color-brand-50: #fdf0f5;
-  --color-cream: #fffaf5;
-  --color-ink: #1f1a17;
-  --color-muted: #6b5f57;
-  --color-line: #eadfd6;
-  --font-sans: var(--font-hind), system-ui, sans-serif;
+  --color-navy: #2c347c;
+  --color-navy-800: #232a66;
+  --color-navy-600: #3d4691;
+  --color-navy-100: #dde0f1;
+  --color-navy-50: #eef0f8;
+  --color-orange: #ec8c24;
+  --color-orange-600: #d97a14;
+  --color-orange-text: #a3550a;
+  --color-orange-200: #f8cf9e;
+  --color-orange-100: #fce3c6;
+  --color-orange-50: #fef4e8;
+  --color-cream: #fffaf4;
+  --color-sunken: #f7efe4;
+  --color-line: #eee3d6;
+  --color-line-strong: #dccdbb;
+  --color-ink: #1f2240;
+  --color-body: #33364f;
+  --color-muted: #63667e;
+  --color-ok: #1f7a45;
+  --color-ok-bg: #e3f2e8;
+  --color-bad: #b3261e;
+  --color-bad-bg: #fbe5e3;
+  --color-whatsapp: #15803d;
+
+  --font-display: var(--font-baloo), "Noto Sans Bengali", system-ui, sans-serif;
+  --font-sans: var(--font-hind), "Noto Sans Bengali", system-ui, sans-serif;
+
+  --radius-ctl: 10px;
+  --radius-card: 14px;
+  --radius-pill: 999px;
+
+  --shadow-card: 0 1px 2px rgba(31, 34, 64, 0.06), 0 4px 14px rgba(31, 34, 64, 0.05);
+  --shadow-sheet: 0 -6px 18px rgba(31, 34, 64, 0.1);
+  --ease-quiet: cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
-html,
-body {
-  background: var(--color-cream);
-  color: var(--color-ink);
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    scroll-padding-top: 80px;
+  }
+  body {
+    background: var(--color-cream);
+    color: var(--color-body);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1.6;
+    min-height: 100vh;
+    -webkit-tap-highlight-color: transparent;
+    overflow-x: hidden;
+  }
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    font-weight: 700;
+    color: var(--color-navy);
+    line-height: 1.2;
+    text-wrap: balance;
+  }
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+  button {
+    cursor: pointer;
+  }
+  :focus-visible {
+    outline: 3px solid var(--color-orange);
+    outline-offset: 2px;
+  }
+  input,
+  select,
+  textarea,
+  button {
+    font: inherit;
+  }
+  img {
+    max-width: 100%;
+  }
+}
+
+@layer components {
+  .sf-container {
+    width: 100%;
+    max-width: 1240px;
+    margin-inline: auto;
+    padding-inline: 16px;
+  }
+  @media (min-width: 768px) {
+    .sf-container {
+      padding-inline: 24px;
+    }
+  }
+  /* Every button and tap target is at least 48 px tall. */
+  .sf-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 48px;
+    padding: 0 20px;
+    border-radius: var(--radius-pill);
+    font-weight: 600;
+    font-size: 16px;
+    line-height: 1.2;
+    text-align: center;
+    transition:
+      background-color 120ms var(--ease-quiet),
+      transform 120ms var(--ease-quiet);
+  }
+  .sf-btn:active {
+    transform: scale(0.98);
+  }
+  .sf-btn:disabled,
+  .sf-btn[aria-disabled="true"] {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+  }
+  .sf-btn-navy {
+    background: var(--color-navy);
+    color: #fff;
+  }
+  .sf-btn-navy:hover:not(:disabled) {
+    background: var(--color-navy-800);
+  }
+  /* Navy on orange: 4.6:1 (white on this orange would fail AA). */
+  .sf-btn-orange {
+    background: var(--color-orange);
+    color: var(--color-navy-800);
+  }
+  .sf-btn-orange:hover:not(:disabled) {
+    background: var(--color-orange-600);
+  }
+  .sf-btn-outline {
+    background: #fff;
+    color: var(--color-navy);
+    border: 2px solid var(--color-navy);
+  }
+  .sf-btn-outline:hover:not(:disabled) {
+    background: var(--color-navy-50);
+  }
+  /* WhatsApp / Messenger in the apps' own colours, white text at AA contrast. */
+  .sf-btn-whatsapp {
+    background: var(--color-whatsapp);
+    color: #fff;
+  }
+  .sf-btn-whatsapp:hover {
+    background: #166534;
+  }
+  .sf-btn-messenger {
+    background: linear-gradient(90deg, #0866ff, #7d3cf5);
+    color: #fff;
+  }
+  .sf-btn-messenger:hover {
+    background: linear-gradient(90deg, #0756d8, #6a2fd9);
+  }
+  .sf-field {
+    width: 100%;
+    min-height: 48px;
+    border: 2px solid var(--color-line-strong);
+    border-radius: var(--radius-pill);
+    background: #fff;
+    padding: 10px 18px;
+    font-size: 16px; /* 16px: iOS Safari doesn't zoom into the field */
+    color: var(--color-ink);
+  }
+  .sf-field:focus {
+    outline: none;
+    border-color: var(--color-navy);
+    box-shadow: 0 0 0 3px var(--color-navy-100);
+  }
+  .sf-photo {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    overflow: hidden;
+    background: var(--color-orange-50);
+  }
+  .sf-photo > img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  /* Main buttons pinned to the bottom on phones, inline from 768 px. */
+  .sf-sticky-bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    background: #fff;
+    border-top: 1px solid var(--color-line);
+    box-shadow: var(--shadow-sheet);
+    padding: 8px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+  /* The page (footer included) scrolls clear of the pinned bar. */
+  @media (max-width: 767px) {
+    body:has(.sf-sticky-bar) {
+      padding-bottom: calc(118px + env(safe-area-inset-bottom, 0px));
+    }
+  }
+  @media (min-width: 768px) {
+    .sf-sticky-bar {
+      position: static;
+      z-index: auto;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      padding: 0;
+    }
+  }
+  .sf-visually-hidden {
+    position: absolute !important;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .sf-gallery {
+    display: flex;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .sf-gallery::-webkit-scrollbar {
+    display: none;
+  }
+  .sf-gallery > * {
+    flex: 0 0 100%;
+    scroll-snap-align: start;
+  }
+  .sf-scroll-x {
+    display: flex;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .sf-scroll-x::-webkit-scrollbar {
+    display: none;
+  }
+  .sf-prose p {
+    margin: 0 0 12px;
+  }
+  .sf-prose ul {
+    margin: 0 0 12px;
+    padding-left: 1.25rem;
+    list-style: disc;
+  }
+  .sf-prose li {
+    margin: 2px 0;
+  }
+  .sf-prose strong {
+    color: var(--color-ink);
+    font-weight: 600;
+  }
 }

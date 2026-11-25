@@ -18,6 +18,7 @@ import { printKitInputSchema } from "@/lib/print-kit";
 import { printKitColumn } from "@/lib/print-kits";
 import { websiteInputSchema } from "@/lib/catalog-website-shape";
 import { applyWebsite } from "@/lib/catalog-website";
+import { revalidateStorefrontCatalog } from "@/lib/storefront/revalidate";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -162,6 +163,8 @@ export async function PATCH(req: Request, { params }: Params) {
       before,
       after,
     });
+    // ROUND3 W-9 — the website shows this on its very next page load.
+    revalidateStorefrontCatalog();
     return NextResponse.json({ ok: true });
   } catch (e) {
     return apiError(e);
@@ -210,6 +213,8 @@ export async function DELETE(req: Request, { params }: Params) {
       entityId: id,
       before: pkg,
     });
+    // ROUND3 W-9 — the website shows this on its very next page load.
+    revalidateStorefrontCatalog();
     return NextResponse.json({ ok: true });
   } catch (e) {
     return apiError(e);

@@ -12,6 +12,7 @@ import {
 } from "@/lib/category-photo";
 import { websiteInputSchema } from "@/lib/catalog-website-shape";
 import { applyWebsite } from "@/lib/catalog-website";
+import { revalidateStorefrontCatalog } from "@/lib/storefront/revalidate";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -80,6 +81,8 @@ export async function PATCH(req: Request, { params }: Params) {
       // The old file belonged to this category only (category-<uuid>.webp).
       await deleteCategoryPhoto(before.photoUrl);
     }
+    // ROUND3 W-9 — the website shows this on its very next page load.
+    revalidateStorefrontCatalog();
     return NextResponse.json({ ok: true });
   } catch (e) {
     if (e instanceof CategoryPhotoError) {
@@ -124,6 +127,8 @@ export async function DELETE(req: Request, { params }: Params) {
       before: { id: category.id, name: category.name, photoUrl: category.photoUrl },
     });
     await deleteCategoryPhoto(category.photoUrl);
+    // ROUND3 W-9 — the website shows this on its very next page load.
+    revalidateStorefrontCatalog();
     return NextResponse.json({ ok: true });
   } catch (e) {
     return apiError(e);

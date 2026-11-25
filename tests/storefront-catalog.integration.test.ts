@@ -79,6 +79,9 @@ const SCANNED = [
   "getWebCategory",
   "searchWebItems",
   "getWebItem",
+  "relatedWebItems", // W-4
+  "getWebSettings", // W-4 — Settings → Website, read by the pages
+  "listWebCurrencies", // W-4 — the optional approx. price
   "publicPhotoFile", // returns a server file path, never sent; checked separately
 ];
 
@@ -216,6 +219,10 @@ describe("W-3 one public catalog gate — the leak scan", () => {
         ["searchWebItems(leaktest)", await catalog.searchWebItems("leaktest", tx)],
         ["getWebItem(product)", await catalog.getWebItem(chocSlug, tx)],
         ["getWebItem(package)", await catalog.getWebItem(pkgSlug, tx)],
+        ["relatedWebItems(product)", await catalog.relatedWebItems(chocSlug, 8, tx)],
+        ["relatedWebItems(package)", await catalog.relatedWebItems(pkgSlug, 8, tx)],
+        ["getWebSettings", await catalog.getWebSettings(tx)],
+        ["listWebCurrencies", await catalog.listWebCurrencies(tx)],
       ];
       for (const [label, out] of outputs) {
         assert.ok(out, `${label} returned something`);
@@ -377,7 +384,11 @@ describe("W-3 the website reads only through the gate", () => {
   });
 
   test("the catalog gate selects, never includes", () => {
-    const src = readFileSync(path.join(ROOT, "lib/storefront/catalog.ts"), "utf8");
+    // The one `code: true` allowed is the ISO currency code (W-4 approx. price).
+    const src = readFileSync(path.join(ROOT, "lib/storefront/catalog.ts"), "utf8").replace(
+      /const CURRENCY_SELECT = \{ code: true, name: true, symbol: true, bdtPerUnit: true \}/,
+      ""
+    );
     assert.doesNotMatch(src, /\binclude\s*:/);
     assert.doesNotMatch(src, /(avgCost|stockQty|sku|code|priceFloor|unitCost|phone|email|createdBy|updatedBy):\s*true/);
   });

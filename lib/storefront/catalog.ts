@@ -10,11 +10,14 @@ import {
   productAvailability,
   productPrintKitNeeds,
   type BomCatalog,
+  type PrintKitNeed,
 } from "@/lib/bom";
+import { printKitPhotoCount } from "@/lib/print-kit";
 import { ensureWebsiteSlugs } from "@/lib/catalog-website";
 import { parseRichText, richTextPlain, SEO_DESCRIPTION_MAX } from "@/lib/catalog-website-shape";
 import { uploadUrlPath } from "@/lib/file-storage";
 import { slugify } from "./slug";
+import { normalizeWebSettings, WEBSITE_SETTINGS_KEY, type WebSettings } from "./settings-shape";
 import type {
   WebBadge,
   WebCard,
@@ -22,6 +25,8 @@ import type {
   WebCategoryRef,
   WebChoiceGroup,
   WebContentsLine,
+  WebCurrency,
+  WebDelivery,
   WebImage,
   WebItem,
   WebStock,
@@ -103,6 +108,45 @@ async function sellableCatalog(db: Db): Promise<BomCatalog> {
   return catalog;
 }
 
+/** Photos and cards a print kit asks the customer for — one item, these picks. */
+function kitCounts(needs: PrintKitNeed[] | null): { photos: number; cards: number } {
+  let photos = 0;
+  let cards = 0;
+  for (const n of needs ?? []) {
+    photos += printKitPhotoCount(n.kit) * n.units;
+    cards += n.kit.cards.length * n.units;
+  }
+  return { photos, cards };
+}
+
+/** Can this choice option itself be supplied for one package (qty pieces of it)? */
+function optionStock(catalog: BomCatalog, productId: number, qty: number): WebStock {
+  return stockFrom(() => {
+    const n = productAvailability(catalog, productId);
+    return n === null ? null : n >= qty ? 1 : 0;
+  });
+}
+
+/**
+ * The picks a visitor starts with: each group's default, or — when the
+ * default itself is out — its first option in stock. A package is "In stock"
+ * when it can be made with these (lib/storefront/picks.ts initialPicks()
+ * makes the same choice in the browser).
+ */
+function bestPicks(catalog: BomCatalog, packageId: number): Map<number, number> {
+  const picks = new Map<number, number>();
+  for (const g of tryBom(() => collectChoiceGroups(catalog, packageId)) ?? []) {
+    const def = g.options.find((o) => o.isDefault) ?? g.options[0];
+    if (!def) continue;
+    const pick =
+      optionStock(catalog, def.productId, g.qty) === "IN_STOCK"
+        ? def
+        : (g.options.find((o) => optionStock(catalog, o.productId, g.qty) === "IN_STOCK") ?? def);
+    picks.set(g.groupId, pick.productId);
+  }
+  return picks;
+}
+
 function tryBom<T>(fn: () => T): T | null {
   try {
     return fn();
@@ -147,6 +191,7 @@ function productCard(r: ProductCardRow, catalog: BomCatalog): WebCard {
     badge: badgeOf(r.websiteBadge),
     image: webImage(r.photos[0], name),
     stock: stockFrom(() => productAvailability(catalog, r.id)),
+    printPhotos: kitCounts(tryBom(() => productPrintKitNeeds(catalog, r.id))).photos,
   };
 }
 
@@ -163,7 +208,8 @@ function packageCard(r: PackageCardRow, catalog: BomCatalog): WebCard | null {
     compareAtPrice: money(r.compareAtPrice),
     badge: badgeOf(r.websiteBadge),
     image: webImage(r.photos[0], name),
-    stock: stockFrom(() => packageAvailability(catalog, r.id)),
+    stock: stockFrom(() => packageAvailability(catalog, r.id, bestPicks(catalog, r.id))),
+    printPhotos: kitCounts(tryBom(() => packagePrintKitNeeds(catalog, r.id))).photos,
   };
 }
 
@@ -194,11 +240,14 @@ async function cards(
 
 // ---------- public reads ----------
 
-/** Shown categories, in display order. */
+/** Shown categories that have something on the website (a category of packing materials stays out of the menu), in display order. */
 export async function listWebCategories(db: Db = appDb()): Promise<WebCategory[]> {
   await ensureWebsiteSlugs(db);
   const rows = await db.category.findMany({
-    where: CATEGORY_ON_WEBSITE,
+    where: {
+      ...CATEGORY_ON_WEBSITE,
+      OR: [{ products: { some: PRODUCT_ON_WEBSITE } }, { websitePackages: { some: { package: PACKAGE_ON_WEBSITE } } }],
+    },
     orderBy: ORDER,
     select: {
       name: true,
@@ -312,6 +361,9 @@ export async function getWebItem(slug: string, db: Db = appDb()): Promise<{ item
     websiteDescription: true,
     seoTitle: true,
     seoDescription: true,
+    deliveryChargeInsideDhaka: true,
+    deliveryChargeSubDhaka: true,
+    deliveryChargeOutsideDhaka: true,
   } as const;
   const [product, pkg] = await Promise.all([
     db.product.findFirst({
@@ -343,7 +395,8 @@ export async function getWebItem(slug: string, db: Db = appDb()): Promise<{ item
         photos: product.photos.flatMap((p) => webImage(p, card.name) ?? []),
         choiceGroups: [],
         contents: null,
-        needsPhotos: (tryBom(() => productPrintKitNeeds(catalog, product.id)) ?? []).length > 0,
+        printCards: kitCounts(tryBom(() => productPrintKitNeeds(catalog, product.id))).cards,
+        delivery: deliveryOf(product),
         seoTitle: product.seoTitle || card.name,
         seoDescription: product.seoDescription || richTextPlain(product.websiteDescription).slice(0, SEO_DESCRIPTION_MAX),
       },
@@ -363,9 +416,10 @@ export async function getWebItem(slug: string, db: Db = appDb()): Promise<{ item
         description: parseRichText(pkg.websiteDescription),
         categories,
         photos: pkg.photos.flatMap((p) => webImage(p, card.name) ?? []),
-        choiceGroups: choiceGroupsOf(catalog, pkg.id, names),
+        choiceGroups: choiceGroupsOf(catalog, pkg.id, names, card.price),
         contents: pkg.websiteShowContents ? contentsOf(catalog, pkg.id, names) : null,
-        needsPhotos: (tryBom(() => packagePrintKitNeeds(catalog, pkg.id)) ?? []).length > 0,
+        printCards: kitCounts(tryBom(() => packagePrintKitNeeds(catalog, pkg.id))).cards,
+        delivery: deliveryOf(pkg),
         seoTitle: pkg.seoTitle || card.name,
         seoDescription: pkg.seoDescription || richTextPlain(pkg.websiteDescription).slice(0, SEO_DESCRIPTION_MAX),
       },
@@ -382,6 +436,57 @@ export async function getWebItem(slug: string, db: Db = appDb()): Promise<{ item
   const target = moved?.product?.productType === "SELLABLE" ? moved.product : moved?.package;
   if (target?.slug && target.showOnWebsite && target.isActive && target.slug !== slug) return { redirectTo: target.slug };
   return null;
+}
+
+/** ROUND3 W-4 — "More like this": shown items sharing a category with the item (else the featured ones). */
+export async function relatedWebItems(slug: string, take = 8, db: Db = appDb()): Promise<WebCard[]> {
+  if (!SLUG.test(slug)) return [];
+  const limit = Math.min(Math.max(1, take), 24);
+  const [product, pkg] = await Promise.all([
+    db.product.findFirst({ where: { ...PRODUCT_ON_WEBSITE, slug }, select: { categoryId: true, category: { select: { showOnWebsite: true } } } }),
+    db.package.findFirst({
+      where: { ...PACKAGE_ON_WEBSITE, slug },
+      select: { websiteCategories: { where: { category: CATEGORY_ON_WEBSITE }, select: { categoryId: true } } },
+    }),
+  ]);
+  const categoryIds = product
+    ? product.category.showOnWebsite
+      ? [product.categoryId]
+      : []
+    : (pkg?.websiteCategories.map((c) => c.categoryId) ?? []);
+  if (!product && !pkg) return [];
+  const notSelf = { slug: { not: slug } };
+  const related = categoryIds.length
+    ? await cards(
+        db,
+        { ...notSelf, categoryId: { in: categoryIds } },
+        { ...notSelf, websiteCategories: { some: { categoryId: { in: categoryIds } } } },
+        limit
+      )
+    : [];
+  if (related.length > 0) return related;
+  return cards(db, { ...notSelf, websiteFeatured: true }, { ...notSelf, websiteFeatured: true }, limit);
+}
+
+/**
+ * ROUND3 W-4 — what the website needs from Settings → Website (W-7 adds the
+ * editor): the WhatsApp number and Messenger page for the order buttons,
+ * contact details, delivery times, the policy texts. Unset = empty: no button.
+ */
+export async function getWebSettings(db: Db = appDb()): Promise<WebSettings> {
+  const row = await db.setting.findUnique({ where: { key: WEBSITE_SETTINGS_KEY }, select: { value: true } });
+  return normalizeWebSettings(row?.value ?? null);
+}
+
+// The ISO currency code is public; it's the one `code` this module selects.
+const CURRENCY_SELECT = { code: true, name: true, symbol: true, bdtPerUnit: true } satisfies Prisma.CurrencyRateSelect;
+
+/** ROUND3 W-4 — active currency rates for the optional "≈ SAR 120 (approx.)" line (off unless Settings → Website says so). */
+export async function listWebCurrencies(db: Db = appDb()): Promise<WebCurrency[]> {
+  const rows = await db.currencyRate.findMany({ where: { isActive: true }, orderBy: { code: "asc" }, select: CURRENCY_SELECT });
+  return rows
+    .map((r) => ({ iso: r.code, label: r.name, symbol: r.symbol || null, takaPerUnit: Number(r.bdtPerUnit) }))
+    .filter((r) => Number.isFinite(r.takaPerUnit) && r.takaPerUnit > 0);
 }
 
 /**
@@ -442,8 +547,14 @@ async function itemNames(db: Db, catalog: BomCatalog): Promise<Names> {
   };
 }
 
-function choiceGroupsOf(catalog: BomCatalog, packageId: number, names: Names): WebChoiceGroup[] {
+/**
+ * The choice groups with, per option, how far it moves the price from the
+ * default picks — worked out by packagePrice() itself (R3-2's one price
+ * function), never re-derived: the page's live total is price + Σ deltas.
+ */
+function choiceGroupsOf(catalog: BomCatalog, packageId: number, names: Names, defaultPrice: number): WebChoiceGroup[] {
   const groups = tryBom(() => collectChoiceGroups(catalog, packageId)) ?? [];
+  const base = kitCounts(tryBom(() => packagePrintKitNeeds(catalog, packageId)));
   return groups.map((g) => ({
     key: g.groupId,
     label: g.label,
@@ -452,17 +563,34 @@ function choiceGroupsOf(catalog: BomCatalog, packageId: number, names: Names): W
     options: g.options.map((o) => {
       const p = names.products.get(o.productId);
       const name = p?.name ?? "Option";
+      const pick = new Map([[g.groupId, o.productId]]);
+      const priced = tryBom(() => packagePrice(catalog, packageId, pick));
+      const kit = kitCounts(tryBom(() => packagePrintKitNeeds(catalog, packageId, pick)));
       return {
         key: o.productId,
         name,
         extraPrice: Math.round(o.extraPrice * 100) / 100,
         isDefault: o.isDefault,
-        stock: stockFrom(() => packageAvailability(catalog, packageId, new Map([[g.groupId, o.productId]]))),
+        priceDelta: priced ? Math.round((priced.unitPrice - defaultPrice) * 100) / 100 : 0,
+        // The option on its own; the rest of the package is the item's stock (picks.ts liveStock).
+        stock: priced ? optionStock(catalog, o.productId, g.qty) : "OUT_OF_STOCK",
         image: webImage(p?.photo, name),
+        printPhotosDelta: kit.photos - base.photos,
+        printCardsDelta: kit.cards - base.cards,
       };
     }),
   }));
 }
+
+const deliveryOf = (r: {
+  deliveryChargeInsideDhaka: Prisma.Decimal;
+  deliveryChargeSubDhaka: Prisma.Decimal;
+  deliveryChargeOutsideDhaka: Prisma.Decimal;
+}): WebDelivery => ({
+  insideDhaka: money(r.deliveryChargeInsideDhaka)!,
+  subDhaka: money(r.deliveryChargeSubDhaka)!,
+  outsideDhaka: money(r.deliveryChargeOutsideDhaka)!,
+});
 
 /** "What's inside": product lines, sub-packages (with their contents) and choices. Packing materials (COMPONENT products) are left out. */
 function contentsOf(catalog: BomCatalog, packageId: number, names: Names, depth = 0): WebContentsLine[] {
@@ -472,16 +600,17 @@ function contentsOf(catalog: BomCatalog, packageId: number, names: Names, depth 
   for (const line of pkg.items) {
     if (line.kind === "PRODUCT" && line.productId != null) {
       if (catalog.products.get(line.productId)?.productType === "COMPONENT") continue;
-      out.push({ name: names.products.get(line.productId)?.name ?? "Item", qty: line.qty, choice: false, children: [] });
+      out.push({ name: names.products.get(line.productId)?.name ?? "Item", qty: line.qty, choice: false, groupKey: null, children: [] });
     } else if (line.kind === "PACKAGE" && line.childPackageId != null) {
       out.push({
         name: names.packages.get(line.childPackageId) ?? "Set",
         qty: line.qty,
         choice: false,
+        groupKey: null,
         children: contentsOf(catalog, line.childPackageId, names, depth + 1),
       });
     } else if (line.kind === "CHOICE") {
-      out.push({ name: line.choiceLabel || "Your choice", qty: line.qty, choice: true, children: [] });
+      out.push({ name: line.choiceLabel || "Your choice", qty: line.qty, choice: true, groupKey: line.id, children: [] });
     }
   }
   return out;

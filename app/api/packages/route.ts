@@ -19,6 +19,7 @@ import { printKitInputSchema } from "@/lib/print-kit";
 import { printKitColumn } from "@/lib/print-kits";
 import { websiteInputSchema } from "@/lib/catalog-website-shape";
 import { applyWebsite } from "@/lib/catalog-website";
+import { revalidateStorefrontCatalog } from "@/lib/storefront/revalidate";
 
 export async function GET() {
   try {
@@ -144,6 +145,8 @@ export async function POST(req: Request) {
       entityId: pkg.id,
       after: pkg,
     });
+    // ROUND3 W-9 — the website shows this on its very next page load.
+    revalidateStorefrontCatalog();
     return NextResponse.json({ id: pkg.id, code: pkg.code }, { status: 201 });
   } catch (e) {
     return apiError(e);

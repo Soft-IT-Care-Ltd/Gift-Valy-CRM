@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { requirePermission, apiError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
 import { serializeCurrencyRate } from "@/lib/currency";
+import { revalidateStorefrontSettings } from "@/lib/storefront/revalidate";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -64,6 +65,8 @@ export async function PATCH(req: Request, { params }: Params) {
       before: serializeCurrencyRate(existing),
       after: serializeCurrencyRate(rate),
     });
+    // ROUND3 W-9 — the website shows this on its very next page load.
+    revalidateStorefrontSettings();
     return NextResponse.json(serializeCurrencyRate(rate));
   } catch (e) {
     if (
@@ -96,6 +99,8 @@ export async function DELETE(_req: Request, { params }: Params) {
       entityId: id,
       before: serializeCurrencyRate(existing),
     });
+    // ROUND3 W-9 — the website shows this on its very next page load.
+    revalidateStorefrontSettings();
     return NextResponse.json({ ok: true });
   } catch (e) {
     return apiError(e);

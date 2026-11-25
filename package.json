@@ -20,6 +20,7 @@
     "test:round3": "tsx --test tests/round3.integration.test.ts",
     "test:storefront": "tsx --test tests/storefront-hosts.test.ts",
     "test:storefront-catalog": "tsx --test tests/storefront-catalog.integration.test.ts",
+    "test:storefront-pages": "tsx --test tests/storefront-pages.integration.test.ts",
     "db:diff": "tsx scripts/db-diff.ts",
     "db:bootstrap": "bash scripts/db-bootstrap.sh",
     "db:seed-card-messages": "tsx prisma/seed-card-messages.ts",

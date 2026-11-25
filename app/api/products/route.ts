@@ -15,6 +15,7 @@ import {
 import { loadBomCatalog, validateComponentRules } from "@/lib/bom-db";
 import { websiteInputSchema } from "@/lib/catalog-website-shape";
 import { applyWebsite, productWebsiteBlock } from "@/lib/catalog-website";
+import { revalidateStorefrontCatalog } from "@/lib/storefront/revalidate";
 
 export async function GET() {
   try {
@@ -151,6 +152,8 @@ export async function POST(req: Request) {
       entityId: product.id,
       after: product,
     });
+    // ROUND3 W-9 — the website shows this on its very next page load.
+    revalidateStorefrontCatalog();
     return NextResponse.json({ id: product.id, sku: product.sku }, { status: 201 });
   } catch (e) {
     return apiError(e);

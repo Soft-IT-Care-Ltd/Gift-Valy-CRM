@@ -21,8 +21,9 @@ module.exports = {
       // differs from the one Next listens on is proxied as an external URL
       // (Antu's CLAUDE.md "Stack gotchas"). On Ubuntu, localhost is 127.0.0.1.
       args: "start --hostname localhost --port 3200",
-      // One process: ~15 staff don't need more, and the platform state cache
-      // (lib/platform) lives in this process's memory.
+      // One process: ~15 staff don't need more, the platform state cache
+      // (lib/platform) lives in this process's memory, and so does the
+      // website's page cache (ROUND3 W-9) — one save clears it for everyone.
       exec_mode: "fork",
       instances: 1,
       env: {

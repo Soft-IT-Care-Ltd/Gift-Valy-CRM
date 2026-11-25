@@ -10,6 +10,7 @@ import {
   type Explosion,
 } from "./bom";
 import { loadBomCatalog } from "./bom-db";
+import { revalidateStorefrontCatalog } from "./storefront/revalidate";
 
 type Tx = Prisma.TransactionClient | PrismaClient;
 
@@ -71,6 +72,10 @@ export async function applyMovements(
         : { stockQty: { increment: m.qty } },
     });
   }
+  // ROUND3 W-9 — the website's "In stock / Out of stock" words follow stock:
+  // its cached pages are cleared (applied when the request ends, i.e. after
+  // this transaction commits; a no-op outside a request).
+  revalidateStorefrontCatalog();
 }
 
 // ---------- order requirements (recursive BOM explosion, SPEC §6.2 + CORRECTIONS Products §2/§4/§5) ----------

@@ -12,6 +12,7 @@ import {
 import { websiteInputSchema } from "@/lib/catalog-website-shape";
 import { applyWebsite } from "@/lib/catalog-website";
 import { websiteValues } from "@/lib/catalog-website-values";
+import { revalidateStorefrontCatalog } from "@/lib/storefront/revalidate";
 
 export async function GET() {
   try {
@@ -90,6 +91,8 @@ export async function POST(req: Request) {
         after: { photoUrl },
       });
     }
+    // ROUND3 W-9 — the website shows this on its very next page load.
+    revalidateStorefrontCatalog();
     return NextResponse.json({ id: category.id }, { status: 201 });
   } catch (e) {
     if (e instanceof CategoryPhotoError) {

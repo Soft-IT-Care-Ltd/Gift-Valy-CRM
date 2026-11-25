@@ -41,6 +41,8 @@ describe("PM2", () => {
       assert.equal(app.cwd, `${base}/app`);
       // "localhost", never 127.0.0.1 (Antu's CLAUDE.md "Stack gotchas").
       assert.equal(app.args, `start --hostname localhost --port ${port}`);
+      // One process per copy: the platform state cache and the website's page
+      // cache (ROUND3 W-9) live in its memory, so one save clears it for everyone.
       assert.equal(app.exec_mode, "fork");
       assert.equal(app.instances, 1);
       assert.equal(app.env.TZ, "Asia/Dhaka");

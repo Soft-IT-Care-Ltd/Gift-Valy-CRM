@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { requirePermission, apiError } from "@/lib/authz";
 import { applyWebsite, productWebsiteBlock } from "@/lib/catalog-website";
+import { revalidateStorefrontCatalog } from "@/lib/storefront/revalidate";
 
 // ROUND3 W-2 — "Show on website / Hide" for the rows selected on the product
 // or package list. Each item goes through the same applyWebsite() as its
@@ -62,6 +63,8 @@ export async function POST(req: Request) {
       },
       { timeout: 60_000 }
     );
+    // ROUND3 W-9 — the website shows this on its very next page load.
+    revalidateStorefrontCatalog();
     return NextResponse.json({ changed });
   } catch (e) {
     return apiError(e);

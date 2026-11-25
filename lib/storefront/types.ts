@@ -22,7 +22,10 @@ export type WebCard = {
   compareAtPrice: number | null;
   badge: WebBadge;
   image: WebImage | null;
+  /** A package: can it be made with its starting picks (each group's default, or its first option in stock). */
   stock: WebStock;
+  /** Photos the customer sends for printing (a print kit, default picks); 0 = none. */
+  printPhotos: number;
 };
 
 export type WebChoiceOption = {
@@ -32,9 +35,18 @@ export type WebChoiceOption = {
   /** ৳ added per piece when picked (may be negative). */
   extraPrice: number;
   isDefault: boolean;
-  /** The package's availability with this option picked (others default). */
+  /**
+   * ৳ the package's price moves by when this option is picked instead of the
+   * group's default — packagePrice(with it) − packagePrice(defaults). The page's
+   * live total is price + Σ priceDelta of the picks (groups are independent).
+   */
+  priceDelta: number;
+  /** Whether this option itself can be supplied (qty pieces of it for one package). */
   stock: WebStock;
   image: WebImage | null;
+  /** Change in print-kit photos / cards vs the default option. */
+  printPhotosDelta: number;
+  printCardsDelta: number;
 };
 
 export type WebChoiceGroup = {
@@ -53,6 +65,8 @@ export type WebContentsLine = {
   qty: number;
   /** A choice the customer makes ("Saree — your choice"). */
   choice: boolean;
+  /** For a choice line: its group's key, so the page can show the current pick. */
+  groupKey: number | null;
   children: WebContentsLine[];
 };
 
@@ -65,8 +79,10 @@ export type WebItem = WebCard & {
   choiceGroups: WebChoiceGroup[];
   /** null when the package hides it, or for a product. */
   contents: WebContentsLine[] | null;
-  /** The item needs the customer's photos / cards (W-4 note: send them on WhatsApp). */
-  needsPhotos: boolean;
+  /** Print-kit cards the customer writes a message for (default picks); 0 = none. */
+  printCards: number;
+  /** ৳ delivery charge for one piece, per zone (the order form's own figures). */
+  delivery: WebDelivery;
   seoTitle: string;
   seoDescription: string;
 };
@@ -80,3 +96,8 @@ export type WebCategory = {
   seoTitle: string;
   seoDescription: string;
 };
+
+export type WebDelivery = { insideDhaka: number; subDhaka: number; outsideDhaka: number };
+
+/** ROUND3 W-4 — an active currency for the optional "≈ SAR 120 (approx.)" line. */
+export type WebCurrency = { iso: string; label: string; symbol: string | null; takaPerUnit: number };

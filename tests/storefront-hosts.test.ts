@@ -52,10 +52,14 @@ function walk(dir: string): string[] {
 }
 
 /** Every storefront page/route as a matcher over the INTERNAL path. */
+/** ROUND3 W-4 — the website's catch-all: renders its own 404 page (inside the website's layout) and nothing else. */
+const MISSING_PAGE = path.join(ROOT, "app", "(store)", "storefront", "[...missing]", "page.tsx");
+
 function storefrontRoutes(): RegExp[] {
   const base = path.join(ROOT, "app", "(store)", "storefront");
   return walk(base)
     .filter((f) => /[/\\](page\.tsx|route\.ts)$/.test(f))
+    .filter((f) => f !== MISSING_PAGE)
     .map((f) => {
       const segs = path
         .relative(base, path.dirname(f))
@@ -103,10 +107,18 @@ describe("W-1 host matching (STOREFRONT_HOSTS)", () => {
   });
 
   test("unset or empty env = no website host (the app is the ERP only)", () => {
-    assert.deepEqual(storefrontHosts(undefined), []);
-    assert.deepEqual(storefrontHosts(" , "), []);
-    assert.equal(isStorefrontHost(WEBSITE, undefined), false);
-    assert.equal(isStorefrontHost(WEBSITE, ""), false);
+    // `undefined` falls back to process.env — which a developer's .env (loaded
+    // by the Prisma client) may set to shop.localhost; unset it for this test.
+    const before = process.env.STOREFRONT_HOSTS;
+    delete process.env.STOREFRONT_HOSTS;
+    try {
+      assert.deepEqual(storefrontHosts(undefined), []);
+      assert.deepEqual(storefrontHosts(" , "), []);
+      assert.equal(isStorefrontHost(WEBSITE, undefined), false);
+      assert.equal(isStorefrontHost(WEBSITE, ""), false);
+    } finally {
+      if (before !== undefined) process.env.STOREFRONT_HOSTS = before;
+    }
   });
 
   test("no host name is hardcoded in the front door (rule 9)", () => {
@@ -123,6 +135,12 @@ describe("W-1 website host", () => {
 
   test("the walk found the storefront section", () => {
     assert.ok(routes.some((r) => r.test(STOREFRONT_PREFIX)), "home page");
+  });
+
+  test("the catch-all is a 404 page and nothing more", () => {
+    const code = readFileSync(MISSING_PAGE, "utf8").replace(/^\s*\/\/.*$/gm, "");
+    assert.match(code, /export default function \w+\(\) \{\s*notFound\(\);\s*\}/);
+    assert.doesNotMatch(code, /from "@\/(lib|components)\//, "imports nothing but notFound");
   });
 
   test("public paths are rewritten into the storefront section", async () => {
