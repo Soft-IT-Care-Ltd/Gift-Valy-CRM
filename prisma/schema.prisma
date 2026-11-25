@@ -49,6 +49,7 @@ model User {
   leaveRequests      LeaveRequest[]           @relation("UserLeaves")
   rosterAssignments  RosterAssignment[]       @relation("UserRoster")
   damageInspections  DamageLog[]              @relation("DamageInspections")
+  notifications      Notification[]           @relation("UserNotifications")
 
   @@map("users")
 }
@@ -125,6 +126,8 @@ enum LeadSource {
   REFERRAL
   REPEAT_CUSTOMER
   OTHER
+  // ROUND3 W-5/W-6 — a website order's lead (created by the website, never typed by staff).
+  WEBSITE
 }
 
 // SPEC §3.1 funnel statuses. CONVERTED is set by the auto-convert hook when an
@@ -150,6 +153,10 @@ enum LostReason {
   OUT_OF_AREA
   NO_RESPONSE
   OTHER
+  // ROUND3 W-6 — the reasons a website order is cancelled with (Unreachable = NO_RESPONSE).
+  FAKE_ORDER
+  DUPLICATE
+  CHANGED_MIND
 }
 
 // A lead logged by an SE (SPEC §3.1). whatsapp_number is the dedupe key for the
@@ -217,11 +224,11 @@ model LeadDailyCount {
 // ============ CATALOG (SPEC §6.1 / §6.2 / §14) ============
 
 model Category {
-  id        Int      @id @default(autoincrement())
-  name      String   @unique
+  id                 Int       @id @default(autoincrement())
+  name               String    @unique
   // ROUND3 R3-1 — optional photo, "/uploads/category-<uuid>.webp" (≤1200 px,
   // WebP, EXIF stripped by POST /api/categories/photo). null = plain tile.
-  photoUrl  String?  @map("photo_url")
+  photoUrl           String?   @map("photo_url")
   // ROUND3 W-2 — the category's Website panel (lib/catalog-website.ts).
   showOnWebsite      Boolean   @default(true) @map("show_on_website")
   websiteName        String?   @map("website_name")
@@ -232,14 +239,14 @@ model Category {
   websiteSortOrder   Int       @default(0) @map("website_sort_order")
   seoTitle           String?   @map("seo_title")
   seoDescription     String?   @map("seo_description")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-  createdBy Int?     @map("created_by")
-  updatedBy Int?     @map("updated_by")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+  createdBy          Int?      @map("created_by")
+  updatedBy          Int?      @map("updated_by")
 
-  products         Product[]
-  websitePackages  PackageWebsiteCategory[]
-  slugRedirects    WebsiteSlugRedirect[]
+  products        Product[]
+  websitePackages PackageWebsiteCategory[]
+  slugRedirects   WebsiteSlugRedirect[]
 
   @@map("categories")
 }
@@ -271,29 +278,29 @@ enum DeliveryZone {
 }
 
 model Product {
-  id                         Int         @id @default(autoincrement())
-  sku                        String      @unique
+  id                         Int          @id @default(autoincrement())
+  sku                        String       @unique
   name                       String
-  productType                ProductType @default(SELLABLE) @map("product_type")
-  categoryId                 Int         @map("category_id")
-  photoUrl                   String?     @map("photo_url")
-  unit                       String      @default("pcs") // pcs | box | set
-  avgCost                    Decimal     @default(0) @map("avg_cost") @db.Decimal(12, 2) // weighted avg, recomputed on purchase (Phase 2)
-  sellingPrice               Decimal     @map("selling_price") @db.Decimal(12, 2) // forced 0 for COMPONENT products
-  priceFloor                 Decimal     @default(0) @map("price_floor") @db.Decimal(12, 2)
-  lowStockThreshold          Int         @default(0) @map("low_stock_threshold")
-  isStockTracked             Boolean     @default(true) @map("is_stock_tracked") // false = perishable/per-order (cake, flowers)
-  isActive                   Boolean     @default(true) @map("is_active")
+  productType                ProductType  @default(SELLABLE) @map("product_type")
+  categoryId                 Int          @map("category_id")
+  photoUrl                   String?      @map("photo_url")
+  unit                       String       @default("pcs") // pcs | box | set
+  avgCost                    Decimal      @default(0) @map("avg_cost") @db.Decimal(12, 2) // weighted avg, recomputed on purchase (Phase 2)
+  sellingPrice               Decimal      @map("selling_price") @db.Decimal(12, 2) // forced 0 for COMPONENT products
+  priceFloor                 Decimal      @default(0) @map("price_floor") @db.Decimal(12, 2)
+  lowStockThreshold          Int          @default(0) @map("low_stock_threshold")
+  isStockTracked             Boolean      @default(true) @map("is_stock_tracked") // false = perishable/per-order (cake, flowers)
+  isActive                   Boolean      @default(true) @map("is_active")
   // CORRECTIONS Products §3 — optional weight (kg) + optional customer-facing
   // delivery charge per zone (all 0 = free delivery, the usual case).
-  weightKg                   Decimal?    @map("weight_kg") @db.Decimal(8, 3)
-  deliveryChargeInsideDhaka  Decimal     @default(0) @map("delivery_charge_inside_dhaka") @db.Decimal(12, 2)
-  deliveryChargeSubDhaka     Decimal     @default(0) @map("delivery_charge_sub_dhaka") @db.Decimal(12, 2)
-  deliveryChargeOutsideDhaka Decimal     @default(0) @map("delivery_charge_outside_dhaka") @db.Decimal(12, 2)
+  weightKg                   Decimal?     @map("weight_kg") @db.Decimal(8, 3)
+  deliveryChargeInsideDhaka  Decimal      @default(0) @map("delivery_charge_inside_dhaka") @db.Decimal(12, 2)
+  deliveryChargeSubDhaka     Decimal      @default(0) @map("delivery_charge_sub_dhaka") @db.Decimal(12, 2)
+  deliveryChargeOutsideDhaka Decimal      @default(0) @map("delivery_charge_outside_dhaka") @db.Decimal(12, 2)
   // PHOTO_PRINT PP-2 — the customer photos / wishing cards one unit of this
   // product needs: { photos: { PHOTO_L: 10, PHOTO_S: 4 }, cards: ["CARD_1",
   // "CARD_2"] }. Null = no print kit. Packages inherit it through lib/bom.ts.
-  printKit                   Json?       @map("print_kit")
+  printKit                   Json?        @map("print_kit")
   // ROUND3 W-2 — the Website panel (lib/catalog-website.ts). photos[0] is
   // the main photo and is mirrored into photo_url for the ERP's own views.
   photos                     String[]     @default([])
@@ -311,23 +318,23 @@ model Product {
   // Caches — pure sums over stock_movements, written in the SAME transaction
   // as the movement rows (SPEC §14 integrity rule 2). stock_qty = physical
   // on-hand; reserved_qty = held by CONFIRMED orders; available = qty − reserved.
-  stockQty                   Int         @default(0) @map("stock_qty")
-  reservedQty                Int         @default(0) @map("reserved_qty")
-  createdAt                  DateTime    @default(now()) @map("created_at")
-  updatedAt                  DateTime    @updatedAt @map("updated_at")
-  createdBy                  Int?        @map("created_by")
-  updatedBy                  Int?        @map("updated_by")
+  stockQty                   Int          @default(0) @map("stock_qty")
+  reservedQty                Int          @default(0) @map("reserved_qty")
+  createdAt                  DateTime     @default(now()) @map("created_at")
+  updatedAt                  DateTime     @updatedAt @map("updated_at")
+  createdBy                  Int?         @map("created_by")
+  updatedBy                  Int?         @map("updated_by")
 
-  category       Category            @relation(fields: [categoryId], references: [id])
+  category       Category              @relation(fields: [categoryId], references: [id])
   packageItems   PackageItem[]
   choiceOptions  PackageItemOption[]
   orderItems     OrderItem[]
   stockMovements StockMovement[]
   purchaseItems  PurchaseItem[]
   // CORRECTIONS Products §2 — this product's own packing materials…
-  components     ProductComponent[]  @relation("ProductComponents")
+  components     ProductComponent[]    @relation("ProductComponents")
   // …and the reverse: which products consume THIS one as a component.
-  componentOf    ProductComponent[]  @relation("ComponentUsage")
+  componentOf    ProductComponent[]    @relation("ComponentUsage")
   damageLogs     DamageLog[]
   printKits      OrderPrintKit[]
   slugRedirects  WebsiteSlugRedirect[]
@@ -479,22 +486,22 @@ model Expense {
 }
 
 model Package {
-  id                         Int      @id @default(autoincrement())
-  code                       String   @unique
+  id                         Int          @id @default(autoincrement())
+  code                       String       @unique
   name                       String
-  photoUrl                   String?  @map("photo_url")
-  sellingPrice               Decimal  @map("selling_price") @db.Decimal(12, 2)
-  priceFloor                 Decimal  @default(0) @map("price_floor") @db.Decimal(12, 2)
-  isActive                   Boolean  @default(true) @map("is_active")
+  photoUrl                   String?      @map("photo_url")
+  sellingPrice               Decimal      @map("selling_price") @db.Decimal(12, 2)
+  priceFloor                 Decimal      @default(0) @map("price_floor") @db.Decimal(12, 2)
+  isActive                   Boolean      @default(true) @map("is_active")
   // CORRECTIONS Products §3 — weight auto-sums from the BOM explosion; a
   // non-null value here is a manual override. Zone delivery charges as products.
-  weightKg                   Decimal? @map("weight_kg") @db.Decimal(8, 3)
-  deliveryChargeInsideDhaka  Decimal  @default(0) @map("delivery_charge_inside_dhaka") @db.Decimal(12, 2)
-  deliveryChargeSubDhaka     Decimal  @default(0) @map("delivery_charge_sub_dhaka") @db.Decimal(12, 2)
-  deliveryChargeOutsideDhaka Decimal  @default(0) @map("delivery_charge_outside_dhaka") @db.Decimal(12, 2)
+  weightKg                   Decimal?     @map("weight_kg") @db.Decimal(8, 3)
+  deliveryChargeInsideDhaka  Decimal      @default(0) @map("delivery_charge_inside_dhaka") @db.Decimal(12, 2)
+  deliveryChargeSubDhaka     Decimal      @default(0) @map("delivery_charge_sub_dhaka") @db.Decimal(12, 2)
+  deliveryChargeOutsideDhaka Decimal      @default(0) @map("delivery_charge_outside_dhaka") @db.Decimal(12, 2)
   // PHOTO_PRINT PP-2 — the package's OWN photos / cards per unit (same shape
   // as products.print_kit), on top of any kit its products carry. Null = none.
-  printKit                   Json?    @map("print_kit")
+  printKit                   Json?        @map("print_kit")
   // ROUND3 W-2 — the Website panel (lib/catalog-website.ts). photos[0] is
   // the main photo and is mirrored into photo_url for the ERP's own views.
   photos                     String[]     @default([])
@@ -511,15 +518,15 @@ model Package {
   seoDescription             String?      @map("seo_description")
   // Show "what's inside" (BOM names and qty only) on the package page.
   websiteShowContents        Boolean      @default(true) @map("website_show_contents")
-  createdAt                  DateTime @default(now()) @map("created_at")
-  updatedAt                  DateTime @updatedAt @map("updated_at")
-  createdBy                  Int?     @map("created_by")
-  updatedBy                  Int?     @map("updated_by")
+  createdAt                  DateTime     @default(now()) @map("created_at")
+  updatedAt                  DateTime     @updatedAt @map("updated_at")
+  createdBy                  Int?         @map("created_by")
+  updatedBy                  Int?         @map("updated_by")
 
-  items      PackageItem[]   @relation("PackageBom")
-  usedIn     PackageItem[]   @relation("SubPackageUsage")
-  orderItems OrderItem[]
-  printKits  OrderPrintKit[]
+  items             PackageItem[]            @relation("PackageBom")
+  usedIn            PackageItem[]            @relation("SubPackageUsage")
+  orderItems        OrderItem[]
+  printKits         OrderPrintKit[]
   websiteCategories PackageWebsiteCategory[]
   slugRedirects     WebsiteSlugRedirect[]
 
@@ -677,6 +684,13 @@ enum DeliveryDateMode {
   FIXED
 }
 
+// ROUND3 W-5/W-6 — where an order came from. STAFF = typed in the ERP; WEBSITE =
+// placed on giftvaly.com (always a DRAFT until an SE confirms it).
+enum OrderSource {
+  STAFF
+  WEBSITE
+}
+
 // The probashi payer — phone_foreign is the repeat-customer lookup key (§4.1 A).
 model Customer {
   id           Int      @id @default(autoincrement())
@@ -766,6 +780,20 @@ model Order {
   // (lib/db.ts auto-filter), then the cron purge deletes it permanently.
   deletedAt             DateTime?        @map("deleted_at")
   deletedBy             Int?             @map("deleted_by")
+  // ROUND3 W-5/W-6 — a website order. web_ref is the stable reference the
+  // customer sees (DRAFT numbers are reused after a confirm); web_token is the
+  // private link of /order/<token>; web_contact is what the customer typed
+  // (an existing customer's saved data is never overwritten); placed_ip feeds
+  // the per-IP limit; web_flags e.g. LIKELY_DUPLICATE. web_assigned_at /
+  // web_assign_reason: who got it and why (lib/website-orders.ts).
+  source                OrderSource      @default(STAFF)
+  webRef                String?          @unique @map("web_ref")
+  webToken              String?          @unique @map("web_token")
+  webContact            Json?            @map("web_contact")
+  placedIp              String?          @map("placed_ip")
+  webFlags              String[]         @default([]) @map("web_flags")
+  webAssignedAt         DateTime?        @map("web_assigned_at")
+  webAssignReason       String?          @map("web_assign_reason")
   createdAt             DateTime         @default(now()) @map("created_at")
   updatedAt             DateTime         @updatedAt @map("updated_at")
   createdBy             Int?             @map("created_by")
@@ -794,6 +822,8 @@ model Order {
   @@index([createdAt])
   @@index([recipientPhoneBd])
   @@index([deletedAt])
+  @@index([source, status])
+  @@index([placedIp, createdAt])
   @@map("orders")
 }
 
@@ -1394,6 +1424,26 @@ model SteadfastPaymentItem {
 }
 
 // SPEC §14 — key/value settings (edit-window minutes, packaging cost, …).
+// ROUND3 W-6 — the bell in the ERP header. One row per person per event;
+// dedupe_key keeps a retried write from ringing twice.
+model Notification {
+  id        Int       @id @default(autoincrement())
+  userId    Int       @map("user_id")
+  kind      String
+  title     String
+  body      String?
+  href      String?
+  dedupeKey String?   @unique @map("dedupe_key")
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
 model Setting {
   key   String @id
   value Json

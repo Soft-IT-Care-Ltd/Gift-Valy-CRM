@@ -14,7 +14,7 @@ import {
   orderScopeWhere,
   serializeOrderDetail,
   statusChangePermitted,
-  withinEditWindow,
+  editWindowOpen,
 } from "@/lib/orders";
 import {
   ALLOWED_TRANSITIONS,
@@ -29,6 +29,7 @@ import { loadKitViews } from "@/lib/print-kit-ops";
 import { orderPrintStatus } from "@/lib/print-kit";
 import { PRINT_LAYOUTS } from "@/lib/print-layouts";
 import { canEditPrintAt } from "@/lib/print-access";
+import { loadWebsiteOrderPanel } from "@/lib/website-orders";
 
 export const dynamic = "force-dynamic";
 
@@ -66,7 +67,7 @@ export default async function OrderDetailPage({
     permissions.includes("orders.edit") ||
     permissions.includes("orders.approve_edit");
   const isCreator = order.salesExecutiveId === session.user.id;
-  const inWindow = withinEditWindow(order.createdAt, editWindowMinutes);
+  const inWindow = editWindowOpen(order, editWindowMinutes);
   const editableStatus = EDITABLE_STATUSES.includes(order.status);
 
   const canEdit = editableStatus && (privileged || (isCreator && inWindow));
@@ -105,8 +106,15 @@ export default async function OrderDetailPage({
       getCourierStuckThresholds(),
     ]);
 
+  // ROUND3 W-6 — the Website panel (what the customer typed, who has it, Cancel, Reassign).
+  const website =
+    order.source === "WEBSITE"
+      ? await loadWebsiteOrderPanel(prisma, order.id, { userId: session.user.id, permissions })
+      : null;
+
   return (
     <OrderDetailClient
+      website={website}
       order={serializeOrderDetail(order, showCosts)}
       canEdit={canEdit}
       editBlockedReason={editBlockedReason}

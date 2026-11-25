@@ -16,7 +16,7 @@
 set -Eeuo pipefail
 
 JOB="${1:-}"
-[[ "$JOB" =~ ^(steadfast-sync|trash-cleanup)$ ]] || { echo "usage: run-job.sh <steadfast-sync|trash-cleanup>" >&2; exit 2; }
+[[ "$JOB" =~ ^(steadfast-sync|trash-cleanup|website-orders)$ ]] || { echo "usage: run-job.sh <steadfast-sync|trash-cleanup|website-orders>" >&2; exit 2; }
 
 ENV_FILE="${GIFTVALY_ENV:-/srv/giftvaly/shared/.env}"
 URL="${GIFTVALY_URL:-http://127.0.0.1:3200}"

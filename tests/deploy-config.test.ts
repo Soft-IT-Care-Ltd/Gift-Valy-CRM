@@ -142,11 +142,13 @@ describe("cron (GV-13)", () => {
   test("each job at its Dhaka time (the server is UTC), as the deploy user", () => {
     assert.match(line("run-job.sh steadfast-sync"), /^\*\/15 \* \* \* \* +deploy +\$APP\/scripts\/run-job\.sh steadfast-sync /);
     assert.match(line("run-job.sh trash-cleanup"), /^30 21 \* \* \* +deploy +\$APP\/scripts\/run-job\.sh trash-cleanup /);
+    // ROUND3 W-6 — website orders that arrived with no active SE are dealt out.
+    assert.match(line("run-job.sh website-orders"), /^\*\/15 \* \* \* \* +deploy +\$APP\/scripts\/run-job\.sh website-orders /);
     assert.match(line("backup.sh  "), /^0 21 \* \* \* +deploy +\$APP\/scripts\/backup\.sh  /);
     assert.match(line("backup.sh --hourly"), /^0 4-16 \* \* \* +deploy +\$APP\/scripts\/backup\.sh --hourly /);
     assert.match(cron, /^APP=\/srv\/giftvaly\/app$/m);
     const jobs = cron.split("\n").filter((l) => /^[\d*]/.test(l));
-    assert.equal(jobs.length, 4);
+    assert.equal(jobs.length, 5);
     for (const j of jobs) assert.match(j, />> \/var\/log\/giftvaly\/(cron|backup)\.log 2>&1$/);
   });
 

@@ -69,11 +69,15 @@ import {
 } from "@/lib/courier-constants";
 import { WALLET_TYPE_LABELS, type WalletOption } from "@/lib/wallet";
 import { buildInvoiceMessage } from "@/lib/invoice-message";
+import type { WebsiteOrderPanelData } from "@/lib/website-orders";
+import { WebsiteOrderPanel } from "./website-order-panel";
 import type { CurrencyDisplay } from "@/lib/currency-constants";
 
 export interface OrderDetail {
   id: number;
   orderNo: string;
+  source: "STAFF" | "WEBSITE"; // ROUND3 W-6
+  webRef: string | null;
   status: OrderStatusValue;
   cancelReason: string | null;
   createdAt: string;
@@ -306,6 +310,7 @@ export function OrderDetailClient({
   stuckRedDays,
   nowMs,
   printSection,
+  website,
 }: {
   order: OrderDetail;
   canEdit: boolean; // direct edit (privileged or within window)
@@ -324,6 +329,7 @@ export function OrderDetailClient({
   stuckRedDays: number;
   nowMs: number; // §R6 — server render time; durations compute against it
   printSection?: React.ReactNode; // PHOTO_PRINT PP-4 — "Photos & cards", under Items
+  website?: WebsiteOrderPanelData | null; // ROUND3 W-6 — the Website panel (website orders only)
 }) {
   const router = useRouter();
 
@@ -537,6 +543,11 @@ export function OrderDetailClient({
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="font-mono text-xl font-semibold">{order.orderNo}</h1>
         <StatusBadge status={order.status} />
+        {order.source === "WEBSITE" && (
+          <Badge variant="outline" className="border-sky-300 bg-sky-50 text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">
+            Website{order.webRef ? ` · ${order.webRef}` : ""}
+          </Badge>
+        )}
         <span className="text-sm text-muted-foreground">
           {formatDateTime(order.createdAt)} · {order.salesExecutive.name}
           {order.team ? ` · ${order.team.name}` : ""}
@@ -572,6 +583,19 @@ export function OrderDetailClient({
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
           Cancelled: {order.cancelReason}
         </div>
+      )}
+
+      {/* ROUND3 W-6 — the website order panel */}
+      {website && (
+        <WebsiteOrderPanel
+          orderId={order.id}
+          data={website}
+          canAddPayment={canAddPayment}
+          onRecordAdvance={() => {
+            setPayType("ADVANCE");
+            setPayOpen(true);
+          }}
+        />
       )}
 
       {/* Committed-but-unpaid draft (CORRECTIONS Leads §10) */}

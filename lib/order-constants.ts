@@ -248,6 +248,8 @@ export const CUSTOMER_COUNTRIES = [
   "France",
   "South Korea",
   "Japan",
+  // ROUND3 W-5 — a sender in Bangladesh (the website lets anyone order).
+  "Bangladesh",
   "Other",
 ] as const;
 

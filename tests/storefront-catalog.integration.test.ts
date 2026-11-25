@@ -83,6 +83,7 @@ const SCANNED = [
   "getWebSettings", // W-4 — Settings → Website, read by the pages
   "listWebCurrencies", // W-4 — the optional approx. price
   "publicPhotoFile", // returns a server file path, never sent; checked separately
+  "webBagLines", // W-5 — the bag and checkout, re-read
 ];
 
 // ---------- fixture ----------
@@ -223,6 +224,18 @@ describe("W-3 one public catalog gate — the leak scan", () => {
         ["relatedWebItems(package)", await catalog.relatedWebItems(pkgSlug, 8, tx)],
         ["getWebSettings", await catalog.getWebSettings(tx)],
         ["listWebCurrencies", await catalog.listWebCurrencies(tx)],
+        [
+          "webBagLines",
+          await catalog.webBagLines(
+            [
+              { kind: "product", slug: chocSlug, picks: {} },
+              { kind: "package", slug: pkgSlug, picks: { [String(f.saree.id)]: f.blue.id } },
+              { kind: "package", slug: pkgSlug, picks: { "999999999": 1 } },
+              { kind: "product", slug: "no-such-gift", picks: {} },
+            ],
+            tx
+          ),
+        ],
       ];
       for (const [label, out] of outputs) {
         assert.ok(out, `${label} returned something`);
@@ -375,9 +388,11 @@ describe("W-3 the website reads only through the gate", () => {
     assert.deepEqual(offenders, []);
   });
 
-  test("inside lib/storefront only catalog.ts reads the database", () => {
+  // ROUND3 W-5 — place-order.ts is the website's one write (an order, as a
+  // draft) and its private receipt; tests/website-orders scans both answers.
+  test("inside lib/storefront only catalog.ts (reads) and place-order.ts (the order) touch the database", () => {
     const offenders = walk(path.join(ROOT, "lib/storefront"))
-      .filter((f) => !f.endsWith(`${path.sep}catalog.ts`))
+      .filter((f) => !f.endsWith(`${path.sep}catalog.ts`) && !f.endsWith(`${path.sep}place-order.ts`))
       .filter((f) => /from\s+["'](@\/lib\/db|@prisma\/client|@\/lib\/bom-db)["']/.test(readFileSync(f, "utf8")))
       .map((f) => path.relative(ROOT, f));
     assert.deepEqual(offenders, []);

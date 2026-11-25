@@ -6,7 +6,7 @@ import { loadBomCatalog } from "@/lib/bom-db";
 import { loadOrderFormOptions } from "@/lib/order-form-options";
 import type { StoredChoiceSelection } from "@/lib/bom";
 import { getOrderEditWindowMinutes } from "@/lib/settings";
-import { orderScopeWhere, withinEditWindow } from "@/lib/orders";
+import { editWindowOpen, orderScopeWhere } from "@/lib/orders";
 import { findRecipientOccasions } from "@/lib/occasions";
 import { EDITABLE_STATUSES } from "@/lib/order-constants";
 import {
@@ -40,10 +40,7 @@ export default async function EditOrderPage({
     permissions.includes("orders.edit") ||
     permissions.includes("orders.approve_edit");
   const isCreator = order.salesExecutiveId === session.user.id;
-  const inWindow = withinEditWindow(
-    order.createdAt,
-    await getOrderEditWindowMinutes()
-  );
+  const inWindow = editWindowOpen(order, await getOrderEditWindowMinutes());
   if (!privileged && !isCreator) redirect(`/orders/${id}`);
   const mode = privileged || inWindow ? "edit" : "edit-request";
 

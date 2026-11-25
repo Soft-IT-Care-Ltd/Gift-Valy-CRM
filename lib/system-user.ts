@@ -28,6 +28,19 @@ export async function getFunnelLinerUserId(tx: Tx): Promise<number> {
   return systemUserId(tx, FUNNEL_LINER_USER_EMAIL, FUNNEL_LINER_USER_NAME);
 }
 
+// ROUND3 W-5/W-6 — a website order is placed by a visitor, not a staff member:
+// order_status_history.by_user, audit_logs.user_id and leads.created_by need an
+// actor. Same kind of inactive, non-login account; the audit JSON carries the
+// visitor's IP. It also HOLDS a website order nobody could be given (no active
+// Sales Executive at all) until it is assigned — orders.sales_executive_id is
+// required. Inactive, so it never shows in SE pickers or the leaderboard.
+export const WEBSITE_USER_EMAIL = "website-system@giftvaly.local";
+export const WEBSITE_USER_NAME = "Website (system)";
+
+export async function getWebsiteUserId(tx: Tx): Promise<number> {
+  return systemUserId(tx, WEBSITE_USER_EMAIL, WEBSITE_USER_NAME);
+}
+
 async function systemUserId(tx: Tx, email: string, name: string): Promise<number> {
   const existing = await tx.user.findUnique({
     where: { email },

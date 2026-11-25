@@ -101,6 +101,10 @@ export function useBagCount(): number {
 }
 
 export const bag = {
+  /** The saved lines right now (outside React). */
+  snapshot(): BagEntry[] {
+    return read();
+  },
   add(line: Omit<BagEntry, "qty">, qty = 1) {
     const current = read();
     const existing = current.find((e) => sameLine(e, line));
@@ -109,6 +113,36 @@ export const bag = {
         ? current.map((e) => (e === existing ? { ...e, qty: Math.min(MAX_QTY, e.qty + qty), seenPrice: line.seenPrice } : e))
         : [...current, { ...line, qty: Math.min(MAX_QTY, qty) }]
     );
+  },
+  /** ROUND3 W-5 — the bag page's stepper: qty 0 removes the line. */
+  setQty(at: number, qty: number) {
+    const current = read();
+    if (!current[at]) return;
+    write(qty <= 0 ? current.filter((_, i) => i !== at) : current.map((e, i) => (i === at ? { ...e, qty: Math.min(MAX_QTY, qty) } : e)));
+  },
+  remove(at: number) {
+    write(read().filter((_, i) => i !== at));
+  },
+  /**
+   * ROUND3 W-5 — after the bag / checkout re-read the lines from the server:
+   * drop what's gone, take today's price and picks (a pick no longer offered
+   * became the group's default), merge lines that became the same.
+   */
+  refresh(lines: ({ picks: BagPicks; price: number } | null)[]) {
+    const current = read();
+    const next: BagEntry[] = [];
+    current.forEach((e, i) => {
+      const now = lines[i];
+      if (!now) return;
+      const updated = { ...e, picks: now.picks, seenPrice: now.price };
+      const same = next.find((x) => sameLine(x, updated));
+      if (same) same.qty = Math.min(MAX_QTY, same.qty + updated.qty);
+      else next.push(updated);
+    });
+    const changed =
+      next.length !== current.length ||
+      next.some((e, i) => e.seenPrice !== current[i].seenPrice || pickKey(e.picks) !== pickKey(current[i].picks) || e.qty !== current[i].qty);
+    if (changed) write(next);
   },
   clear() {
     write([]);

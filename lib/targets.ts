@@ -5,6 +5,7 @@ import { prisma } from "./db";
 import { AuthzError } from "./authz";
 import { EXCLUDED_SALE_STATUSES } from "./order-constants";
 import { getOnboardingExcludeDays } from "./settings";
+import { websiteOrderRules } from "./website-assignment";
 import {
   assembleGauge,
   monthKeyOf,
@@ -25,6 +26,12 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const SALE_STATUS_FILTER = {
   notIn: EXCLUDED_SALE_STATUSES as unknown as OrderStatus[],
 };
+
+// ROUND3 W-6 — website orders count for targets (gauges, leaderboard, rewards)
+// only when Settings → Website says so; off by default.
+export async function targetSourceFilter(db: Tx = prisma): Promise<Prisma.OrderWhereInput> {
+  return (await websiteOrderRules(db)).countForTargets ? {} : { source: "STAFF" };
+}
 
 // ---------- month → Date key / instant window ----------
 
@@ -67,6 +74,7 @@ export async function aggregateUserAchievement(
       salesExecutiveId: userId,
       status: SALE_STATUS_FILTER,
       createdAt: { gte: start, lt: end },
+      ...(await targetSourceFilter(db)),
     },
     _count: { _all: true },
     _sum: { totalAmount: true },
@@ -86,6 +94,7 @@ export async function aggregateTeamAchievement(
       teamId,
       status: SALE_STATUS_FILTER,
       createdAt: { gte: start, lt: end },
+      ...(await targetSourceFilter(db)),
       ...(excludeUserIds.length
         ? { salesExecutiveId: { notIn: excludeUserIds } }
         : {}),
@@ -219,7 +228,7 @@ export async function buildLeaderboard(
   });
   const grouped = await db.order.groupBy({
     by: ["salesExecutiveId"],
-    where: { status: SALE_STATUS_FILTER, createdAt: { gte: start, lt: end } },
+    where: { status: SALE_STATUS_FILTER, createdAt: { gte: start, lt: end }, ...(await targetSourceFilter(db)) },
     _count: { _all: true },
     _sum: { totalAmount: true },
   });

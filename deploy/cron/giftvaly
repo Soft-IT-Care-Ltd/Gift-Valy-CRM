@@ -12,6 +12,8 @@ APP=/srv/giftvaly/app
 
 # Steadfast status + payments sync — every 15 minutes (keeps running while suspended, GV-7)
 */15 * * * *   deploy  $APP/scripts/run-job.sh steadfast-sync >> /var/log/giftvaly/cron.log 2>&1
+# Website orders nobody could be given (no active SE) — every 15 minutes (answers 423 while suspended, GV-7)
+*/15 * * * *   deploy  $APP/scripts/run-job.sh website-orders >> /var/log/giftvaly/cron.log 2>&1
 # Trash cleanup — 03:30 Dhaka, after the nightly backup (answers 423 while suspended, GV-7)
 30 21 * * *    deploy  $APP/scripts/run-job.sh trash-cleanup  >> /var/log/giftvaly/cron.log 2>&1
 # Backups — the same times as Antu's and the admin panel's: nightly 03:00 Dhaka

@@ -13,7 +13,7 @@ import {
   frozenExtrasForOrder,
   resolveItemsAndTotals,
   serializeOrderDetail,
-  withinEditWindow,
+  editWindowOpen,
 } from "@/lib/orders";
 import { EDITABLE_STATUSES } from "@/lib/order-constants";
 
@@ -65,7 +65,7 @@ export async function PATCH(req: Request, { params }: Params) {
       permissions.includes("orders.approve_edit");
     const isCreatorInWindow =
       order.salesExecutiveId === session.user.id &&
-      withinEditWindow(order.createdAt, await getOrderEditWindowMinutes());
+      editWindowOpen(order, await getOrderEditWindowMinutes());
     if (!isPrivileged && !isCreatorInWindow) {
       throw new AuthzError(
         403,

@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { PERMISSION_DEFS } from "@/lib/permissions";
 import { OwnerDashboard } from "@/components/dashboard/owner-dashboard";
 import { OperationsAlerts } from "@/components/dashboard/operations-alerts";
+import { WebsiteOrdersAlert } from "@/components/dashboard/website-orders-alert";
 import {
   SalesExecutiveHome,
   TeamLeaderHome,
@@ -56,6 +57,8 @@ export default async function HomePage({
   // CORRECTIONS Orders §3 + §R6 — the operations alert strip (late-risk
   // deliveries + stuck parcels) sits atop whichever home the viewer lands on.
   const opsAlerts = <OperationsAlerts permissions={permissions} />;
+  // ROUND3 W-6 — website orders waiting for confirmation (+ unassigned).
+  const websiteAlert = <WebsiteOrdersAlert session={session} permissions={permissions} />;
 
   // ── Owner / Manager: the full business-health dashboard ──
   if (permissions.includes("dashboard.owner") || permissions.includes("orders.view_all")) {
@@ -64,6 +67,7 @@ export default async function HomePage({
     const data = await buildOwnerDashboard(win, { showCosts });
     return (
       <div className="grid gap-4">
+        {websiteAlert}
         {opsAlerts}
         <OwnerDashboard
           data={data}
@@ -78,22 +82,28 @@ export default async function HomePage({
   // ── Role-based home dashboards ──
   if (role === "SalesExecutive") {
     return (
-      <SalesExecutiveHome
-        session={session}
-        permissions={permissions}
-        userId={user.id}
-        userName={user.name}
-      />
+      <div className="grid gap-4">
+        {websiteAlert}
+        <SalesExecutiveHome
+          session={session}
+          permissions={permissions}
+          userId={user.id}
+          userName={user.name}
+        />
+      </div>
     );
   }
   if (role === "TeamLeader") {
     return (
-      <TeamLeaderHome
-        session={session}
-        permissions={permissions}
-        userId={user.id}
-        userName={user.name}
-      />
+      <div className="grid gap-4">
+        {websiteAlert}
+        <TeamLeaderHome
+          session={session}
+          permissions={permissions}
+          userId={user.id}
+          userName={user.name}
+        />
+      </div>
     );
   }
   if (role === "Packing") {

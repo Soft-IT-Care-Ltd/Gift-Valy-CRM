@@ -9,6 +9,8 @@ export const LEAD_SOURCES = [
   "REFERRAL",
   "REPEAT_CUSTOMER",
   "OTHER",
+  // ROUND3 W-6 — the lead of a website order (made by the website, linked to the order).
+  "WEBSITE",
 ] as const;
 
 export type LeadSourceValue = (typeof LEAD_SOURCES)[number];
@@ -21,6 +23,7 @@ export const LEAD_SOURCE_LABELS: Record<LeadSourceValue, string> = {
   REFERRAL: "Referral",
   REPEAT_CUSTOMER: "Repeat Customer",
   OTHER: "Other",
+  WEBSITE: "Website",
 };
 
 // COMMITTED (CORRECTIONS Leads §9): verbal confirmation + promised advance,
@@ -76,6 +79,10 @@ export const LOST_REASONS = [
   "OUT_OF_AREA",
   "NO_RESPONSE",
   "OTHER",
+  // ROUND3 W-6 — a cancelled website order's reasons (Unreachable = NO_RESPONSE).
+  "FAKE_ORDER",
+  "DUPLICATE",
+  "CHANGED_MIND",
 ] as const;
 
 export type LostReasonValue = (typeof LOST_REASONS)[number];
@@ -87,6 +94,9 @@ export const LOST_REASON_LABELS: Record<LostReasonValue, string> = {
   OUT_OF_AREA: "Out of area",
   NO_RESPONSE: "No response",
   OTHER: "Other",
+  FAKE_ORDER: "Fake order",
+  DUPLICATE: "Duplicate",
+  CHANGED_MIND: "Changed mind",
 };
 
 // A lost lead must carry a reason (§3.1).

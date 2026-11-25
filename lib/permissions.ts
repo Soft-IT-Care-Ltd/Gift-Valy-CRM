@@ -46,6 +46,9 @@ export const PERMISSION_DEFS: PermissionDef[] = [
   { key: "orders.approve_edit", label: "Approve order edits", group: "Orders" },
   { key: "orders.cancel", label: "Cancel orders", group: "Orders" },
   { key: "orders.trash", label: "Trash & restore orders", group: "Orders" },
+  // ROUND3 W-6 — hand a website order (still a draft) to a Sales Executive. A
+  // Team Leader without orders.view_all works inside their own team.
+  { key: "orders.assign", label: "Assign website orders", group: "Orders" },
   // CORRECTIONS Orders §R5 — manual courier-stage overrides (correct a status by
   // hand when Steadfast is wrong) + trash from ANY status. Seeded to Admin only
   // (the RBAC layer grants Admin every permission row); grant to others per user.
@@ -118,7 +121,7 @@ export const ROLE_MATRIX: Record<RoleName, string[]> = {
     "leads.edit", "leads.reassign",
     "orders.create", "orders.view_own", "orders.view_team", "orders.view_all",
     "orders.edit", "orders.approve_edit", "orders.cancel", "orders.trash",
-    "orders.pack",
+    "orders.pack", "orders.assign",
     "invoice.generate", "invoice.print",
     "print.edit", "print.print", "print.settings",
     "payments.create", "payments.verify", "wallets.manage",
@@ -133,6 +136,7 @@ export const ROLE_MATRIX: Record<RoleName, string[]> = {
   TeamLeader: [
     "leads.create", "leads.bulk", "leads.view_own", "leads.view_team", "leads.edit", "leads.reassign",
     "orders.create", "orders.view_own", "orders.view_team", "orders.approve_edit",
+    "orders.assign",
     "invoice.generate", "invoice.print",
     "print.edit",
     "payments.create",

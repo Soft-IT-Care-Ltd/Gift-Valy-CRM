@@ -101,3 +101,26 @@ export type WebDelivery = { insideDhaka: number; subDhaka: number; outsideDhaka:
 
 /** ROUND3 W-4 — an active currency for the optional "≈ SAR 120 (approx.)" line. */
 export type WebCurrency = { iso: string; label: string; symbol: string | null; takaPerUnit: number };
+
+/** ROUND3 W-5 — a bag line as the website sends it back to be re-read. */
+export type WebBagLineIn = { kind: "product" | "package"; slug: string; picks: Record<string, number> };
+
+/** ROUND3 W-5 — a bag line as it stands now (the bag and checkout show this, never what was saved). */
+export type WebBagLine = {
+  kind: "product" | "package";
+  slug: string;
+  name: string;
+  image: WebImage | null;
+  /** The picks as they stand: a saved option no longer offered → its group's default. */
+  picks: Record<string, number>;
+  /** "Saree Colour: Red saree" — every choice group with its current pick. */
+  choices: { label: string; name: string }[];
+  /** A saved pick was no longer offered and was replaced. */
+  choicesChanged: boolean;
+  /** ৳ for one piece with these picks — packagePrice(), as the order endpoint prices it. */
+  price: number;
+  stock: WebStock;
+  delivery: WebDelivery;
+  printPhotos: number;
+  printCards: number;
+};

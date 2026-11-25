@@ -10,7 +10,18 @@ import { messengerLink, whatsappLink } from "@/lib/storefront/chat";
 // Messenger doesn't always take the text, so it's also copied first and a
 // toast says to paste it. A button whose number / page isn't set in
 // Settings → Website isn't shown.
-export function ChatButtons({ whatsapp, messengerPage, message }: { whatsapp: string; messengerPage: string; message: string }) {
+export function ChatButtons({
+  whatsapp,
+  messengerPage,
+  message,
+  labels = { whatsapp: copy.chat.orderWhatsApp, messenger: copy.chat.orderMessenger },
+}: {
+  whatsapp: string;
+  messengerPage: string;
+  message: string;
+  /** W-5 — the confirmation page says "Message us…" instead of "Order on…". */
+  labels?: { whatsapp: string; messenger: string };
+}) {
   const [toast, setToast] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
@@ -21,7 +32,7 @@ export function ChatButtons({ whatsapp, messengerPage, message }: { whatsapp: st
       {whatsapp ? (
         <a href={whatsappLink(whatsapp, message)} target="_blank" rel="noopener" className="sf-btn sf-btn-whatsapp w-full">
           <WhatsAppIcon />
-          {copy.chat.orderWhatsApp}
+          {labels.whatsapp}
         </a>
       ) : null}
       {messengerPage ? (
@@ -38,7 +49,7 @@ export function ChatButtons({ whatsapp, messengerPage, message }: { whatsapp: st
           }}
         >
           <MessengerIcon />
-          {copy.chat.orderMessenger}
+          {labels.messenger}
         </a>
       ) : null}
       {toast ? (

@@ -62,6 +62,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { WebsiteUnassignedList, type UnassignedWebsiteRow } from "@/components/orders/website-unassigned-list";
 import { DateFilter } from "@/components/ui/date-filter";
 import {
   PRINT_FILTERS,
@@ -135,6 +136,9 @@ export interface ShipmentInfo {
 }
 
 export interface OrderRow {
+  // ROUND3 W-6 — a website order: the Website badge and its reference.
+  source: "STAFF" | "WEBSITE";
+  webRef: string | null;
   id: number;
   orderNo: string;
   createdAt: string;
@@ -382,6 +386,9 @@ export function OrdersListClient({
   canPackOrders,
   canPrintInvoices,
   canSeeCosts,
+  websiteCount,
+  unassignedWebsite,
+  assignSellers,
 }: {
   orders: OrderRow[];
   statusCounts: Partial<Record<OrderStatusValue, number>>; // for current window/search/SE
@@ -413,6 +420,9 @@ export function OrdersListClient({
   canPackOrders: boolean; // orders.pack
   canPrintInvoices: boolean; // invoice.print / invoice.generate — bulk print (§6h)
   canSeeCosts: boolean; // cost-visible roles see the SF Delivery Charge column (§6l)
+  websiteCount: number; // ROUND3 W-6 — website orders waiting for confirmation (the Website tab)
+  unassignedWebsite: UnassignedWebsiteRow[] | null; // W-6 — orders.assign holders only
+  assignSellers: { id: number; name: string }[]; // W-6 — who they may give one to
 }) {
   const router = useRouter();
   const params = useSearchParams();
@@ -990,6 +1000,13 @@ export function OrdersListClient({
             );
             return [
               tab("ALL", "All", allCount),
+              // ROUND3 W-6 — website orders waiting for their confirmation.
+              tab(
+                "WEBSITE",
+                "Website · Needs confirmation",
+                websiteCount,
+                websiteCount > 0 && active !== "WEBSITE" ? "text-primary" : undefined
+              ),
               ...STATUS_TABS.map((s) =>
                 tab(
                   s,
@@ -1189,6 +1206,20 @@ export function OrdersListClient({
               </Select>
             </div>
           )}
+          {/* ROUND3 W-6 — where the order came from. */}
+          <div className="grid gap-1">
+            <Label className="text-xs">Source</Label>
+            <Select value={params.get("source") ?? "ALL"} onValueChange={(v) => setParam("source", v)}>
+              <SelectTrigger className="w-36">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">All sources</SelectItem>
+                <SelectItem value="WEBSITE">Website</SelectItem>
+                <SelectItem value="STAFF">Staff</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           {/* PHOTO_PRINT PP-4 — orders by photos & cards state. */}
           <div className="grid gap-1">
             <Label className="text-xs">Photos &amp; cards</Label>
@@ -1210,6 +1241,7 @@ export function OrdersListClient({
             </Select>
           </div>
           {(params.get("status") ||
+            params.get("source") ||
             params.get("print") ||
             params.get("from") ||
             params.get("to") ||
@@ -1229,6 +1261,19 @@ export function OrdersListClient({
             </Button>
           )}
         </div>
+
+        {/* ROUND3 W-6 — website orders nobody could be given, and the tab's helper */}
+        {unassignedWebsite && unassignedWebsite.length > 0 && (
+          <WebsiteUnassignedList rows={unassignedWebsite} sellers={assignSellers} />
+        )}
+        {activeStatus === "WEBSITE" && (
+          <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-200">
+            Orders placed on the website, waiting for you. Message the customer on
+            WhatsApp, then record the advance on the order — that confirms it and
+            gives it its order number. Fake, unreachable or duplicate? Cancel it
+            with the reason from the order&apos;s Website panel.
+          </div>
+        )}
 
         {/* Pending Payment (Drafts) helper — CORRECTIONS Leads §10 */}
         {activeStatus === "DRAFT" && (
@@ -1459,6 +1504,14 @@ export function OrdersListClient({
                     >
                       {o.orderNo}
                     </Link>
+                  )}
+                  {o.source === "WEBSITE" && (
+                    <div className="mt-0.5 flex items-center gap-1">
+                      <Badge variant="outline" className="border-sky-300 bg-sky-50 px-1.5 py-0 text-[10px] text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">
+                        Website
+                      </Badge>
+                      {o.webRef && <span className="text-[10px] text-muted-foreground">{o.webRef}</span>}
+                    </div>
                   )}
                 </TableCell>
                 <TableCell>

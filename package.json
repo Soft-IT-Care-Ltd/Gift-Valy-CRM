@@ -21,6 +21,7 @@
     "test:storefront": "tsx --test tests/storefront-hosts.test.ts",
     "test:storefront-catalog": "tsx --test tests/storefront-catalog.integration.test.ts",
     "test:storefront-pages": "tsx --test tests/storefront-pages.integration.test.ts",
+    "test:website-orders": "tsx --test tests/website-orders.integration.test.ts",
     "db:diff": "tsx scripts/db-diff.ts",
     "db:bootstrap": "bash scripts/db-bootstrap.sh",
     "db:seed-card-messages": "tsx prisma/seed-card-messages.ts",

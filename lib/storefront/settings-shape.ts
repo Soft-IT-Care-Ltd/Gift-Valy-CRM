@@ -102,3 +102,34 @@ export function normalizeWebSettings(raw: unknown): WebSettings {
     approxCurrency: o.approxCurrency === true,
   };
 }
+
+// ---------- ROUND3 W-5/W-6 — website order rules (never sent to the website) ----------
+//
+// Kept in the same `website_settings` row (W-7's editor writes them) but read
+// by their own function, so the public settings above never carry them:
+// orderLimits.phonePerHour / ipPerHour refuse a burst of orders (429), and
+// countForTargets decides whether website orders count for SE targets.
+
+export interface WebOrderRules {
+  /** Website orders one WhatsApp number may place in an hour; the next is refused. */
+  phonePerHour: number;
+  /** Website orders from one IP address in an hour (higher: people abroad share Wi-Fi). */
+  ipPerHour: number;
+  /** Website orders count for SE targets, the leaderboard and rewards. Off by default. */
+  countForTargets: boolean;
+}
+
+export const DEFAULT_WEB_ORDER_RULES: WebOrderRules = { phonePerHour: 5, ipPerHour: 20, countForTargets: false };
+
+const limit = (v: unknown, fallback: number): number =>
+  typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 1000 ? v : fallback;
+
+export function normalizeWebOrderRules(raw: unknown): WebOrderRules {
+  const o = obj(raw);
+  const limits = obj(o.orderLimits);
+  return {
+    phonePerHour: limit(limits.phonePerHour, DEFAULT_WEB_ORDER_RULES.phonePerHour),
+    ipPerHour: limit(limits.ipPerHour, DEFAULT_WEB_ORDER_RULES.ipPerHour),
+    countForTargets: o.countForTargets === true,
+  };
+}

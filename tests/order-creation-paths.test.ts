@@ -78,7 +78,7 @@ function assertNumberedJustBefore(text: string, index: number, client: string, d
 }
 
 describe("rule 6 — every GV number comes from generateOrderNumber", () => {
-  test("app + lib create orders in exactly one place: the order form route, inside a transaction", () => {
+  test("app + lib create orders in exactly two places: the order form route and the website's order endpoint", () => {
     const inserts: string[] = [];
     for (const { rel, text } of APP) {
       for (const m of text.matchAll(/\.order\.(create|createMany|createManyAndReturn|upsert)\s*\(/g)) {
@@ -86,7 +86,26 @@ describe("rule 6 — every GV number comes from generateOrderNumber", () => {
       }
       if (/insert\s+into\s+"?orders"?\s*[(\s]/i.test(text)) inserts.push(`${rel} raw sql`);
     }
-    assert.deepEqual(inserts, ["app/api/orders/route.ts create"]);
+    assert.deepEqual(inserts.sort(), ["app/api/orders/route.ts create", "lib/storefront/place-order.ts create"]);
+  });
+
+  // ROUND3 W-5 — a website order is always a DRAFT: DRAFT-XXXX from
+  // nextDraftNo(tx), never the counter. It gets its GV number only when an
+  // SE confirms it through confirmDraftTx (the one orderNo write below).
+  test("the website's order endpoint numbers its order DRAFT-XXXX only — it never touches the counter", () => {
+    const text = APP.find((f) => f.rel === "lib/storefront/place-order.ts")!.text;
+    assert.doesNotMatch(text, /generateOrderNumber|orderSequence|order_sequences/);
+    const index = text.search(/\.order\.create\s*\(/);
+    const client = /(\w+)$/.exec(text.slice(0, index))![1];
+    assert.equal(client, "tx", "created on the transaction client");
+    const before = text.slice(Math.max(0, index - 300), index);
+    const m = [...before.matchAll(/const\s+orderNo\s*=\s*await\s+nextDraftNo\(\s*tx\s*\)/g)].at(-1);
+    assert.ok(m, "orderNo must come from nextDraftNo(tx) right before the write");
+    assert.doesNotMatch(before.slice(m.index!), /\.order\.(create|update)/);
+    const data = dataKeys(balanced(text, text.indexOf("(", index)));
+    assert.match(data, SHORTHAND_ORDER_NO);
+    assert.match(data, /\bstatus:\s*"DRAFT"/);
+    assert.doesNotMatch(data, /\borderNo\s*:/);
   });
 
   test("the order form numbers the order (DRAFT-XXXX or the counter) in the same transaction", () => {

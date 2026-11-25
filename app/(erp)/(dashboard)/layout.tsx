@@ -14,6 +14,8 @@ import {
 } from "@/components/billing/billing-reminder";
 import { Badge } from "@/components/ui/badge";
 import { SignOutButton } from "@/components/sign-out-button";
+import { NotificationBell } from "@/components/notification-bell";
+import { unreadNotificationCount } from "@/lib/notifications";
 import { MobileNav } from "@/components/mobile-nav";
 import {
   SidebarNav,
@@ -39,9 +41,11 @@ export default async function DashboardLayout({
   if (!user || !user.isActive) redirect("/login");
   if (user.mustChangePassword) redirect("/change-password");
 
-  const [permissions, platform] = await Promise.all([
+  const [permissions, platform, unread] = await Promise.all([
     getEffectivePermissions(user.id),
     getPlatformState(),
+    // ROUND3 W-6 — the bell's starting count.
+    unreadNotificationCount(prisma, user.id),
   ]);
   const canSeeBill = permissions.includes("billing.view");
   const suspended = platform.state === "suspended";
@@ -341,6 +345,7 @@ export default async function DashboardLayout({
             <Badge variant="secondary" className="hidden sm:inline-flex">
               {roleLabel}
             </Badge>
+            {!suspended && <NotificationBell initialUnread={unread} />}
             <SignOutButton />
           </div>
         </header>

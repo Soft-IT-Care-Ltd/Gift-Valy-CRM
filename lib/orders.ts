@@ -19,6 +19,7 @@ import {
   type PaymentMethodValue,
 } from "./order-constants";
 import { upsertRecipientOccasions } from "./occasions";
+import { WEBSITE_TAB } from "./website-order-constants";
 import { timeSince } from "./lead-constants";
 import {
   BomError,
@@ -122,7 +123,15 @@ export interface OrderListQuery {
   q: string;
   rangeAll: boolean;
   trash: boolean; // ?status=TRASH — the Trash tab is active
+  // ROUND3 W-6 — ?status=WEBSITE: website drafts waiting for confirmation.
+  websiteTab: boolean;
+  // Its count's filters (search/SE/source/explicit dates; never the month default).
+  websiteFilters: Prisma.OrderWhereInput[];
 }
+
+/** ROUND3 W-6 — a website order still waiting for its confirmation (the Website tab). */
+export const WEBSITE_WAITING: Prisma.OrderWhereInput = { source: "WEBSITE", status: "DRAFT" };
+
 
 // URL params → Prisma filters. Defaults to the current Dhaka month unless the
 // caller sets explicit dates, ?range=all, or a search — search always spans
@@ -134,6 +143,9 @@ export function buildOrderListFilters(
   const q = (params.q ?? "").trim();
   const rangeAll = params.range === "all";
   const trash = params.status === "TRASH";
+  // ROUND3 W-6 — the Website tab ("Needs confirmation"): website orders still
+  // waiting as drafts. Like the Drafts tab it ignores the month default.
+  const websiteTab = params.status === WEBSITE_TAB;
 
   const status =
     !trash &&
@@ -148,6 +160,8 @@ export function buildOrderListFilters(
     const digits = q.replace(/\D/g, "");
     const or: Prisma.OrderWhereInput[] = [
       { orderNo: { contains: q, mode: "insensitive" } },
+      // ROUND3 W-6 — the reference a website customer quotes on WhatsApp (W-7K3Q9X).
+      { webRef: { contains: q, mode: "insensitive" } },
       { customer: { is: { name: { contains: q, mode: "insensitive" } } } },
     ];
     if (digits.length >= 4) {
@@ -158,6 +172,10 @@ export function buildOrderListFilters(
   }
   const seId = Number(params.seId);
   if (seId) nonDateFilters.push({ salesExecutiveId: seId });
+  // ROUND3 W-6 — Source filter (All / Website / Staff).
+  if (params.source === "WEBSITE" || params.source === "STAFF") {
+    nonDateFilters.push({ source: params.source });
+  }
   // PHOTO_PRINT PP-4 — orders with a kit in this print state.
   if (PRINT_FILTERS.includes(params.print as PrintFilter)) {
     nonDateFilters.push({
@@ -176,10 +194,12 @@ export function buildOrderListFilters(
   if (hasTo) {
     baseFilters.push({ createdAt: { lte: new Date(`${params.to}T23:59:59+06:00`) } });
   }
+  // nonDateFilters + explicit dates — what the Website tab counts over.
+  const explicitDates = [...baseFilters];
   // The Pending Payment (Drafts) tab ignores the implicit month default —
   // a forgotten old draft must never fall out of view (CORRECTIONS Leads §10).
   // Explicit dates still apply.
-  if (!hasFrom && !hasTo && !rangeAll && !q && status !== "DRAFT") {
+  if (!hasFrom && !hasTo && !rangeAll && !q && status !== "DRAFT" && !websiteTab) {
     baseFilters.push({ createdAt: { gte: dhakaMonthStart() } });
   }
 
@@ -191,12 +211,17 @@ export function buildOrderListFilters(
 
   const filters = trash
     ? trashFilters
-    : status
-      ? [...baseFilters, { status }]
-      : [...baseFilters];
+    : websiteTab
+      ? [...baseFilters, WEBSITE_WAITING]
+      : status
+        ? [...baseFilters, { status }]
+        : [...baseFilters];
+
+  // The Website tab's count: website drafts over the same filters, no month default.
+  const websiteFilters: Prisma.OrderWhereInput[] = [...explicitDates, WEBSITE_WAITING];
 
   const page = Math.max(1, Math.floor(Number(params.page)) || 1);
-  return { baseFilters, filters, trashFilters, page, status, q, rangeAll, trash };
+  return { baseFilters, filters, trashFilters, websiteFilters, page, status, q, rangeAll, trash, websiteTab };
 }
 
 // ---------- payload validation (shared by create, edit, edit-request) ----------
@@ -496,32 +521,9 @@ export async function resolveItemsAndTotals(
 // seed CLI can use it too); re-exported here for the app.
 export { dhakaYearMonth, generateOrderNumber } from "./order-number";
 
-// CORRECTIONS Leads §10 — drafts get a temporary DRAFT-XXXX number (one global
-// sequence, last row + 1 with the caller retrying on P2002); the real GV
-// number comes from generateOrderNumber at CONFIRM. Drafts are not orders yet,
-// so they never touch the counter (FUNNEL_LINER.md "Defaults assumed").
-export const DRAFT_NO_PREFIX = "DRAFT-";
-
-export async function nextDraftNo(db: Tx): Promise<string> {
-  const last = await db.order.findFirst({
-    // The OR spans both trash states ON PURPOSE: mentioning deletedAt opts out
-    // of the lib/db.ts trash auto-filter. A trashed draft keeps its number
-    // until the purge — hiding it here would reissue that number and the
-    // unique(order_no) insert would collide forever (§6f).
-    where: {
-      orderNo: { startsWith: DRAFT_NO_PREFIX },
-      OR: [{ deletedAt: null }, { deletedAt: { not: null } }],
-    },
-    orderBy: { orderNo: "desc" },
-    select: { orderNo: true },
-  });
-  const seq = last ? parseInt(last.orderNo.slice(DRAFT_NO_PREFIX.length), 10) + 1 : 1;
-  return `${DRAFT_NO_PREFIX}${String(seq).padStart(4, "0")}`;
-}
-
-export function isDraftNo(orderNo: string): boolean {
-  return orderNo.startsWith(DRAFT_NO_PREFIX);
-}
+// CORRECTIONS Leads §10 — DRAFT-XXXX numbers live in lib/draft-number.ts (a
+// leaf module the website's order endpoint shares); re-exported here.
+export { DRAFT_NO_PREFIX, isDraftNo, nextDraftNo } from "./draft-number";
 
 // ---------- draft → confirm (CORRECTIONS Leads §10) ----------
 
@@ -668,6 +670,15 @@ export function withinEditWindow(createdAt: Date, minutes: number): boolean {
   return Date.now() - createdAt.getTime() < minutes * 60_000;
 }
 
+/** ROUND3 W-6 — the window, except that a website order is edited freely
+ *  while it waits as a draft (its SE gets it hours after it was placed). */
+export function editWindowOpen(
+  order: { createdAt: Date; source: string; status: string },
+  minutes: number
+): boolean {
+  return (order.source === "WEBSITE" && order.status === "DRAFT") || withinEditWindow(order.createdAt, minutes);
+}
+
 // ---------- apply an edit (direct PATCH or approved edit request) ----------
 
 // Replaces sections B/C fields + items, recomputes totals and due, and
@@ -809,6 +820,9 @@ export function serializeOrderDetail(o: OrderWithRelations, showCosts: boolean) 
   return {
     id: o.id,
     orderNo: o.orderNo,
+    // ROUND3 W-6 — a website order: the Website badge and its reference.
+    source: o.source,
+    webRef: o.webRef,
     status: o.status,
     cancelReason: o.cancelReason,
     createdAt: o.createdAt.toISOString(),
@@ -1057,6 +1071,9 @@ export function serializeOrderListRow(
   return {
     id: o.id,
     orderNo: o.orderNo,
+    // ROUND3 W-6 — the Website badge on the row, and its reference.
+    source: o.source,
+    webRef: o.webRef,
     createdAt: o.createdAt.toISOString(),
     customerName: o.customer.name,
     customerPhone: o.customer.phoneForeign,

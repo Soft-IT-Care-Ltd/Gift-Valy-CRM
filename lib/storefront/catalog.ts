@@ -17,6 +17,7 @@ import { ensureWebsiteSlugs } from "@/lib/catalog-website";
 import { parseRichText, richTextPlain, SEO_DESCRIPTION_MAX } from "@/lib/catalog-website-shape";
 import { uploadUrlPath } from "@/lib/file-storage";
 import { slugify } from "./slug";
+import { CATEGORY_ON_WEBSITE, PACKAGE_ON_WEBSITE, PRODUCT_ON_WEBSITE } from "./on-website";
 import { normalizeWebSettings, WEBSITE_SETTINGS_KEY, type WebSettings } from "./settings-shape";
 import type {
   WebBadge,
@@ -30,6 +31,8 @@ import type {
   WebImage,
   WebItem,
   WebStock,
+  WebBagLine,
+  WebBagLineIn,
 } from "./types";
 
 // ROUND3 W-3 — the ONE gate between the database and the public website.
@@ -48,24 +51,6 @@ import type {
 /** A transaction or the app's client — tests pass a rolled-back transaction. */
 export type Db = Prisma.TransactionClient;
 const appDb = () => prisma as unknown as Db;
-
-const PRODUCT_ON_WEBSITE = {
-  showOnWebsite: true,
-  isActive: true,
-  productType: "SELLABLE",
-  slug: { not: null },
-} satisfies Prisma.ProductWhereInput;
-
-const PACKAGE_ON_WEBSITE = {
-  showOnWebsite: true,
-  isActive: true,
-  slug: { not: null },
-} satisfies Prisma.PackageWhereInput;
-
-const CATEGORY_ON_WEBSITE = {
-  showOnWebsite: true,
-  slug: { not: null },
-} satisfies Prisma.CategoryWhereInput;
 
 const SLUG = /^[a-z0-9-]{1,80}$/;
 
@@ -466,6 +451,93 @@ export async function relatedWebItems(slug: string, take = 8, db: Db = appDb()):
     : [];
   if (related.length > 0) return related;
   return cards(db, { ...notSelf, websiteFeatured: true }, { ...notSelf, websiteFeatured: true }, limit);
+}
+
+const DELIVERY_SELECT = {
+  deliveryChargeInsideDhaka: true,
+  deliveryChargeSubDhaka: true,
+  deliveryChargeOutsideDhaka: true,
+} as const;
+
+/**
+ * ROUND3 W-5 — the bag and the checkout, re-read: each saved line as it is now
+ * (name, photo, today's price for its picks, stock as a word, delivery charge
+ * per zone, print-kit counts). null = no longer on the website. A saved pick
+ * that is no longer an option falls back to the group's default and says so.
+ * Prices come from packagePrice() — exactly how the order endpoint prices.
+ */
+export async function webBagLines(lines: WebBagLineIn[], db: Db = appDb()): Promise<(WebBagLine | null)[]> {
+  const wanted = lines.slice(0, 50).filter((l) => (l.kind === "product" || l.kind === "package") && SLUG.test(l.slug));
+  if (wanted.length === 0) return lines.map(() => null);
+  const productSlugs = wanted.filter((l) => l.kind === "product").map((l) => l.slug);
+  const packageSlugs = wanted.filter((l) => l.kind === "package").map((l) => l.slug);
+  const [catalog, products, packages] = await Promise.all([
+    sellableCatalog(db),
+    productSlugs.length
+      ? db.product.findMany({ where: { ...PRODUCT_ON_WEBSITE, slug: { in: productSlugs } }, select: { ...CARD_PRODUCT, ...DELIVERY_SELECT } })
+      : [],
+    packageSlugs.length
+      ? db.package.findMany({ where: { ...PACKAGE_ON_WEBSITE, slug: { in: packageSlugs } }, select: { ...CARD_PACKAGE, ...DELIVERY_SELECT } })
+      : [],
+  ]);
+  const productBySlug = new Map(products.map((p) => [p.slug!, p]));
+  const packageBySlug = new Map(packages.map((p) => [p.slug!, p]));
+  const names = packages.length ? await itemNames(db, catalog) : null;
+
+  return lines.map((line): WebBagLine | null => {
+    if (!wanted.includes(line)) return null;
+    if (line.kind === "product") {
+      const p = productBySlug.get(line.slug);
+      if (!p) return null;
+      const card = productCard(p, catalog);
+      const kit = kitCounts(tryBom(() => productPrintKitNeeds(catalog, p.id)));
+      return {
+        kind: "product",
+        slug: card.slug,
+        name: card.name,
+        image: card.image,
+        picks: {},
+        choices: [],
+        choicesChanged: false,
+        price: card.price,
+        stock: card.stock,
+        delivery: deliveryOf(p),
+        printPhotos: kit.photos,
+        printCards: kit.cards,
+      };
+    }
+    const pkg = packageBySlug.get(line.slug);
+    if (!pkg) return null;
+    const groups = tryBom(() => collectChoiceGroups(catalog, pkg.id));
+    if (!groups) return null;
+    let changed = Object.keys(line.picks ?? {}).some((k) => !groups.some((g) => String(g.groupId) === k));
+    const picks = new Map<number, number>();
+    for (const g of groups) {
+      const saved = line.picks?.[String(g.groupId)];
+      const option = g.options.find((o) => o.productId === saved);
+      if (saved !== undefined && !option) changed = true;
+      const pick = option ?? g.options.find((o) => o.isDefault) ?? g.options[0];
+      if (pick) picks.set(g.groupId, pick.productId);
+    }
+    const price = tryBom(() => packagePrice(catalog, pkg.id, picks));
+    if (!price) return null;
+    const name = pkg.websiteName || pkg.name;
+    const kit = kitCounts(tryBom(() => packagePrintKitNeeds(catalog, pkg.id, picks)));
+    return {
+      kind: "package",
+      slug: pkg.slug!,
+      name,
+      image: webImage(pkg.photos[0], name),
+      picks: Object.fromEntries([...picks].map(([g, o]) => [String(g), o])),
+      choices: groups.map((g) => ({ label: g.label, name: names?.products.get(picks.get(g.groupId)!)?.name ?? "Option" })),
+      choicesChanged: changed,
+      price: price.unitPrice,
+      stock: stockFrom(() => packageAvailability(catalog, pkg.id, picks)),
+      delivery: deliveryOf(pkg),
+      printPhotos: kit.photos,
+      printCards: kit.cards,
+    };
+  });
 }
 
 /**

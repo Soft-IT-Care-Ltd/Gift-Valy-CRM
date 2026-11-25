@@ -24,6 +24,11 @@ import {
   getCourierStuckThresholds,
 } from "@/lib/settings";
 import { OrdersListClient } from "@/components/orders/orders-list-client";
+import {
+  assignableSalesExecutives,
+  listUnassignedWebsiteOrders,
+  viewerTeamIds,
+} from "@/lib/website-orders";
 
 export const dynamic = "force-dynamic";
 
@@ -41,7 +46,7 @@ export default async function OrdersPage({
   // Status stays out of the base filters: the tab counts reflect the current
   // window/search/SE selection across ALL statuses — and the active tab's
   // count doubles as the pagination total (no extra COUNT query).
-  const { baseFilters, filters, trashFilters, page, status, q, rangeAll, trash } =
+  const { baseFilters, filters, trashFilters, websiteFilters, page, status, q, rangeAll, trash, websiteTab } =
     buildOrderListFilters(params, scope);
 
   // Trash tab (CORRECTIONS Orders §6f) — visible only with orders.trash.
@@ -141,6 +146,7 @@ export default async function OrdersPage({
     returnedReceivedCount,
     transitStuckCount,
     stuckFilteredTotal,
+    websiteCount,
   ] =
     await Promise.all([
       prisma.order.findMany({
@@ -220,6 +226,8 @@ export default async function OrdersPage({
       stuckFilterActive
         ? prisma.order.count({ where: { AND: filters } })
         : Promise.resolve(0),
+      // ROUND3 W-6 — the Website tab: website drafts waiting for confirmation.
+      prisma.order.count({ where: { AND: websiteFilters } }),
     ]);
   const statusCounts = Object.fromEntries(
     grouped.map((g) => [g.status, g._count._all])
@@ -255,6 +263,8 @@ export default async function OrdersPage({
 
   const total = stuckFilterActive
     ? stuckFilteredTotal
+    : websiteTab
+      ? websiteCount
     : trash
       ? trashCount
       : transitSub && transitSubCounts
@@ -314,6 +324,20 @@ export default async function OrdersPage({
     });
   }
 
+  // ROUND3 W-6 — website orders nobody could be given, for orders.assign
+  // holders (customer names only for those who see every order).
+  const canAssign = permissions.includes("orders.assign");
+  const anyTeam = scopeLevel === "all";
+  const [unassignedWebsite, assignSellers] = canAssign
+    ? await Promise.all([
+        listUnassignedWebsiteOrders(prisma, { withCustomer: anyTeam }),
+        assignableSalesExecutives(prisma, {
+          anyTeam,
+          teamIds: anyTeam ? [] : await viewerTeamIds(prisma, session.user.id),
+        }),
+      ])
+    : [null, []];
+
   // The In Transit tab's Steadfast Delivery Charge column is a COST — only
   // cost-visible roles receive it (CLAUDE.md rule 1; stripped in the payload).
   const showCosts = canSeeCosts(permissions);
@@ -351,6 +375,9 @@ export default async function OrdersPage({
         permissions.includes("invoice.generate")
       }
       canSeeCosts={showCosts}
+      websiteCount={websiteCount}
+      unassignedWebsite={unassignedWebsite}
+      assignSellers={assignSellers}
     />
   );
 }
