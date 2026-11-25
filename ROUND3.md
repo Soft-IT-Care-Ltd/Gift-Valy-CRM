@@ -42,7 +42,7 @@ How to use this file (for Claude Code):
 |---|---|---|---|
 | 1 | R3-0 — Read the reference, plan | Gift Valy repo | — |
 | 2 | R3-A — Category photo, choice prices, packing invoices — [DONE] | Gift Valy repo | R3-0 |
-| 3 | W1 — Website foundation: host, catalog Website panel, public catalog gate | Gift Valy repo | R3-A |
+| 3 | W1 — Website foundation: host, catalog Website panel, public catalog gate — [DONE] | Gift Valy repo | R3-A |
 | 4 | W2 — Website pages: home, category, product/package, search | Gift Valy repo | W1 |
 | 5 | W3 — Bag, checkout, website orders in the ERP | Gift Valy repo | W2 |
 | 6 | W4 — Settings → Website, home page manager, SEO, Meta Pixel | Gift Valy repo | W3 |
@@ -176,15 +176,16 @@ Part 2 — production, only after my OK. Add the giftvaly.com server block (www 
 - Everything else about invoices is unchanged.
 - **Done (25 Nov 2026, 067deaf):** `invoice.print` seeded to Packing, Manager, TeamLeader, SalesExecutive (the migration also grants it to every role / per-user grant holding `invoice.generate`). Rule in `lib/invoice-print.ts`: the person's order scope exactly as before, **or**, with `invoice.print` + `orders.pack`, every order in Confirmed / Packed / Handed to courier / In transit — so the SEs' `invoice.print` never widens their own-orders scope. Packing gets 403 for any other status; an order with no invoice row yet is printed from current data without creating a version. Packing screen: "To pack" and "Packed & with courier" tabs, Print invoice per order, Print invoices for the selected rows. Test: `npm run test:round3`.
 
-### W-1. Two front doors — [OPEN]
+### W-1. Two front doors — [DONE]
 
 - One app, one database. **`giftvaly.com`** (and `www`) is the website; **`dashboard.funnelliner.com`** stays the ERP (with `/_c/giftvaly/…` for machines). Hosts come from `STOREFRONT_HOSTS` (rule 9).
 - On the website host every path is rewritten into the internal storefront section (`app/(store)/storefront/…`). Any ERP path there (`/login`, `/api/orders`, `/uploads/…`, `/api/cron/…`, `/billing`) is a plain **404** — never a login redirect. The staff session cookie is never read there.
 - On the ERP host the storefront section doesn't exist (404). `/go/` and `/_c/` stay the Funnel Liner proxy's (rule 7).
 - Separate root layouts: the website loads none of the ERP's providers, theme, PWA or service worker.
 - **Billing lock (FUNNEL_LINER GV-7):** the website and `POST /api/shop/*` stay open while suspended — customers can still order; the orders wait as drafts. The gate's open list is updated and its tests extended.
+- **Done (25 Nov 2026, 2fcdaed):** `proxy.ts` → `lib/storefront/front-door.ts` (pure, tested); hosts from `STOREFRONT_HOSTS` only (`lib/storefront/hosts.ts`; unset = no website; dev `shop.localhost`). Website host: `/_next/*` and `public/shop/*` pass, `/go/` `/_c/` and `/storefront…` are a plain 404, everything else is rewritten to `/storefront<path>`; never a redirect, no session read, the lock never consulted; `X-Frame-Options`/`nosniff`/`Referrer-Policy`, and `X-Robots-Tag: noindex` when `STOREFRONT_NOINDEX=1` (staging). ERP host: `/storefront…` 404, the rest unchanged. Root layouts `app/(erp)/layout.tsx` (moved, unchanged) and `app/(store)/layout.tsx`, plus `app/global-not-found.tsx` (`experimental.globalNotFound`). Lock: `/storefront(/…)` OPEN with its reason. Tests: `npm run test:storefront` (19 — ERP paths on the website host checked against the real route table), `npm run test:platform` (billing-lock + rule 7 extended).
 
-### W-2. Website panel in the Catalog — [OPEN]
+### W-2. Website panel in the Catalog — [DONE]
 
 On the **product form, the package form and the category form**, **Create and Edit** both, a **Website** panel (permission `catalog.manage`, audited as `catalog.website`):
 
@@ -208,13 +209,15 @@ On the **product form, the package form and the category form**, **Create and Ed
 - Existing products and packages get the panel on their **Edit** page. The migration switches **Show on website on** for every active SELLABLE product and every active package (owner's decision), with an auto slug; COMPONENT products stay off. A **new** product or package also starts with the switch **on** (it can be turned off on the form).
 - An item with no photo shows a **branded placeholder** on the website (the Gift Valy logo on the brand colour, with the item's name) — never a broken image. The product and package lists get a **"No website photo"** filter so photos can be added one by one.
 - Slugs: Latin, lower case, hyphenated; Bangla names transliterated (Antu `lib/storefront/slug.ts`); unique across products, packages and categories' own spaces; fixed once published; a manual change keeps the old address as a permanent redirect.
+- **Done (25 Nov 2026, 2fcdaed):** migration `w2_website_panel` (additive): website columns on `products` / `packages` / `categories`, `photos text[]` (seeded from `photo_url`; `photo_url` = `photos[0]` from now on), `package_website_categories`, `website_slug_redirects` (space ITEM = `/p/` shared by products + packages, CATEGORY = `/c/`). Show switched on for active SELLABLE products and active packages (+ categories); slugs are made by the app the first time the public catalog reads a shown item without one (`ensureWebsiteSlugs`), since SQL can't transliterate. One server path `applyWebsite()` in `lib/catalog-website.ts`, called inside the product / package / category create + PATCH transactions and `POST /api/catalog/website/bulk`; audit `catalog.website` (before/after). Panel `components/catalog/website-panel.tsx` at the bottom of each dialog (Create = Edit), above Active; the category's R3-1 photo sits inside it; photos replace the old single Photo field (a COMPONENT product keeps the photos field, nothing else). Description = plain text with `**bold**` and `- ` lists, parsed to blocks (`lib/catalog-website-shape.ts`), never HTML. A shown package with no website category is still on the site (form warns, doesn't block). Placeholder: `components/storefront/web-photo.tsx`. Tests in `npm run test:storefront-catalog`.
 
-### W-3. One public catalog gate — [OPEN]
+### W-3. One public catalog gate — [DONE]
 
 - Every public read goes through one module (e.g. `lib/storefront/catalog.ts`) that names each field it returns: name, slug, description, category, photos, price (with the choice options and their extra prices), compare-at price, badge, availability, "what's inside" (names and qty only).
 - **Availability** only as **In stock / Out of stock** from the existing BOM availability (for a package: every component of the default choices available; per option too). Never a stock number.
 - Never cost, avgCost, cost snapshot, stock numbers, SKU, supplier, staff or customer data — **a test scans every public page and API response**.
 - Product photos on the website are served at `/img/<photo>-<360|720|1080>.webp` (only photos of shown items; long cache — a new photo gets a new name); `/uploads` stays behind the staff login.
+- **Done (25 Nov 2026, 2fcdaed):** `lib/storefront/catalog.ts` — `listWebCategories`, `listWebItems`, `getWebCategory`, `searchWebItems`, `getWebItem` (with old-address redirects), `publicPhotoFile`; `select` only, outputs only the types in `lib/storefront/types.ts`. Price = `packagePrice()` with default picks (options carry `extraPrice`); stock = `IN_STOCK`/`OUT_OF_STOCK` from BOM availability **net of reserved**, per option too; "what's inside" leaves out COMPONENT packing materials. `/img` route `app/(store)/storefront/img/[file]` (sharp resize, EXIF dropped, cached in `UPLOAD_DIR/web-cache`, `immutable`); also serves a choice option's main photo when the option is inside a shown package. Test `npm run test:storefront-catalog` (rolled back, dev DB): sentinel SKU / code / avg + purchase cost / supplier / stock + reserved / floor / staff / customer values, every public read JSON-walked for forbidden keys and sentinel values; fails if the module exports an unscanned function; `app/(store)` + `components/storefront` may not import Prisma or ERP catalog code. W-4 pages must add their outputs to this scan.
 
 ### W-4. Website pages — [OPEN]
 
