@@ -7,6 +7,7 @@ import { cachedSettings } from "@/lib/storefront/cached";
 import { fillTemplate } from "@/lib/storefront/chat";
 import { copy } from "@/lib/storefront/copy";
 import { formatTaka } from "@/lib/storefront/format";
+import { storefrontOrigin } from "@/lib/storefront/hosts";
 import { websiteOrderByToken, type WebOrderReceipt } from "@/lib/storefront/place-order";
 
 // ROUND3 W-5 — the customer's confirmation page, reached only by its private
@@ -18,10 +19,16 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: copy.order.title, robots: { index: false, follow: false } };
 
 export default async function OrderPage({ params }: { params: Promise<{ token: string }> }) {
-  const order = await websiteOrderByToken((await params).token);
+  const { token } = await params;
+  const order = await websiteOrderByToken(token);
   if (!order) notFound();
   const settings = await cachedSettings();
-  const message = fillTemplate(copy.order.whatsAppMessage, { order_ref: order.number ? `${order.ref} / ${order.number}` : order.ref, total: formatTaka(order.total) });
+  // W-7 — the order message from Settings → Website ({link} = this page).
+  const message = fillTemplate(settings.orderMessage, {
+    order_ref: order.number ? `${order.ref} / ${order.number}` : order.ref,
+    total: formatTaka(order.total),
+    link: `${storefrontOrigin()}/order/${token}`,
+  });
   const cancelled = order.state === "CANCELLED";
 
   return (

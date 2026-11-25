@@ -1,6 +1,7 @@
-// ROUND3 W-4 — what the website reads from Settings → Website. One JSON row
-// in the settings table (key `website_settings`); W-7 adds the Admin editor
-// and its audit. Client-safe: no Prisma or server imports.
+// ROUND3 W-4 / W-7 — what the website reads from Settings → Website. One
+// JSON row in the settings table (key `website_settings`), written only by the
+// Admin editor (lib/storefront/settings-form.ts checks it, lib/website-settings.ts
+// saves and audits it). Client-safe: no Prisma or server imports.
 //
 // A missing row or field means "not set": no WhatsApp number = no "Order on
 // WhatsApp" button, no Messenger page = no Messenger button, an empty policy =
@@ -17,14 +18,21 @@ export const POLICY_TITLES: Record<PolicyKind, string> = {
   terms: "Terms & conditions",
 };
 
-/** The placeholders a product message may use (W-7 refuses any other). */
+/** Every placeholder a message template may use (W-7 refuses any other). */
 export const MESSAGE_PLACEHOLDERS = ["product", "choices", "price", "link", "order_ref", "total"] as const;
 export type MessagePlaceholder = (typeof MESSAGE_PLACEHOLDERS)[number];
+/** The product / package page's message: what she is looking at. */
+export const PRODUCT_MESSAGE_PLACEHOLDERS = ["product", "choices", "price", "link"] as const satisfies readonly MessagePlaceholder[];
+/** The confirmation page's message: her order (link = that page). */
+export const ORDER_MESSAGE_PLACEHOLDERS = ["order_ref", "total", "link"] as const satisfies readonly MessagePlaceholder[];
 
 export const DEFAULT_PRODUCT_MESSAGE =
   "Hi Gift Valy! I'd like to order:\n{product}\n{choices}\nPrice: {price}\n{link}";
+export const DEFAULT_ORDER_MESSAGE = "Hi Gift Valy! About my order {order_ref} ({total}).";
 
 export interface WebSettings {
+  /** Off = every website page is the "Coming soon" page (lib/storefront/front-door.ts). On unless switched off. */
+  websiteOn: boolean;
   /** WhatsApp for wa.me, 8801XXXXXXXXX; "" = no WhatsApp button. */
   whatsapp: string;
   /** Facebook Page username / id for m.me; "" = no Messenger button. */
@@ -38,12 +46,17 @@ export interface WebSettings {
   deliveryTimes: { insideDhaka: string; subDhaka: string; outsideDhaka: string };
   /** The WhatsApp / Messenger message template for a product or package. */
   productMessage: string;
+  /** The confirmation page's message template (her order). */
+  orderMessage: string;
   policies: Record<PolicyKind, string>;
   /** Show "≈ SAR 120 (approx.)" from the currency rates. Off by default. */
   approxCurrency: boolean;
+  /** W-8 — the home page's title and description for search engines and link previews ("" = the default copy). */
+  homeSeo: { title: string; description: string };
 }
 
 export const DEFAULT_WEB_SETTINGS: WebSettings = {
+  websiteOn: true,
   whatsapp: "",
   messengerPage: "",
   facebookUrl: "",
@@ -51,8 +64,10 @@ export const DEFAULT_WEB_SETTINGS: WebSettings = {
   officeAddress: "",
   deliveryTimes: { insideDhaka: "", subDhaka: "", outsideDhaka: "" },
   productMessage: DEFAULT_PRODUCT_MESSAGE,
+  orderMessage: DEFAULT_ORDER_MESSAGE,
   policies: { delivery: "", refund: "", privacy: "", terms: "" },
   approxCurrency: false,
+  homeSeo: { title: "", description: "" },
 };
 
 const obj = (v: unknown): Record<string, unknown> =>
@@ -71,7 +86,7 @@ export function cleanMessengerPage(v: unknown): string {
   return /^[A-Za-z0-9.\-_]{2,80}$/.test(s) ? s : "";
 }
 
-function cleanFacebookUrl(v: unknown): string {
+export function cleanFacebookUrl(v: unknown): string {
   const s = text(v, 200);
   return /^https:\/\/(www\.|m\.)?facebook\.com\/[^\s"<>]+$/i.test(s) ? s : "";
 }
@@ -80,8 +95,11 @@ export function normalizeWebSettings(raw: unknown): WebSettings {
   const o = obj(raw);
   const times = obj(o.deliveryTimes);
   const policies = obj(o.policies);
+  const seo = obj(o.homeSeo);
   const message = text(o.productMessage, 1000);
+  const orderMessage = text(o.orderMessage, 1000);
   return {
+    websiteOn: o.websiteOn !== false,
     whatsapp: cleanWhatsApp(o.whatsapp),
     messengerPage: cleanMessengerPage(o.messengerPage),
     facebookUrl: cleanFacebookUrl(o.facebookUrl),
@@ -93,6 +111,7 @@ export function normalizeWebSettings(raw: unknown): WebSettings {
       outsideDhaka: text(times.outsideDhaka, 60),
     },
     productMessage: message || DEFAULT_PRODUCT_MESSAGE,
+    orderMessage: orderMessage || DEFAULT_ORDER_MESSAGE,
     policies: {
       delivery: text(policies.delivery, 20_000),
       refund: text(policies.refund, 20_000),
@@ -100,6 +119,7 @@ export function normalizeWebSettings(raw: unknown): WebSettings {
       terms: text(policies.terms, 20_000),
     },
     approxCurrency: o.approxCurrency === true,
+    homeSeo: { title: text(seo.title, 70), description: text(seo.description, 200) },
   };
 }
 

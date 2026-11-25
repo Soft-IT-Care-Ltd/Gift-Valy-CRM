@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound, permanentRedirect } from "next/navigation";
 import { ChevronRight, Truck } from "lucide-react";
 import { ItemPurchase } from "@/components/storefront/item-purchase";
+import { MetaViewContent } from "@/components/storefront/meta-pixel";
 import { Badge, ProductGrid } from "@/components/storefront/product-card";
 import { ProductGallery } from "@/components/storefront/product-gallery";
 import { RichText } from "@/components/storefront/rich-text";
@@ -10,6 +11,7 @@ import { cachedCurrencies, cachedItem, cachedRelated, cachedSettings } from "@/l
 import { copy } from "@/lib/storefront/copy";
 import { formatTaka } from "@/lib/storefront/format";
 import { storefrontOrigin } from "@/lib/storefront/hosts";
+import { jsonLdText, ogPhoto, productJsonLd } from "@/lib/storefront/seo";
 import { POLICY_TITLES, type WebSettings } from "@/lib/storefront/settings-shape";
 import type { WebDelivery } from "@/lib/storefront/types";
 
@@ -30,12 +32,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   if (!found || !("item" in found)) return { title: copy.meta.notFound, robots: { index: false } };
   const p = found.item;
   const description = p.seoDescription || copy.meta.pageDescription(p.name);
-  const image = p.photos[0] ? `${p.photos[0].path}-1080.webp` : "/shop/icon.png";
+  const image = ogPhoto(p.photos[0]?.path ?? p.image?.path);
   return {
     title: p.seoTitle,
     description,
     alternates: { canonical: `/p/${p.slug}` },
-    openGraph: { title: p.seoTitle, description, url: `/p/${p.slug}`, images: [{ url: image }] },
+    openGraph: { title: p.seoTitle, description, url: `/p/${p.slug}`, images: [{ ...image, alt: p.name }] },
+    twitter: { card: "summary_large_image", title: p.seoTitle, description, images: [image.url] },
   };
 }
 
@@ -120,6 +123,11 @@ export default async function ItemPage({ params }: Props) {
           <DeliveryBox delivery={item.delivery} times={settings.deliveryTimes} policy={!!settings.policies.delivery} />
         </div>
       </div>
+
+      {/* W-8 — structured data for search engines: name, photos, price, In stock / Out of stock. */}
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdText(productJsonLd(item, storefrontOrigin())) }} />
+      {/* W-8 — Meta ViewContent (browser + server, one event_id; nothing while tracking is off). */}
+      <MetaViewContent slug={item.slug} name={item.name} price={item.price} />
 
       {related.length > 0 ? (
         <section className="pt-12" aria-labelledby="related">

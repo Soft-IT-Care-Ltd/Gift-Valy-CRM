@@ -7,6 +7,7 @@ import { RichText } from "@/components/storefront/rich-text";
 import { WebPhoto } from "@/components/storefront/web-photo";
 import { cachedCategoryPage } from "@/lib/storefront/cached";
 import { copy } from "@/lib/storefront/copy";
+import { ogPhoto } from "@/lib/storefront/seo";
 
 // ROUND3 W-4 — a category, /c/<slug>: its products and packages in the
 // shop's display order. Cached like an item page; an old address redirects.
@@ -27,7 +28,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     title: c.seoTitle,
     description,
     alternates: { canonical: `/c/${c.slug}` },
-    openGraph: { title: c.seoTitle, description, url: `/c/${c.slug}`, images: [{ url: c.image ? `${c.image.path}-1080.webp` : "/shop/icon.png" }] },
+    openGraph: { title: c.seoTitle, description, url: `/c/${c.slug}`, images: [{ ...ogPhoto(c.image?.path), alt: c.name }] },
+    twitter: { card: "summary_large_image", title: c.seoTitle, description, images: [ogPhoto(c.image?.path).url] },
   };
 }
 

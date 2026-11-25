@@ -6,6 +6,7 @@ import { Camera, Check } from "lucide-react";
 import { ChatButtons } from "@/components/storefront/chat-buttons";
 import { WebPhoto } from "@/components/storefront/web-photo";
 import { bag } from "@/lib/storefront/bag-store";
+import { trackBrowse } from "@/lib/storefront/meta-pixel";
 import { fillTemplate } from "@/lib/storefront/chat";
 import { copy } from "@/lib/storefront/copy";
 import { formatApprox, formatExtra, formatTaka } from "@/lib/storefront/format";
@@ -54,7 +55,14 @@ export function ItemPurchase({ item, chat, currencies }: { item: PurchaseItem; c
 
   function add(): boolean {
     if (out) return false;
-    bag.add({ kind: item.kind, slug: item.slug, picks: Object.fromEntries(Object.entries(picks).map(([k, v]) => [k, v])), seenPrice: total });
+    const chosen = Object.fromEntries(Object.entries(picks).map(([k, v]) => [k, v]));
+    bag.add({ kind: item.kind, slug: item.slug, picks: chosen, seenPrice: total });
+    // W-8 — Meta AddToCart: the server re-prices this line with its picks from the database.
+    trackBrowse(
+      "AddToCart",
+      { currency: "BDT", value: total, content_ids: [item.slug], content_type: "product", contents: [{ id: item.slug, quantity: 1, item_price: total }], num_items: 1 },
+      { items: [{ kind: item.kind, slug: item.slug, picks: chosen, qty: 1 }] }
+    );
     return true;
   }
 

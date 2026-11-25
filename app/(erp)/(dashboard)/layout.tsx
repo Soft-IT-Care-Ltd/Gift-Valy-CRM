@@ -100,6 +100,10 @@ export default async function DashboardLayout({
   if (permissions.includes("catalog.manage")) {
     catalogItems.push({ href: "/catalog/categories", label: "Categories" });
   }
+  // ROUND3 W-7 — the website's home page manager (Admin, Manager).
+  if (permissions.includes("website.home")) {
+    catalogItems.push({ href: "/catalog/home-page", label: "Website Home Page" });
+  }
   addGroup("Catalog", "catalog", catalogItems);
 
   // Inventory (SPEC §6.3). Packing sees only its queue; stock/purchases are
@@ -258,6 +262,8 @@ export default async function DashboardLayout({
       { href: "/settings/attendance", label: "Attendance Settings" },
       // CORRECTIONS §R10 — shifts + per-employee weekly roster.
       { href: "/settings/roster", label: "Shifts & Roster" },
+      // ROUND3 W-7/W-8 — the website: contacts, messages, policies, rules, SEO, Meta Pixel.
+      { href: "/settings/website", label: "Website" },
       { href: "/settings/whatsapp", label: "WhatsApp Invoice" },
       { href: "/settings/currencies", label: "Currency Rates" },
       // CORRECTIONS Orders §7 (C8) — occasion reminder lead time.

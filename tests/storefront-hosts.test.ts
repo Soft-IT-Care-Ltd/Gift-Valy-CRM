@@ -5,7 +5,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { frontDoor, type ReadState } from "../lib/storefront/front-door";
+import { frontDoor, type ReadState, type ReadWebsiteStatus } from "../lib/storefront/front-door";
 import {
   isStorefrontHost,
   storefrontHosts,
@@ -29,6 +29,11 @@ function reader(s: PlatformStateName) {
   };
   return { read, calls: () => calls };
 }
+
+// ROUND3 W-7 — Settings → Website → Website on (passed in: no database here).
+const CONTACT = { whatsapp: "8801711223344", messengerPage: "giftvaly", facebookUrl: "", hotline: "+880 1711-223344" };
+const OPEN: ReadWebsiteStatus = async () => ({ on: true, contact: CONTACT });
+const CLOSED: ReadWebsiteStatus = async () => ({ on: false, contact: CONTACT });
 
 const request = (host: string | null, p: string, method = "GET") => {
   const headers = new Headers();
@@ -153,7 +158,7 @@ describe("W-1 website host", () => {
       ["/img/abc-720.webp", "/storefront/img/abc-720.webp"],
     ];
     for (const [from, to] of cases) {
-      const res = await frontDoor(request(WEBSITE, from), read, HOSTS);
+      const res = await frontDoor(request(WEBSITE, from), read, HOSTS, OPEN);
       assert.equal(rewriteOf(res), to, from);
       assert.equal(res.headers.get("x-frame-options"), "DENY");
     }
@@ -163,7 +168,7 @@ describe("W-1 website host", () => {
     const { read } = reader("active");
     for (const p of [...ERP_PATHS, "/storefront", "/storefront/p/x"]) {
       for (const method of ["GET", "POST"]) {
-        const res = await frontDoor(request(WEBSITE, p, method), read, HOSTS);
+        const res = await frontDoor(request(WEBSITE, p, method), read, HOSTS, OPEN);
         assert.ok(res.status < 300 || res.status === 404, `${p} → ${res.status}`);
         assert.equal(res.headers.get("location"), null, p);
         const to = rewriteOf(res);
@@ -181,7 +186,7 @@ describe("W-1 website host", () => {
   test("the internal prefix is never reachable by name", async () => {
     const { read } = reader("active");
     for (const p of ["/storefront", "/storefront/", "/storefront/p/x", "/storefront/api/shop/order"]) {
-      const res = await frontDoor(request(WEBSITE, p), read, HOSTS);
+      const res = await frontDoor(request(WEBSITE, p), read, HOSTS, OPEN);
       assert.equal(res.status, 404, p);
       assert.equal(rewriteOf(res), null, p);
     }
@@ -190,7 +195,7 @@ describe("W-1 website host", () => {
   test("the billing lock is never consulted — open while suspended, POST /api/shop/* included", async () => {
     const r = reader("suspended");
     for (const [p, method] of [["/", "GET"], ["/p/x", "GET"], ["/api/shop/order", "POST"]] as const) {
-      const res = await frontDoor(request(WEBSITE, p, method), r.read, HOSTS);
+      const res = await frontDoor(request(WEBSITE, p, method), r.read, HOSTS, OPEN);
       assert.ok(rewriteOf(res), p);
       assert.notEqual(res.status, 423);
     }
@@ -200,7 +205,7 @@ describe("W-1 website host", () => {
   test("/go/ and /_c/ are Funnel Liner's: a plain 404, never rewritten", async () => {
     const { read } = reader("active");
     for (const p of ["/go/x", "/go", "/_c/giftvaly/api/webhooks/steadfast", "/_c", "/%5Fc/x"]) {
-      const res = await frontDoor(request(WEBSITE, p), read, HOSTS);
+      const res = await frontDoor(request(WEBSITE, p), read, HOSTS, OPEN);
       assert.equal(res.status, 404, p);
       assert.equal(rewriteOf(res), null, p);
     }
@@ -209,7 +214,7 @@ describe("W-1 website host", () => {
   test("the build's files and public/shop/ pass unchanged", async () => {
     const { read } = reader("active");
     for (const p of ["/shop/logo.png", "/_next/static/chunks/a.js", "/_next/webpack-hmr"]) {
-      const res = await frontDoor(request(WEBSITE, p), read, HOSTS);
+      const res = await frontDoor(request(WEBSITE, p), read, HOSTS, OPEN);
       assert.ok(passes(res), p);
       assert.equal(rewriteOf(res), null, p);
     }
@@ -220,10 +225,10 @@ describe("W-1 website host", () => {
     const before = process.env.STOREFRONT_NOINDEX;
     try {
       process.env.STOREFRONT_NOINDEX = "1";
-      const res = await frontDoor(request(WEBSITE, "/"), read, HOSTS);
+      const res = await frontDoor(request(WEBSITE, "/"), read, HOSTS, OPEN);
       assert.match(res.headers.get("x-robots-tag") ?? "", /noindex/);
       delete process.env.STOREFRONT_NOINDEX;
-      const prod = await frontDoor(request(WEBSITE, "/"), read, HOSTS);
+      const prod = await frontDoor(request(WEBSITE, "/"), read, HOSTS, OPEN);
       assert.equal(prod.headers.get("x-robots-tag"), null);
     } finally {
       if (before === undefined) delete process.env.STOREFRONT_NOINDEX;
@@ -241,7 +246,7 @@ describe("W-1 ERP host", () => {
   test("the storefront section doesn't exist there", async () => {
     const { read } = reader("active");
     for (const p of ["/storefront", "/storefront/", "/storefront/p/x", "/storefront/api/shop/order", "/storefront/img/a-360.webp"]) {
-      const res = await frontDoor(request(ERP, p), read, HOSTS);
+      const res = await frontDoor(request(ERP, p), read, HOSTS, OPEN);
       assert.equal(res.status, 404, p);
     }
   });
@@ -249,24 +254,24 @@ describe("W-1 ERP host", () => {
   test("ERP paths are untouched (no rewrite) and still locked while suspended", async () => {
     const active = reader("active");
     for (const p of ["/login", "/orders", "/api/orders", "/p/x", "/"]) {
-      const res = await frontDoor(request(ERP, p), active.read, HOSTS);
+      const res = await frontDoor(request(ERP, p), active.read, HOSTS, OPEN);
       assert.ok(passes(res), p);
       assert.equal(rewriteOf(res), null, p);
     }
     const suspended = reader("suspended");
-    const page = await frontDoor(request(ERP, "/orders"), suspended.read, HOSTS);
+    const page = await frontDoor(request(ERP, "/orders"), suspended.read, HOSTS, OPEN);
     assert.equal(page.status, 307);
     assert.equal(new URL(page.headers.get("location")!).pathname, "/billing");
-    const api = await frontDoor(request(ERP, "/api/orders"), suspended.read, HOSTS);
+    const api = await frontDoor(request(ERP, "/api/orders"), suspended.read, HOSTS, OPEN);
     assert.equal(api.status, 423);
-    const login = await frontDoor(request(ERP, "/login"), suspended.read, HOSTS);
+    const login = await frontDoor(request(ERP, "/login"), suspended.read, HOSTS, OPEN);
     assert.ok(passes(login));
   });
 
   test("/go/ and /_c/ pass through untouched (Nginx gives them to Funnel Liner)", async () => {
     const { read } = reader("active");
     for (const p of ["/go/x", "/_c/giftvaly/x"]) {
-      const res = await frontDoor(request(ERP, p), read, HOSTS);
+      const res = await frontDoor(request(ERP, p), read, HOSTS, OPEN);
       assert.equal(rewriteOf(res), null, p);
       assert.equal(res.headers.get("location"), null, p);
     }
@@ -274,8 +279,47 @@ describe("W-1 ERP host", () => {
 
   test("a request with no Host header is the ERP", async () => {
     const { read } = reader("active");
-    const res = await frontDoor(request(null, "/storefront"), read, HOSTS);
+    const res = await frontDoor(request(null, "/storefront"), read, HOSTS, OPEN);
     assert.equal(res.status, 404);
+  });
+});
+
+describe("W-7 Website off — the Coming soon page", () => {
+  const { read } = reader("active");
+  test("every page is the holding page (503, noindex, never cached) with the shop's contacts", async () => {
+    for (const p of ["/", "/p/moharani-saree", "/c/sarees", "/search?q=cake", "/bag", "/checkout", "/policy/privacy", "/sitemap.xml", "/preview/home?t=x"]) {
+      const res = await frontDoor(request(WEBSITE, p), read, HOSTS, CLOSED);
+      assert.equal(res.status, 503, p);
+      assert.equal(rewriteOf(res), null, `${p} never reaches the storefront`);
+      assert.match(res.headers.get("x-robots-tag") ?? "", /noindex/, p);
+      assert.equal(res.headers.get("cache-control"), "no-store", p);
+      const html = await res.text();
+      assert.match(html, /Coming soon/, p);
+      assert.match(html, /wa\.me\/8801711223344/, p);
+    }
+  });
+  test("the order endpoint answers 503; robots.txt disallows everything", async () => {
+    const api = await frontDoor(request(WEBSITE, "/api/shop/order", "POST"), read, HOSTS, CLOSED);
+    assert.equal(api.status, 503);
+    assert.equal(rewriteOf(api), null);
+    const robots = await frontDoor(request(WEBSITE, "/robots.txt"), read, HOSTS, CLOSED);
+    assert.equal(await robots.text(), "User-agent: *\nDisallow: /\n");
+  });
+  test("a customer's private order link and its photos stay open; the website's own files pass", async () => {
+    assert.equal(rewriteOf(await frontDoor(request(WEBSITE, "/order/abcDEF123"), read, HOSTS, CLOSED)), "/storefront/order/abcDEF123");
+    assert.equal(rewriteOf(await frontDoor(request(WEBSITE, "/img/abc-720.webp"), read, HOSTS, CLOSED)), "/storefront/img/abc-720.webp");
+    assert.ok(passes(await frontDoor(request(WEBSITE, "/shop/icon.png"), read, HOSTS, CLOSED)));
+  });
+  test("the ERP host never asks and is never closed; every ERP answer is noindex", async () => {
+    let asked = 0;
+    const counting: ReadWebsiteStatus = async () => {
+      asked++;
+      return { on: false, contact: CONTACT };
+    };
+    const res = await frontDoor(request(ERP, "/login"), read, HOSTS, counting);
+    assert.ok(passes(res));
+    assert.equal(asked, 0);
+    assert.equal(res.headers.get("x-robots-tag"), "noindex, nofollow");
   });
 });
 

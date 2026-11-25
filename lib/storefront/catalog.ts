@@ -16,6 +16,14 @@ import { printKitPhotoCount } from "@/lib/print-kit";
 import { ensureWebsiteSlugs } from "@/lib/catalog-website";
 import { parseRichText, richTextPlain, SEO_DESCRIPTION_MAX } from "@/lib/catalog-website-shape";
 import { uploadUrlPath } from "@/lib/file-storage";
+import {
+  DEFAULT_HOME_LAYOUT,
+  HOME_PAGE_ID,
+  layoutBannerFiles,
+  parseHomeLayout,
+  type HomeLayout,
+  type ItemRef,
+} from "@/lib/home-page/layout";
 import { slugify } from "./slug";
 import { CATEGORY_ON_WEBSITE, PACKAGE_ON_WEBSITE, PRODUCT_ON_WEBSITE } from "./on-website";
 import { normalizeWebSettings, WEBSITE_SETTINGS_KEY, type WebSettings } from "./settings-shape";
@@ -550,6 +558,125 @@ export async function getWebSettings(db: Db = appDb()): Promise<WebSettings> {
   return normalizeWebSettings(row?.value ?? null);
 }
 
+/**
+ * ROUND3 W-8 — the Meta Pixel the website loads, or null: tracking switched
+ * on with a Pixel ID and a token (lib/meta/config.ts). A Pixel ID is public;
+ * the token column is never selected here.
+ */
+export async function getWebPixelId(db: Db = appDb()): Promise<string | null> {
+  const row = await db.metaTracking.findFirst({
+    where: { id: "meta", isEnabled: true, pixelId: { not: null }, accessTokenEncrypted: { not: null } },
+    select: { pixelId: true },
+  });
+  return row?.pixelId ?? null;
+}
+
+/**
+ * ROUND3 W-8 — sitemap.xml: the address of every category, product and
+ * package the website shows, with when the item last changed. Nothing else.
+ */
+export async function listWebAddresses(db: Db = appDb()): Promise<{ categories: string[]; items: { slug: string; lastmod: string }[] }> {
+  const [catalog, categories, products, packages] = await Promise.all([
+    sellableCatalog(db),
+    listWebCategories(db),
+    db.product.findMany({ where: PRODUCT_ON_WEBSITE, orderBy: ORDER, select: { slug: true, updatedAt: true } }),
+    db.package.findMany({ where: PACKAGE_ON_WEBSITE, orderBy: ORDER, select: { id: true, slug: true, updatedAt: true } }),
+  ]);
+  const priced = packages.filter((p) => tryBom(() => packagePrice(catalog, p.id)) !== null);
+  return {
+    categories: categories.map((c) => c.slug),
+    items: [...products, ...priced].map((r) => ({ slug: r.slug!, lastmod: r.updatedAt.toISOString().slice(0, 10) })),
+  };
+}
+
+// ---------- ROUND3 W-7 — the home page ----------
+
+/**
+ * The home page's sections: what the website shows ("published") or the home
+ * page manager's draft ("draft", for the signed preview only). Never
+ * published yet = the starting layout (the W-4 home page).
+ */
+export async function getHomeLayout(which: "published" | "draft", db: Db = appDb()): Promise<HomeLayout> {
+  const row = await db.homePage.findUnique({ where: { id: HOME_PAGE_ID }, select: { draft: true, published: true } });
+  const published = parseHomeLayout(row?.published);
+  if (which === "published") return published ?? DEFAULT_HOME_LAYOUT;
+  return parseHomeLayout(row?.draft) ?? published ?? DEFAULT_HOME_LAYOUT;
+}
+
+/** Hand-picked products / packages, in the order chosen — only what is on the website (a hidden one simply drops out). */
+export async function webItemsByRefs(refs: ItemRef[], db: Db = appDb()): Promise<WebCard[]> {
+  if (refs.length === 0) return [];
+  const productIds = refs.filter((r) => r.kind === "product").map((r) => r.id);
+  const packageIds = refs.filter((r) => r.kind === "package").map((r) => r.id);
+  const [catalog, products, packages] = await Promise.all([
+    sellableCatalog(db),
+    productIds.length ? db.product.findMany({ where: { ...PRODUCT_ON_WEBSITE, id: { in: productIds } }, select: CARD_PRODUCT }) : [],
+    packageIds.length ? db.package.findMany({ where: { ...PACKAGE_ON_WEBSITE, id: { in: packageIds } }, select: CARD_PACKAGE }) : [],
+  ]);
+  const byKey = new Map<string, WebCard>();
+  for (const p of products) byKey.set(`product:${p.id}`, productCard(p, catalog));
+  for (const p of packages) {
+    const card = packageCard(p, catalog);
+    if (card) byKey.set(`package:${p.id}`, card);
+  }
+  const seen = new Set<string>();
+  const out: WebCard[] = [];
+  for (const r of refs) {
+    const key = `${r.kind}:${r.id}`;
+    const card = byKey.get(key);
+    if (card && !seen.has(key)) {
+      seen.add(key);
+      out.push(card);
+    }
+  }
+  return out;
+}
+
+const CATEGORY_TILE = {
+  id: true,
+  name: true,
+  websiteName: true,
+  slug: true,
+  photoUrl: true,
+  websiteDescription: true,
+  websiteFeatured: true,
+  seoTitle: true,
+  seoDescription: true,
+} satisfies Prisma.CategorySelect;
+
+/** Hand-picked category tiles, in the order chosen — only shown categories with something on the website. */
+export async function webCategoriesByIds(ids: number[], db: Db = appDb()): Promise<WebCategory[]> {
+  if (ids.length === 0) return [];
+  await ensureWebsiteSlugs(db);
+  const rows = await db.category.findMany({
+    where: {
+      ...CATEGORY_ON_WEBSITE,
+      id: { in: ids },
+      OR: [{ products: { some: PRODUCT_ON_WEBSITE } }, { websitePackages: { some: { package: PACKAGE_ON_WEBSITE } } }],
+    },
+    select: CATEGORY_TILE,
+  });
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return [...new Set(ids)].flatMap((id) => {
+    const r = byId.get(id);
+    return r ? [categoryOut(r)] : [];
+  });
+}
+
+/** A home section "from one category": its first items and its address; null when the category isn't on the website. */
+export async function webCategoryCards(
+  categoryId: number,
+  take: number,
+  db: Db = appDb()
+): Promise<{ slug: string; name: string; items: WebCard[] } | null> {
+  await ensureWebsiteSlugs(db);
+  const row = await db.category.findFirst({ where: { ...CATEGORY_ON_WEBSITE, id: categoryId }, select: CATEGORY_TILE });
+  if (!row) return null;
+  const items = await cards(db, { categoryId: row.id }, { websiteCategories: { some: { categoryId: row.id } } }, Math.min(take, 24));
+  const c = categoryOut(row);
+  return { slug: c.slug, name: c.name, items };
+}
+
 // The ISO currency code is public; it's the one `code` this module selects.
 const CURRENCY_SELECT = { code: true, name: true, symbol: true, bdtPerUnit: true } satisfies Prisma.CurrencyRateSelect;
 
@@ -569,6 +696,12 @@ export async function listWebCurrencies(db: Db = appDb()): Promise<WebCurrency[]
  */
 export async function publicPhotoFile(base: string, db: Db = appDb()): Promise<string | null> {
   if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(base)) return null;
+  // W-7 — a home page banner: only while the published page or the draft (its signed preview) uses it.
+  if (/^banner-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(base)) {
+    const row = await db.homePage.findUnique({ where: { id: HOME_PAGE_ID }, select: { draft: true, published: true } });
+    const used = [parseHomeLayout(row?.draft), parseHomeLayout(row?.published)].some((l) => l !== null && layoutBannerFiles(l).includes(`${base}.webp`));
+    return used ? uploadUrlPath(`/uploads/${base}.webp`) : null;
+  }
   const urls = ["jpg", "jpeg", "png", "webp"].map((ext) => `/uploads/${base}.${ext}`);
   await ensureWebsiteSlugs(db);
   const [product, pkg, category] = await Promise.all([

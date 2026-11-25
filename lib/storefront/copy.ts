@@ -10,6 +10,7 @@ export const copy = {
     tagline: "Gifts for your loved ones in Bangladesh — sent from anywhere in the world.",
   },
   meta: {
+    homeTitle: "Gift Valy — gifts delivered anywhere in Bangladesh",
     titleTemplate: "%s · Gift Valy",
     notFound: "Page not found",
     pageDescription: (name: string) => `${name} — gifts delivered anywhere in Bangladesh by Gift Valy.`,
@@ -215,7 +216,6 @@ export const copy = {
     paidInFull: "Paid in full",
     questions: "Questions about your order?",
     shopMore: "Continue shopping",
-    whatsAppMessage: "Hi Gift Valy! About my order {order_ref} ({total}).",
   },
   api: {
     checkDetails: "Please check your details and try again.",
@@ -241,5 +241,25 @@ export const copy = {
     title: "Something went wrong",
     body: "Please try again in a moment.",
     reload: "Reload",
+  },
+  // ROUND3 W-7 — Settings → Website → Website off.
+  comingSoon: {
+    title: "Gift Valy — coming soon",
+    tag: "Coming soon",
+    body: "Our new website is almost ready. Until then, we take every order on WhatsApp — gifts delivered anywhere in Bangladesh.",
+    contact: "Message us",
+    api: "The website is closed for a moment. Please message us on WhatsApp.",
+  },
+  // ROUND3 W-7 — the home page manager's preview link.
+  preview: {
+    title: "Home page preview",
+    bar: "Preview — this draft is not on the website yet",
+  },
+  banners: {
+    promisesLabel: "Why Gift Valy",
+    bannerLabel: "Offers and news",
+    previous: "Previous banner",
+    next: "Next banner",
+    goTo: (n: number) => `Show banner ${n}`,
   },
 } as const;

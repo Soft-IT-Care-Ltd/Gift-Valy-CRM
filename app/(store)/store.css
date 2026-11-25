@@ -270,4 +270,19 @@
     color: var(--color-ink);
     font-weight: 600;
   }
+  /* ROUND3 W-7 — banner slider: no scrollbar; each banner keeps its own photo's shape (mobile / desktop). */
+  .sf-no-scrollbar {
+    scrollbar-width: none;
+  }
+  .sf-no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .sf-banner {
+    aspect-ratio: var(--m-ar);
+  }
+  @media (min-width: 768px) {
+    .sf-banner {
+      aspect-ratio: var(--d-ar);
+    }
+  }
 }

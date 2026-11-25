@@ -80,6 +80,9 @@ export const PERMISSION_DEFS: PermissionDef[] = [
   // Catalog
   { key: "catalog.view", label: "View catalog (products & packages)", group: "Catalog" },
   { key: "catalog.manage", label: "Manage catalog (categories, products, packages)", group: "Catalog" },
+  // ROUND3 W-7 — the website's home page manager (sections, banners, draft →
+  // preview → publish). Settings → Website itself stays on settings.manage.
+  { key: "website.home", label: "Manage the website home page", group: "Catalog" },
   // Stock
   { key: "stock.view", label: "View stock (read)", group: "Stock" },
   { key: "stock.adjust", label: "Adjust stock", group: "Stock" },
@@ -126,7 +129,7 @@ export const ROLE_MATRIX: Record<RoleName, string[]> = {
     "print.edit", "print.print", "print.settings",
     "payments.create", "payments.verify", "wallets.manage",
     "expenses.create", "purchases.create",
-    "catalog.view", "catalog.manage",
+    "catalog.view", "catalog.manage", "website.home",
     "stock.view", "stock.adjust",
     "courier.manage",
     "reports.own", "reports.team", "reports.all",

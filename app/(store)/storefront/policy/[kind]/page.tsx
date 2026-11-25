@@ -16,7 +16,11 @@ const isKind = (k: string): k is PolicyKind => (POLICY_KINDS as readonly string[
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { kind } = await params;
-  return isKind(kind) ? { title: POLICY_TITLES[kind] } : {};
+  if (!isKind(kind)) return {};
+  // W-8 — the first lines of the text as the description.
+  const text = (await cachedSettings()).policies[kind].replace(/\s+/g, " ").trim();
+  const description = text.length > 155 ? `${text.slice(0, 154).trimEnd()}…` : text;
+  return { title: POLICY_TITLES[kind], description: description || undefined, alternates: { canonical: `/policy/${kind}` } };
 }
 
 export default async function PolicyPage({ params }: Props) {

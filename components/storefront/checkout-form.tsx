@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ShoppingBag } from "lucide-react";
@@ -17,6 +17,7 @@ import {
 } from "@/lib/storefront/checkout-shape";
 import { copy } from "@/lib/storefront/copy";
 import { formatTaka } from "@/lib/storefront/format";
+import { trackBrowse, trackOrderPlaced, type PixelData } from "@/lib/storefront/meta-pixel";
 import { DELIVERY_DATE_MODES, DELIVERY_ZONES, OCCASIONS, RECIPIENT_RELATIONS, type DeliveryZoneValue } from "@/lib/order-constants";
 import { BagNotesView } from "./bag-view";
 import { useBagLines, useHydrated } from "./use-bag-lines";
@@ -100,6 +101,25 @@ function Form({
   const total = Math.round((items + (delivery ?? 0)) * 100) / 100;
   const outOfStock = withQty.some((l) => l.stock === "OUT_OF_STOCK");
   const dial = WEB_COUNTRIES.find((c) => c.value === country)?.dial ?? null;
+
+  // W-8 — Meta InitiateCheckout, once, when the form opens with a bag (the server prices the lines itself).
+  const started = useRef(false);
+  useEffect(() => {
+    if (started.current || withQty.length === 0) return;
+    started.current = true;
+    trackBrowse(
+      "InitiateCheckout",
+      {
+        currency: "BDT",
+        value: items,
+        content_ids: withQty.map((l) => l.slug),
+        content_type: "product",
+        contents: withQty.map((l) => ({ id: l.slug, quantity: l.qty, item_price: l.price })),
+        num_items: withQty.reduce((n, l) => n + l.qty, 0),
+      },
+      { items: withQty.map((l, i) => ({ kind: entries[i].kind, slug: entries[i].slug, picks: entries[i].picks, qty: l.qty })) }
+    );
+  }, [withQty, items, entries]);
   const example = WEB_COUNTRIES.find((c) => c.value === country)?.example;
 
   function payload(): OrderRequestInput {
@@ -147,8 +167,15 @@ function Form({
         body: JSON.stringify(body),
         cache: "no-store",
       });
-      const data = (await res.json().catch(() => ({}))) as { link?: string; error?: string; fields?: FieldErrors | null };
+      const data = (await res.json().catch(() => ({}))) as {
+        link?: string;
+        error?: string;
+        fields?: FieldErrors | null;
+        track?: { pixelId: string; event: "Lead"; eventId: string; data: PixelData } | null;
+      };
       if (res.status === 201 && data.link) {
+        // W-8 — Meta Lead in the browser, with the event_id the server's copy carries.
+        trackOrderPlaced(data.track);
         bag.clear();
         router.replace(data.link);
         return;

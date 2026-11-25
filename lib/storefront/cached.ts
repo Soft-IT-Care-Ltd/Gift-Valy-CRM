@@ -1,15 +1,18 @@
 import { unstable_cache } from "next/cache";
 import {
+  getHomeLayout,
   getWebCategory,
   getWebItem,
+  getWebPixelId,
   getWebSettings,
+  listWebAddresses,
   listWebCategories,
   listWebCurrencies,
-  listWebItems,
   relatedWebItems,
 } from "./catalog";
+import { buildHomeView } from "./home-data";
+import type { HomeView } from "./home-types";
 import { STOREFRONT_REVALIDATE_SECONDS, STOREFRONT_TAGS } from "./revalidate";
-import type { WebCard, WebCategory } from "./types";
 
 // ROUND3 W-9 — the website's reads, cached on the server under the tags in
 // ./revalidate.ts (which also says what clears each one). The pages built
@@ -33,37 +36,20 @@ export const cachedItem = unstable_cache((slug: string) => getWebItem(slug), ["s
 
 export const cachedRelated = unstable_cache((slug: string) => relatedWebItems(slug), ["sf-related"], opts(CATALOG));
 
-export type HomeData = {
-  /** The featured categories, or every shown one when none is featured. */
-  categories: WebCategory[];
-  featured: WebCard[];
-  /** The "Customize Chocolate Box" highlight: the first shown item whose print kit asks for photos. */
-  customize: WebCard | null;
-  all: WebCard[];
-};
-
-const HOME_ALL = 24;
-
 /**
- * The home page's sections. Until the home page manager (W-7) exists the
- * order is fixed: banner, categories, featured, the photo-box highlight, all
- * gifts. Cleared with the catalog and when the home page is published.
+ * ROUND3 W-7 — the home page: the PUBLISHED layout from the home page manager
+ * (the starting layout until the first publish), each section resolved
+ * through the gate (./home-data.ts). Cleared when the home page is published
+ * and with the catalog.
  */
 export const cachedHome = unstable_cache(
-  async (): Promise<HomeData> => {
-    const [categories, featured, everything] = await Promise.all([
-      listWebCategories(),
-      listWebItems({ featured: true, take: 12 }),
-      listWebItems({ take: 200 }),
-    ]);
-    const featuredCategories = categories.filter((c) => c.featured);
-    return {
-      categories: featuredCategories.length > 0 ? featuredCategories : categories,
-      featured,
-      customize: everything.find((c) => c.printPhotos > 0) ?? null,
-      all: everything.slice(0, HOME_ALL),
-    };
-  },
+  async (): Promise<HomeView> => buildHomeView(await getHomeLayout("published")),
   ["sf-home"],
   opts([STOREFRONT_TAGS.home, STOREFRONT_TAGS.catalog])
 );
+
+/** ROUND3 W-8 — the Meta Pixel the website loads (null = tracking off). Cleared by Settings → Website → Meta Pixel. */
+export const cachedPixelId = unstable_cache(() => getWebPixelId(), ["sf-pixel"], opts(SETTINGS));
+
+/** ROUND3 W-8 — sitemap.xml: every shown category and item. */
+export const cachedSitemap = unstable_cache(() => listWebAddresses(), ["sf-sitemap"], opts(CATALOG));

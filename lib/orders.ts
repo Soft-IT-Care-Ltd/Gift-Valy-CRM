@@ -30,6 +30,7 @@ import {
 } from "./bom";
 import { loadBomCatalog } from "./bom-db";
 import { generateOrderNumber } from "./order-number";
+import { queuePurchaseOnConfirm } from "./meta/orders";
 import { syncPrintKits } from "./print-kits";
 import {
   PRINT_FILTERS,
@@ -581,6 +582,10 @@ export async function confirmDraftTx(
       data: { status: "CONVERTED", updatedBy: userId },
     });
   }
+  // ROUND3 W-8 — a website order is now a real purchase: queue Meta's
+  // Purchase (server only, once per order). Behind a savepoint — it can never
+  // stop a confirmation; nothing happens for a staff order or with tracking off.
+  if (order.source === "WEBSITE") await queuePurchaseOnConfirm(tx, order.id);
   return { orderNo };
 }
 

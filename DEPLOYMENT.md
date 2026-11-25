@@ -276,6 +276,7 @@ It makes a random password, stores only its hash in `/etc/nginx/giftvaly-staging
 |---|---|---|
 | Steadfast status + payments sync | every 15 minutes | `*/15 * * * *` |
 | Website orders nobody could be given (no active Sales Executive) — dealt out | every 15 minutes | `*/15 * * * *` |
+| Meta Pixel / Conversions API: events still waiting, retries, missed Purchases, old rows dropped (ROUND3 W-8; does nothing while tracking is off) | every 5 minutes | `*/5 * * * *` |
 | Nightly backup (database + uploads + invoices) | 03:00 | `0 21 * * *` |
 | Trash cleanup (orders in the trash 30 days) | 03:30 | `30 21 * * *` |
 | Hourly database backup | 10:00–22:00 | `0 4-16 * * *` |
@@ -284,7 +285,7 @@ It makes a random password, stores only its hash in `/etc/nginx/giftvaly-staging
 install -m 644 -o root -g root /srv/giftvaly/app/deploy/cron/giftvaly /etc/cron.d/giftvaly && install -m 644 /srv/giftvaly/app/deploy/logrotate/giftvaly /etc/logrotate.d/giftvaly && logrotate -d /etc/logrotate.d/giftvaly 2>&1 | tail -3
 ```
 
-While Funnel Liner has Gift Valy suspended, the Steadfast sync keeps running and the trash cleanup and website-orders jobs answer 423 (`cron.log` shows it; it catches up when the shop is open again — GV-7).
+While Funnel Liner has Gift Valy suspended, the Steadfast sync keeps running and the trash cleanup, website-orders and meta-events jobs answer 423 (`cron.log` shows it; it catches up when the shop is open again — GV-7).
 
 Staging has no cron. Its jobs are run by hand **(deploy)**:
 

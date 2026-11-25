@@ -19,6 +19,7 @@ import path from "node:path";
 import { PrismaClient, type Prisma } from "@prisma/client";
 import { prisma as appPrisma } from "../lib/db";
 import * as catalog from "../lib/storefront/catalog";
+import { buildHomeView } from "../lib/storefront/home-data";
 import { applyWebsite, WebsiteInputError } from "../lib/catalog-website";
 import { parseRichText } from "../lib/catalog-website-shape";
 
@@ -84,6 +85,12 @@ const SCANNED = [
   "listWebCurrencies", // W-4 — the optional approx. price
   "publicPhotoFile", // returns a server file path, never sent; checked separately
   "webBagLines", // W-5 — the bag and checkout, re-read
+  "getWebPixelId", // W-8 — the Meta Pixel ID (public), never the token
+  "listWebAddresses", // W-8 — sitemap.xml
+  "getHomeLayout", // W-7 — the layout (with catalog ids) never leaves the server: buildHomeView turns it into public blocks, scanned
+  "webItemsByRefs", // W-7 — hand-picked home page items
+  "webCategoriesByIds", // W-7 — hand-picked category tiles
+  "webCategoryCards", // W-7 — a home section from one category
 ];
 
 // ---------- fixture ----------
@@ -237,10 +244,79 @@ describe("W-3 one public catalog gate — the leak scan", () => {
           ),
         ],
       ];
+      // W-7 / W-8 — the home page, the sitemap, the pixel.
+      const refs = [
+        { kind: "product" as const, id: f.choc.id },
+        { kind: "package" as const, id: f.pkg.id },
+        { kind: "product" as const, id: f.hidden.id },
+        { kind: "product" as const, id: f.carton.id },
+      ];
+      const layout = {
+        version: 1 as const,
+        sections: [
+          { id: "c", kind: "categories" as const, enabled: true, title: "", mode: "HAND" as const, categoryIds: [f.category.id] },
+          { id: "i", kind: "items" as const, enabled: true, title: "", mode: "HAND" as const, refs, categoryId: null, count: 12 },
+          { id: "k", kind: "items" as const, enabled: true, title: "", mode: "CATEGORY" as const, refs: [], categoryId: f.category.id, count: 12 },
+          { id: "p", kind: "photo_box" as const, enabled: true, ref: refs[1] },
+          { id: "a", kind: "all" as const, enabled: true, title: "", count: 24 },
+        ],
+      };
+      outputs.push(
+        ["getWebPixelId", { pixel: await catalog.getWebPixelId(tx) }],
+        ["listWebAddresses", await catalog.listWebAddresses(tx)],
+        ["buildHomeView(published)", await buildHomeView(await catalog.getHomeLayout("published", tx), tx)],
+        ["buildHomeView(draft)", await buildHomeView(await catalog.getHomeLayout("draft", tx), tx)],
+        ["webItemsByRefs", await catalog.webItemsByRefs(refs, tx)],
+        ["webCategoriesByIds", await catalog.webCategoriesByIds([f.category.id], tx)],
+        ["webCategoryCards", await catalog.webCategoryCards(f.category.id, 12, tx)],
+        ["buildHomeView", await buildHomeView(layout, tx)]
+      );
       for (const [label, out] of outputs) {
         assert.ok(out, `${label} returned something`);
         scan(label, JSON.parse(JSON.stringify(out)), f.sentinels);
       }
+      // Hand-picked: in the order chosen; hidden and COMPONENT items drop out.
+      assert.deepEqual(
+        (await catalog.webItemsByRefs(refs, tx)).map((c) => c.name),
+        ["লিকটেস্ট চকলেট", `Leaktest Hamper ${f.tag}`]
+      );
+      const addresses = await catalog.listWebAddresses(tx);
+      const chocSlugNow = await slugOf(tx, "product", f.choc.id);
+      assert.ok(addresses.items.some((i) => i.slug === chocSlugNow));
+      const hiddenSlug = (await tx.product.findUniqueOrThrow({ where: { id: f.hidden.id }, select: { slug: true } })).slug;
+      if (hiddenSlug) assert.ok(!addresses.items.some((i) => i.slug === hiddenSlug), "a hidden item is not in the sitemap");
+    });
+  });
+
+  test("W-8 the pixel: only while switched on with a Pixel ID and a token — and never the token", async () => {
+    await inRollback(async (tx) => {
+      await tx.metaTracking.upsert({
+        where: { id: "meta" },
+        create: { id: "meta", isEnabled: false, pixelId: "112233445566", accessTokenEncrypted: "SENTINEL-TOKEN-CIPHERTEXT" },
+        update: { isEnabled: false, pixelId: "112233445566", accessTokenEncrypted: "SENTINEL-TOKEN-CIPHERTEXT" },
+      });
+      assert.equal(await catalog.getWebPixelId(tx), null, "off → no pixel");
+      await tx.metaTracking.update({ where: { id: "meta" }, data: { isEnabled: true } });
+      assert.equal(await catalog.getWebPixelId(tx), "112233445566");
+      await tx.metaTracking.update({ where: { id: "meta" }, data: { accessTokenEncrypted: null } });
+      assert.equal(await catalog.getWebPixelId(tx), null, "no token → no pixel");
+    });
+  });
+
+  test("W-7 a banner photo is public only while the published page or the draft uses it", async () => {
+    await inRollback(async (tx) => {
+      const file = `banner-${randomUUID()}`;
+      assert.equal(await catalog.publicPhotoFile(file, tx), null);
+      const banner = {
+        id: "b1", enabled: true, text: "Eid", subtext: "", link: "", placeholder: false,
+        desktop: { file: `${file}.webp`, width: 1920, height: 700 }, mobile: { file: `${file}.webp`, width: 1080, height: 1350 },
+        startsAt: null, endsAt: null,
+      };
+      const draft = { version: 1, sections: [{ id: "banners", kind: "banners", enabled: true, items: [banner] }] };
+      await tx.homePage.upsert({ where: { id: "home" }, create: { id: "home", draft }, update: { draft } });
+      assert.match((await catalog.publicPhotoFile(file, tx)) ?? "", new RegExp(`${file}\\.webp$`));
+      const other = `banner-${randomUUID()}`;
+      assert.equal(await catalog.publicPhotoFile(other, tx), null, "a banner no layout uses is a 404");
     });
   });
 });

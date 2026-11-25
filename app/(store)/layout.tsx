@@ -1,9 +1,12 @@
 import type { Metadata, Viewport } from "next";
 import { Baloo_Da_2, Hind_Siliguri } from "next/font/google";
+import { MetaPixel } from "@/components/storefront/meta-pixel";
 import { StoreFooter } from "@/components/storefront/store-footer";
 import { StoreHeader } from "@/components/storefront/store-header";
+import { cachedPixelId } from "@/lib/storefront/cached";
 import { copy } from "@/lib/storefront/copy";
 import { storefrontOrigin } from "@/lib/storefront/hosts";
+import { SHARE_IMAGE } from "@/lib/storefront/seo";
 import "./store.css";
 
 // ROUND3 W-1/W-4 — the public website's root layout: its own fonts, theme
@@ -11,6 +14,10 @@ import "./store.css";
 // PWA registration, service worker) is loaded here, and nothing here reads
 // the staff session. Fonts are self-hosted by next/font (no request to
 // Google from a visitor's phone); both render Bangla product names.
+//
+// W-8: every page's link preview (Facebook, WhatsApp) falls back to the
+// branded 1200 × 630 share image; the Meta Pixel loads only while tracking is
+// on (Settings → Website → Meta Pixel).
 
 const hind = Hind_Siliguri({
   subsets: ["bengali", "latin"],
@@ -28,10 +35,11 @@ const baloo = Baloo_Da_2({
 
 export const metadata: Metadata = {
   metadataBase: new URL(storefrontOrigin()),
-  title: { default: `${copy.brand.name} — gifts delivered anywhere in Bangladesh`, template: copy.meta.titleTemplate },
+  title: { default: copy.meta.homeTitle, template: copy.meta.titleTemplate },
   description: copy.brand.tagline,
   applicationName: copy.brand.name,
-  openGraph: { type: "website", siteName: copy.brand.name, images: [{ url: "/shop/icon.png", width: 512, height: 512 }] },
+  openGraph: { type: "website", siteName: copy.brand.name, locale: "en_US", images: [{ ...SHARE_IMAGE, alt: copy.brand.name }] },
+  twitter: { card: "summary_large_image", images: [SHARE_IMAGE.url] },
   icons: { icon: [{ url: "/shop/icon.png", type: "image/png" }], apple: [{ url: "/shop/icon.png" }] },
   formatDetection: { telephone: false },
 };
@@ -43,13 +51,15 @@ export const viewport: Viewport = {
   viewportFit: "cover",
 };
 
-export default function StoreRootLayout({ children }: { children: React.ReactNode }) {
+export default async function StoreRootLayout({ children }: { children: React.ReactNode }) {
+  const pixelId = await cachedPixelId();
   return (
     <html lang={copy.lang} className={`${hind.variable} ${baloo.variable}`}>
       <body className="flex min-h-screen flex-col antialiased">
         <StoreHeader />
         <main className="flex-1">{children}</main>
         <StoreFooter />
+        <MetaPixel pixelId={pixelId} />
       </body>
     </html>
   );

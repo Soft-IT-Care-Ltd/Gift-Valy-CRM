@@ -218,13 +218,31 @@ describe("W-9 every change the website shows clears its cache", () => {
     }
   });
 
-  test("pages read through the cached gate; search alone reads live", () => {
+  test("pages read through the cached gate; search and the signed home page preview alone read live", () => {
     const pages = walk(path.join(ROOT, "app/(store)")).filter((f) => f.endsWith("page.tsx"));
     for (const f of pages) {
       const src = readFileSync(f, "utf8");
       const direct = src.match(/from "@\/lib\/storefront\/catalog"/);
-      if (direct) assert.ok(f.includes(`${path.sep}search${path.sep}`), `${path.relative(ROOT, f)} reads the catalog uncached`);
+      if (direct) {
+        const live = f.includes(`${path.sep}search${path.sep}`) || f.includes(`${path.sep}preview${path.sep}home${path.sep}`);
+        assert.ok(live, `${path.relative(ROOT, f)} reads the catalog uncached`);
+        if (f.includes(`${path.sep}preview${path.sep}`)) assert.match(src, /export const dynamic = "force-dynamic";/, "the preview is never cached");
+      }
     }
+  });
+
+  // ROUND3 W-7 / W-8 — Settings → Website, the Meta settings and the home page
+  // manager's Publish clear what the website caches, after the commit.
+  test("Settings → Website, Meta and Publish clear the website's cache (and the proxy's Website on/off)", () => {
+    const route = (p: string) => readFileSync(path.join(ROOT, "app/api", p), "utf8");
+    const settings = route("settings/website/route.ts");
+    assert.match(settings, /revalidateStorefrontSettings\(\);\s*forgetWebsiteStatus\(\);/);
+    assert.match(route("settings/website/meta/route.ts"), /revalidateStorefrontSettings\(\)/);
+    assert.match(route("website/home/publish/route.ts"), /publishHomePage\([^)]*\);\s*revalidateStorefrontHome\(\);/);
+    // Saving a draft or discarding it changes nothing on the website: no cache to clear.
+    assert.doesNotMatch(route("website/home/route.ts"), /revalidateStorefront/);
+    // The home page's data is tagged with the home page's tag.
+    assert.match(readFileSync(path.join(ROOT, "lib/storefront/cached.ts"), "utf8"), /\["sf-home"\],\s*opts\(\[STOREFRONT_TAGS\.home, STOREFRONT_TAGS\.catalog\]\)/);
   });
 });
 

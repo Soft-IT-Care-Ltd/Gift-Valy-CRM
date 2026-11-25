@@ -813,6 +813,10 @@ model Order {
   damageLogs            DamageLog[]
   steadfastPaymentItems SteadfastPaymentItem[]
   printKits             OrderPrintKit[]
+  // ROUND3 W-8 — Meta Conversions API: the events sent for this order (Lead,
+  // Purchase) and what was captured at placement for the Purchase.
+  metaEvents            MetaEvent[]
+  metaSignal            MetaOrderSignal?
 
   // List queries filter by scope/status/window and sort by created_at desc —
   // composite indexes keep them fast as data accumulates (SPEC-scale: years).
@@ -1866,4 +1870,91 @@ model OrderPrintCard {
 
   @@unique([kitId, slot])
   @@map("order_print_cards")
+}
+
+// ROUND3 W-7 — the website's home page (one row, id "home"): the sections the
+// home page manager edits, as a DRAFT and as what the website shows
+// (PUBLISHED). Both are checked by one Zod schema (lib/home-page/layout.ts).
+// Until the first publish the website shows the starting layout.
+model HomePage {
+  id           String    @id
+  draft        Json
+  published    Json?
+  publishedAt  DateTime? @map("published_at")
+  publishedBy  Int?      @map("published_by")
+  draftSavedAt DateTime  @default(now()) @map("draft_saved_at")
+  draftSavedBy Int?      @map("draft_saved_by")
+
+  @@map("home_page")
+}
+
+// ROUND3 W-8 — Settings → Website → Meta Pixel (one row, id "meta"). The
+// Conversions API token is encrypted (lib/crypto.ts, like the Steadfast and
+// WhatsApp keys) and never returned to the browser. Nothing is loaded or
+// sent while it is off or the Pixel ID / token is missing.
+model MetaTracking {
+  id                   String   @id @default("meta")
+  isEnabled            Boolean  @default(false) @map("is_enabled")
+  pixelId              String?  @map("pixel_id") @db.VarChar(20)
+  accessTokenEncrypted String?  @map("access_token_encrypted")
+  testEventCode        String?  @map("test_event_code") @db.VarChar(40)
+  updatedBy            Int?     @map("updated_by")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  @@map("meta_tracking")
+}
+
+enum MetaEventStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
+// ROUND3 W-8 — every Conversions API event, exactly as it goes to Meta
+// (user_data already hashed) and Meta's answer. Sent right after the
+// response; the meta-events job retries. An order's events are unique by
+// name, so its Lead and its Purchase go out once whatever retries happen.
+model MetaEvent {
+  id            Int             @id @default(autoincrement())
+  eventName     String          @map("event_name") @db.VarChar(40)
+  // Shared with the browser pixel's copy, so Meta counts the pair once.
+  eventId       String          @map("event_id") @db.VarChar(80)
+  eventTime     DateTime        @map("event_time")
+  pixelId       String          @map("pixel_id") @db.VarChar(20)
+  orderId       Int?            @map("order_id")
+  payload       Json
+  testEventCode String?         @map("test_event_code") @db.VarChar(40)
+  status        MetaEventStatus @default(PENDING)
+  attempts      Int             @default(0)
+  nextAttemptAt DateTime?       @map("next_attempt_at")
+  sentAt        DateTime?       @map("sent_at")
+  response      Json?
+  error         String?         @db.VarChar(500)
+  createdAt     DateTime        @default(now()) @map("created_at")
+  updatedAt     DateTime        @updatedAt @map("updated_at")
+
+  order Order? @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([orderId, eventName])
+  @@index([status, nextAttemptAt])
+  @@index([createdAt])
+  @@map("meta_events")
+}
+
+// ROUND3 W-8 — captured when a website order is placed (tracking on): the
+// sender's hashed phone, name and country, fbp/fbc, IP and browser. The
+// Purchase sent when the SE confirms carries exactly these and the
+// placement time, so Meta can still match it to the ad click.
+model MetaOrderSignal {
+  orderId        Int      @id @map("order_id")
+  userData       Json     @map("user_data")
+  eventSourceUrl String   @map("event_source_url") @db.VarChar(500)
+  placedAt       DateTime @map("placed_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("meta_order_signals")
 }

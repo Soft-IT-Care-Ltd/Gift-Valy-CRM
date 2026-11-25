@@ -4,7 +4,7 @@
 # through Cloudflare; CRON_SECRET is read from the production .env here, so it
 # is never written into a crontab or a cron.d file.
 #
-#   scripts/run-job.sh <steadfast-sync|trash-cleanup>
+#   scripts/run-job.sh <steadfast-sync|trash-cleanup|website-orders|meta-events>
 #
 # While Funnel Liner has the shop suspended, trash-cleanup answers 423 (GV-7)
 # and this exits non-zero: the log shows it, and the purge catches up once
@@ -16,7 +16,7 @@
 set -Eeuo pipefail
 
 JOB="${1:-}"
-[[ "$JOB" =~ ^(steadfast-sync|trash-cleanup|website-orders)$ ]] || { echo "usage: run-job.sh <steadfast-sync|trash-cleanup|website-orders>" >&2; exit 2; }
+[[ "$JOB" =~ ^(steadfast-sync|trash-cleanup|website-orders|meta-events)$ ]] || { echo "usage: run-job.sh <steadfast-sync|trash-cleanup|website-orders|meta-events>" >&2; exit 2; }
 
 ENV_FILE="${GIFTVALY_ENV:-/srv/giftvaly/shared/.env}"
 URL="${GIFTVALY_URL:-http://127.0.0.1:3200}"
