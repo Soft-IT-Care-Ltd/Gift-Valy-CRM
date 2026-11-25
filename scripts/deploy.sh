@@ -86,6 +86,21 @@ done
 for v in SHADOW_DATABASE_URL BOOTSTRAP_ADMIN_NAME BOOTSTRAP_ADMIN_EMAIL BOOTSTRAP_ADMIN_PHONE BOOTSTRAP_ADMIN_PASSWORD; do
   [[ -z "$(env_value "$v")" ]] || die "$v must not be in a server .env"
 done
+# ROUND3 W-10 — the website's names (lib/storefront/hosts.ts). Never this
+# copy's ERP name: every request to it would become the website. Staging's
+# website always says noindex; production's never does.
+ERP_HOST="${PUBLIC_URL#https://}"
+IFS=',' read -ra SF_HOSTS <<< "$(env_value STOREFRONT_HOSTS)"
+for h in "${SF_HOSTS[@]}"; do
+  h="${h// /}"; h="${h,,}"; h="${h%%:*}"
+  [[ "$h" != "$ERP_HOST" ]] || die "STOREFRONT_HOSTS must not name $ERP_HOST — that is the ERP"
+done
+NOINDEX="$(env_value STOREFRONT_NOINDEX)"; NOINDEX="${NOINDEX,,}"
+if (( STAGING )); then
+  [[ ${#SF_HOSTS[@]} -eq 0 || "$NOINDEX" =~ ^(1|true|yes)$ ]] || die "a staging website needs STOREFRONT_NOINDEX=\"1\""
+else
+  [[ ! "$NOINDEX" =~ ^(1|true|yes)$ ]] || die "STOREFRONT_NOINDEX must be empty on production — it hides the website from search engines"
+fi
 
 # ── 1. Pull ───────────────────────────────────────────────────────────────
 log "Fetching $REF"

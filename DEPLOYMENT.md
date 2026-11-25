@@ -5,6 +5,7 @@ The exact commands, in order, for adding Gift Valy to **the server that already 
 | | Production | Staging |
 |---|---|---|
 | Address (people) | `https://dashboard.funnelliner.com` — shared with Antu; Nginx routes by the shop remembered on the device (GV-16) | `https://gv-staging.funnelliner.com` — basic auth, noindex |
+| Website (ROUND3 W-10) | `https://giftvaly.com` (`www.` → 301 to the bare name) — the same app on `:3200`, told apart by the Host header (`STOREFRONT_HOSTS`) | `https://shop-staging.giftvaly.com` — the same staging app on `:3210`, the same basic auth, noindex |
 | Address (machines) | `https://dashboard.funnelliner.com/_c/giftvaly/…`; on the server `http://localhost:3200` | `https://gv-staging.funnelliner.com/_c/giftvaly/…`; on the server `http://localhost:3210` |
 | App | PM2 `giftvaly`, `localhost:3200`, `/srv/giftvaly` | PM2 `giftvaly-staging`, `localhost:3210`, `/srv/giftvaly-staging` |
 | Database | `giftvaly` — roles `giftvaly_owner` / `giftvaly_app` | `giftvaly_staging` — roles `giftvaly_staging_owner` / `giftvaly_staging_app` |
@@ -20,6 +21,8 @@ Commands marked **(root)** run as root through `sudo` from `ssh antu` (the serve
 
 **Order (GV5):** staging first — steps 1–7, 8 (bootstrap), then 7b (the suite needs bootstrap's roles), 9 and 12 (staging) — then the month test (step 14a), then, after the owner's OK, production: steps 10, 11, 8 and 13, and the checklist (step 14b).
 
+**Order (ROUND3 W-10, the website):** staging — owner step 4b, then 6b, a staging deploy (7), the certificate and site file (5c) and the checklist (14c); then, after the owner's OK, production.
+
 ---
 
 ## 0. Before you start
@@ -27,6 +30,7 @@ Commands marked **(root)** run as root through `sudo` from `ssh antu` (the serve
 | You need | State |
 |---|---|
 | DNS `gv-staging.funnelliner.com` — A record to the server, **proxied** (orange cloud) | owner, in Cloudflare |
+| DNS `shop-staging.giftvaly.com` (zone `giftvaly.com`) — A record to the server, **proxied**; nothing in that zone redirecting it — step 4b | owner, in Cloudflare |
 | A read-only GitHub deploy key for `Soft-IT-Care-Ltd/Gift-Valy-CRM` — step 1 | a repository admin adds it |
 | The A7 shared sign-in page (admin repo) and the GV-N Nginx block (Antu repo) built and pushed | both repos |
 | B2 lifecycle rules for the `giftvaly-` prefixes — step 11 | owner, in the B2 web UI |
@@ -123,7 +127,17 @@ No shadow database on the server: `SHADOW_DATABASE_URL` is development only (CLA
       starts_with(http.request.uri.path, "/_next/static/")
       ```
    The Edge TTL choice matters: a device with no remembered shop gets `302 /go/` for every path, `/_next/static/…` included, and that redirect must never be cached (Nginx also sends it with `Cache-Control: no-store`). Never "Cache Everything" in this zone. `staging-shop.funnelliner.com` (Antu's staging website) needs no host entry — the path conditions cover it. Antu's third rule (public images) belongs to the shop's own zone, not this one. Rocket Loader, Email Address Obfuscation and Bot Fight Mode stay off (Antu's SETUP.md §7.5).
-3. Nothing else: Full (strict), Always Use HTTPS and TLS are the zone's. Production needs no new name — it is `dashboard.funnelliner.com`.
+3. Nothing else: Full (strict), Always Use HTTPS and TLS are the zone's. Production's ERP needs no new name — it is `dashboard.funnelliner.com`.
+
+### 4b. Cloudflare — zone `giftvaly.com`, the website (owner, ROUND3 W-10)
+
+The server has one public address, **IPv4 `165.101.188.249`** (no IPv6 — so no AAAA record), and ufw lets only Cloudflare reach 80/443: every website name must be **proxied** (orange cloud), from the start — a grey record would never reach Nginx, not even for the certificate.
+
+1. **DNS:** `shop-staging` — Type **A**, IPv4 `165.101.188.249`, **Proxied**. (Production's `@` and `www` are W-10 Part 2.)
+2. **SSL/TLS → Overview:** **Full (strict)** — Nginx holds a Let's Encrypt certificate for every name. *Flexible* would send Cloudflare to port 80, which only redirects to https: an endless redirect.
+3. **Nothing may redirect the website's names away.** **Rules → Overview** (Redirect Rules, Page Rules, Bulk Redirects) must hold no rule that matches `shop-staging.giftvaly.com` (later `giftvaly.com` / `www`) — a rule for all hostnames or `*.giftvaly.com` catches it, Let's Encrypt's check included. The one rule that stays is **`app.giftvaly.com` → `https://dashboard.funnelliner.com/`** (step 5b), which needs its own proxied `app` record or the zone's wildcard. (On 26 Nov 2026 every name in the zone — `www`, `app`, any other — answered with Cloudflare's own `301 → https://get-entry.to/`, from a proxied `*` record and a zone rule; the apex was a grey record to another server.)
+4. **Caching:** no cache rule is needed in this zone. Cloudflare's default caches only file types (the build's `/_next/static/…`, `/img/…`, `/shop/…`), never the pages: the website's pages send `s-maxage=600` for the app's own cache, and Cloudflare must **not** keep them, or a save in the ERP would wait for the CDN (ROUND3 W-9). **Never "Cache Everything"** in this zone; `/api/shop/…` (bag, checkout, the order) is never cached.
+5. Rocket Loader, Email Address Obfuscation and Bot Fight Mode **off** (they rewrite or block the website's scripts and the order request).
 
 ---
 
@@ -159,6 +173,26 @@ install -m 644 /srv/giftvaly/app/deploy/nginx/giftvaly-legacy-redirect.conf /etc
 
 It answers only with a 301 to `https://dashboard.funnelliner.com/`.
 
+### 5c. The staging website — `shop-staging.giftvaly.com` (ROUND3 W-10) **(root)**
+
+After step 4b. The certificate first, through a port-80-only site (as step 5):
+
+```bash
+printf 'server {\n    listen 80;\n    listen [::]:80;\n    server_name shop-staging.giftvaly.com;\n    include snippets/cloudflare-real-ip.conf;\n    include snippets/acme-challenge.conf;\n    location / { return 404; }\n}\n' > /etc/nginx/sites-available/gv-acme.conf && ln -sf /etc/nginx/sites-available/gv-acme.conf /etc/nginx/sites-enabled/ && nginx -t && systemctl reload nginx
+```
+
+```bash
+certbot certonly --webroot -w /var/www/letsencrypt -d shop-staging.giftvaly.com --agree-tos -m <owner email> --non-interactive
+```
+
+Then the site file, from the staging release, and remove the temporary one:
+
+```bash
+install -m 644 /srv/giftvaly-staging/app/deploy/nginx/giftvaly-shop-staging.conf /etc/nginx/sites-available/ && ln -sf /etc/nginx/sites-available/giftvaly-shop-staging.conf /etc/nginx/sites-enabled/ && rm -f /etc/nginx/sites-enabled/gv-acme.conf /etc/nginx/sites-available/gv-acme.conf && nginx -t && systemctl reload nginx
+```
+
+What it does: `shop-staging.giftvaly.com` → `127.0.0.1:3210`, the same staging app as `gv-staging` (the app shows the website because the name is in `STOREFRONT_HOSTS`, step 6b); `/_c/…` and `/go/…` → 404 (machines use `gv-staging`); port 80 → a 301 to HTTPS; the Cloudflare real IP; `antu-app-proxy.conf` (Host, X-Real-IP, 600 s timeouts) and 12 MB bodies, as the ERP. The same `giftvaly-staging-guard.conf` as `gv-staging`: **the same staging password**, noindex, and a `robots.txt` that disallows everything. The certificate renews like the others (certbot's timer, through the same webroot).
+
 ---
 
 ## 6. The `.env` files **(root, the same shell as step 3)**
@@ -190,7 +224,17 @@ Then the owner copies each file into the password manager, from their own Termin
 
 - Each copy has its **own** `PLATFORM_SECRET` — staging's is never production's.
 - `SHARED_SIGNIN` stays empty until go-live day (step 13), and on staging always: there is no shared sign-in page on `gv-staging`.
-- **Never** in these files: `SHADOW_DATABASE_URL` or `BOOTSTRAP_ADMIN_*`. `scripts/deploy.sh` refuses those, a database or role that isn't this copy's, a `NEXTAUTH_URL`/`INSTANCE_URL` that isn't this copy's, upload or invoice folders other than the two above, a `COURIER_ENCRYPTION_KEY` equal to `NEXTAUTH_SECRET`, and a `PLATFORM_SECRET` equal to `CRON_SECRET`.
+- **Never** in these files: `SHADOW_DATABASE_URL` or `BOOTSTRAP_ADMIN_*`. `scripts/deploy.sh` refuses those, a database or role that isn't this copy's, a `NEXTAUTH_URL`/`INSTANCE_URL` that isn't this copy's, upload or invoice folders other than the two above, a `COURIER_ENCRYPTION_KEY` equal to `NEXTAUTH_SECRET`, a `PLATFORM_SECRET` equal to `CRON_SECRET`, a `STOREFRONT_HOSTS` that names this copy's ERP (`gv-staging.funnelliner.com` / `dashboard.funnelliner.com`), a staging website without `STOREFRONT_NOINDEX="1"`, and production with it.
+
+### 6b. The website's names (ROUND3 W-10) **(deploy)**
+
+The app is the website only for the names in `STOREFRONT_HOSTS` (`lib/storefront/hosts.ts`); every other name is the ERP. Staging — before its first deploy with the website (the build reads the `.env` too), then the deploy reloads it:
+
+```bash
+f=/srv/giftvaly-staging/shared/.env; for kv in 'STOREFRONT_HOSTS="shop-staging.giftvaly.com"' 'STOREFRONT_NOINDEX="1"'; do k=${kv%%=*}; grep -q "^$k=" $f && sed -i "s|^$k=.*|$kv|" $f || echo "$kv" >> $f; done; grep -E '^STOREFRONT_' $f
+```
+
+`STOREFRONT_URL` stays unset: links, the sitemap and share images use `https://<first name>`. A change later (without a deploy): `pm2 reload giftvaly-staging --update-env`.
 
 ---
 
@@ -399,3 +443,12 @@ In this order:
 - [ ] The first nightly and hourly backups land in Backblaze (`backup.log` ends "Backup complete"); the restore drill (step 11) passes and is logged above.
 - [ ] `app.giftvaly.com` redirects to `dashboard.funnelliner.com`.
 - [ ] No test order on production (rule 6): Settings → Funnel Liner shows this month's count = the real orders only.
+
+### 14c. Staging website (ROUND3 W-10)
+
+1. `https://shop-staging.giftvaly.com` asks for the staging password; `/robots.txt` (no password) disallows everything; every response carries `X-Robots-Tag: noindex`.
+2. A product, a package with a choice group (the price follows the pick) and a category page show.
+3. A website order → its receipt `/order/<token>`; in the ERP (`gv-staging`) it is a `DRAFT-…` under Orders → Website with the customer's text.
+4. Confirm it → it gets its `GV-` number and `order_sequences` moves by exactly one (rule 6).
+5. A Packing user prints its invoice from the Packing queue.
+6. On the website name `/login`, `/api/orders`, `/uploads/x`, `/go/`, `/_c/giftvaly/api/platform/usage` are 404; on `gv-staging` the website's paths are 404.

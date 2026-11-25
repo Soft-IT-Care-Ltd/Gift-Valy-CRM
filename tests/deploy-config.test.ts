@@ -63,6 +63,7 @@ describe("Nginx", () => {
   const staging = code(read("deploy/nginx/giftvaly-staging.conf"));
   const guard = code(read("deploy/nginx/snippets/giftvaly-staging-guard.conf"));
   const legacy = code(read("deploy/nginx/giftvaly-legacy-redirect.conf"));
+  const shopStaging = code(read("deploy/nginx/giftvaly-shop-staging.conf"));
   const blocks = (site: string) => site.split(/^server \{/m).slice(1);
 
   test("staging: only gv-staging.funnelliner.com, only to the staging app on :3210", () => {
@@ -78,8 +79,25 @@ describe("Nginx", () => {
     assert.match(staging, /location \/go\/ \{ return 404; \}/);
   });
 
+  test("staging website (ROUND3 W-10): only shop-staging.giftvaly.com, only to the staging app on :3210", () => {
+    assert.deepEqual([...shopStaging.matchAll(/server_name ([^;]+);/g)].map((m) => m[1]), ["shop-staging.giftvaly.com", "shop-staging.giftvaly.com"]);
+    const upstreams = [...shopStaging.matchAll(/proxy_pass (\S+);/g)].map((m) => m[1]);
+    assert.deepEqual(upstreams, ["http://127.0.0.1:3210"]);
+    // Every proxied location passes Host $host and X-Real-IP (antu-app-proxy.conf).
+    assert.equal([...shopStaging.matchAll(/include snippets\/antu-app-proxy\.conf;/g)].length, upstreams.length);
+    // No machine path on the website: /_c/ (even /_c/giftvaly/) and /go/ → 404 (rule 7).
+    assert.match(shopStaging, /location \/_c\/ \{ return 404; \}/);
+    assert.match(shopStaging, /location \/go\/ \{ return 404; \}/);
+    assert.doesNotMatch(shopStaging, /location \/_c\/giftvaly\//);
+    // The same password and noindex as gv-staging, in its HTTPS block; port 80 only redirects.
+    assert.match(blocks(shopStaging)[1], /include snippets\/giftvaly-staging-guard\.conf;/);
+    assert.match(blocks(shopStaging)[1], /ssl_certificate\s+\/etc\/letsencrypt\/live\/shop-staging\.giftvaly\.com\/fullchain\.pem;/);
+    assert.match(blocks(shopStaging)[1], /client_max_body_size 12m;/);
+    assert.match(blocks(shopStaging)[0], /return 301 https:\/\/\$host\$request_uri;/);
+  });
+
   test("every server block takes the real IP from Cloudflare and answers certificate checks", () => {
-    for (const site of [staging, legacy]) {
+    for (const site of [staging, legacy, shopStaging]) {
       assert.equal(blocks(site).length, 2);
       for (const b of blocks(site)) {
         assert.match(b, /include snippets\/cloudflare-real-ip\.conf;/);
@@ -108,10 +126,10 @@ describe("Nginx", () => {
     assert.deepEqual(returns, ["301 https://dashboard.funnelliner.com/", "301 https://dashboard.funnelliner.com/"]);
   });
 
-  test("production has no site file of its own — it is reached through dashboard.funnelliner.com (GV-16)", () => {
+  test("production's ERP has no site file of its own — it is reached through dashboard.funnelliner.com (GV-16)", () => {
     assert.deepEqual(
       readdirSync(path.join(ROOT, "deploy/nginx")).filter((n) => n.endsWith(".conf")).sort(),
-      ["giftvaly-legacy-redirect.conf", "giftvaly-staging.conf"]
+      ["giftvaly-legacy-redirect.conf", "giftvaly-shop-staging.conf", "giftvaly-staging.conf"]
     );
   });
 });
@@ -205,6 +223,13 @@ describe("scripts/deploy.sh (GV-14)", () => {
     for (const v of ["SHADOW_DATABASE_URL", "BOOTSTRAP_ADMIN_PASSWORD", "COURIER_ENCRYPTION_KEY must differ from NEXTAUTH_SECRET", "PLATFORM_SECRET must differ from CRON_SECRET"]) {
       assert.ok(deploy.includes(v), v);
     }
+  });
+  test("the website's names (ROUND3 W-10): never the ERP's own name; noindex on staging, never on production", () => {
+    const c = code(deploy);
+    assert.match(c, /ERP_HOST="\$\{PUBLIC_URL#https:\/\/\}"/);
+    assert.match(c, /\[\[ "\$h" != "\$ERP_HOST" \]\] \|\| die "STOREFRONT_HOSTS must not name/);
+    assert.match(c, /if \(\( STAGING \)\); then\n\s+\[\[ \$\{#SF_HOSTS\[@\]\} -eq 0 \|\| "\$NOINDEX" =~ \^\(1\|true\|yes\)\$ \]\] \|\| die "a staging website needs STOREFRONT_NOINDEX/);
+    assert.match(c, /\[\[ ! "\$NOINDEX" =~ \^\(1\|true\|yes\)\$ \]\] \|\| die "STOREFRONT_NOINDEX must be empty on production/);
   });
   test("only ever runs `prisma migrate deploy` against the database", () => {
     assert.match(code(deploy), /npx prisma migrate deploy/);

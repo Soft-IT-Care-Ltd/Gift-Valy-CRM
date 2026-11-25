@@ -126,6 +126,24 @@ Developer production বসানো, cron, ব্যাকআপ আর Nginx �
 
 ---
 
+## ধাপ ৬ — ওয়েবসাইট (`giftvaly.com`, ROUND3 W-10)
+
+ওয়েবসাইট আর ERP একই সফটওয়্যার, একই server — শুধু নাম আলাদা। Server এর ঠিকানা **IPv4 `165.101.188.249`** (IPv6 নেই, তাই AAAA record লাগবে না)। Server এর firewall শুধু Cloudflare কে ঢুকতে দেয়, তাই ওয়েবসাইটের প্রতিটা নাম **প্রথম থেকেই Proxied (কমলা মেঘ)** হতে হবে।
+
+### ৬.১ — Staging ওয়েবসাইট (`shop-staging.giftvaly.com`)
+
+Cloudflare → zone **`giftvaly.com`**:
+
+1. **DNS → Add record:** Type `A`, Name `shop-staging`, IPv4 `165.101.188.249`, **Proxied চালু** → Save।
+2. **SSL/TLS → Overview:** **Full (strict)**। (*Flexible* হলে পাতা বারবার নিজের দিকেই ঘুরতে থাকবে।)
+3. **Rules → Overview:** এমন কোনো Redirect Rule, Page Rule বা Bulk Redirect থাকা চলবে না যেটা `shop-staging` (বা "সব নাম" / `*.giftvaly.com`) কে অন্য কোথাও পাঠায় — থাকলে certificate ও বানানো যাবে না। শুধু `app.giftvaly.com → dashboard.funnelliner.com` rule টা (ধাপ ৪) থাকবে।
+4. **Caching:** এই zone এ কোনো cache rule লাগবে না। **"Cache Everything" কখনো নয়** — দিলে ERP এ দাম বা ছবি বদলালে ওয়েবসাইটে দেরিতে দেখাবে।
+5. Developer কে জানান। Developer certificate বানিয়ে site চালু করবে।
+
+`https://shop-staging.giftvaly.com` খুললে **staging এর সেই একই পাসওয়ার্ড** চাইবে (ধাপ ২.২), আর Google কে ঢুকতে দেবে না (noindex)।
+
+---
+
 ## শেষে মিলিয়ে নিন
 
 - [ ] নতুন ফোনে `dashboard.funnelliner.com` → নম্বর চাওয়ার পাতা → Gift Valy এর নম্বর দিলে Gift Valy, Antu এর নম্বর দিলে Antu।
