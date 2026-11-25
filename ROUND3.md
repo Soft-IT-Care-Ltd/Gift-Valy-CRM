@@ -45,7 +45,7 @@ How to use this file (for Claude Code):
 | 3 | W1 — Website foundation: host, catalog Website panel, public catalog gate — [DONE] | Gift Valy repo | R3-A |
 | 4 | W2 — Website pages: home, category, product/package, search — [DONE] | Gift Valy repo | W1 |
 | 5 | W3 — Bag, checkout, website orders in the ERP — [DONE] | Gift Valy repo | W2 |
-| 6 | W4 — Settings → Website, home page manager, SEO, Meta Pixel | Gift Valy repo | W3 |
+| 6 | W4 — Settings → Website, home page manager, SEO, Meta Pixel — [DONE] | Gift Valy repo | W3 |
 | 7 | Verify R3 | Gift Valy repo | W4 |
 | 8 | Deploy R3 — staging, then production | Gift Valy repo, on the server via `ssh antu` | Verify R3 |
 
@@ -290,16 +290,55 @@ On the **product form, the package form and the category form**, **Create and Ed
   - **Migration** `20261125300000_w3_website_orders`.
   - **Checked in the browser on dev:** a package with a choice at 375 and 1440 px — bag, checkout, the order, the confirmation page — then the ERP's Website tab, the panel, and Cancel (Fake order). The test order was then trashed.
 
-### W-7. Settings → Website and the home page manager — [OPEN]
+### W-7. Settings → Website and the home page manager — [DONE]
 
 - **Settings → Website** (Admin; audited): website on/off ("Coming soon" page when off), contact phone, WhatsApp (stored 8801…), Messenger page username, Facebook page, office address, delivery times per zone (charges stay where they are), the WhatsApp/Messenger message templates (placeholders `{product} {choices} {price} {link} {order_ref} {total}` — unknown ones refused), policy texts (delivery, refund/return, privacy, terms), order limits, "count website orders for targets", approx. currency display.
 - **Home page manager** (Admin, Manager): sections switched on/off and reordered — banner slider (each banner a **desktop and a mobile** image, link, start/end time), featured categories, featured packages/products, a text block; draft → preview on the real website → publish.
 - A save shows on the **very next page load** (cache cleared on save).
+- **Done (26 Nov 2026, 42a5de4):**
+  - **Settings → Website** (`/settings/website`, `settings.manage`, audited `settings.website` before/after). One schema for the form and `PUT /api/settings/website` (`lib/storefront/settings-form.ts`), stored whole in the `website_settings` row:
+    - WhatsApp typed any way → `8801XXXXXXXXX`; Messenger from a username or any m.me / facebook.com link.
+    - Two templates: product page `{product} {choices} {price} {link}`, confirmation page `{order_ref} {total} {link}` (any other placeholder refused, naming the allowed ones).
+    - Policies up to 20,000 characters (a text holding `[[…]]` refused), limits 1–50 / 1–1000, count for targets, approx. currency, home page title + description (W-8).
+    - The order rules stay out of what the website receives.
+  - **Website off** (`lib/storefront/coming-soon.ts`, from the proxy): every website address is one self-contained holding page with the shop's contacts (503, `Retry-After`, noindex, no-store); `/api/shop/*` 503; `robots.txt` disallows all. A customer's `/order/<link>` and `/img/` stay open. The on/off flag is cached 5 s on `globalThis` (`lib/website-status.ts`) and dropped by every save.
+  - **Home page manager** (Catalog → Website Home Page, new permission `website.home`: Admin + Manager; migration `20261126100000_w4_home_page_meta`). `home_page` row with draft + published, one Zod schema (`lib/home-page/layout.ts`). Sections can be switched on/off, moved, added and removed:
+    - banner slider: up to 8 banners, each with a desktop + mobile photo or a brand-coloured placeholder, a link, and show-from/until (Dhaka);
+    - featured categories (Featured flag, or chosen by hand);
+    - featured items (Featured flag / by hand / from one category);
+    - the Customize Chocolate Box highlight (auto or chosen);
+    - a text block (`**bold**`, lists, an optional button);
+    - all gifts, and the promises strip.
+  - **Draft, preview, publish:** "Save draft" changes nothing on the website. "Preview" opens the saved draft on the real website through an HMAC-signed link valid 2 h (`/preview/home?t=…`; never cached, noindex, no Meta event). "Publish" is audited `website.home.publish` and clears `sf:home`. "Discard changes" goes back to the published page. Until the first publish the website shows the starting layout (the W-4 page).
+  - **Banners:** photos are re-encoded to WebP with EXIF stripped (desktop ≥1000 px wide, ≤1920 × 1200; mobile ≥600, ≤1080 × 1600) and served at `/img/banner-<uuid>-<720|1080|1600>.webp` only while the draft or published page uses them. The slider swipes on a phone, has arrows and dots on a computer, and turns every 6 s unless touched or the visitor asks for reduced motion. Start/end times are re-checked in the browser, so no refresh job is needed.
+  - **Checked on a production build:** a cache HIT, then a Settings save or a Publish makes the very next load a MISS showing the change. Website off shows the holding page on the next load. The preview at 375 px uses the mobile photo with no sideways scroll. A banner no layout uses is a 404. The dev data was put back afterwards (empty Meta row left in `meta_tracking`; the home page is published as the starting layout).
+  - **Tests:** `npm run test:website-home` (11). `test:storefront` gains the Coming soon cases and the ERP noindex header; `test:storefront-pages` gains the cache-clearing pins.
 
-### W-8. SEO and Meta Pixel — [OPEN]
+### W-8. SEO and Meta Pixel — [DONE]
 
 - Titles, descriptions, Open Graph images (Facebook / WhatsApp link previews) per page; `sitemap.xml` (only shown items) and `robots.txt` on the website host; the ERP host stays `noindex`.
 - **Meta Pixel + Conversions API** (Settings → Website: Pixel ID, CAPI token — the token stored encrypted, never shown again): ViewContent, AddToCart, InitiateCheckout, and **Lead** when a website order is placed (it isn't a purchase until confirmed); one `event_id` per browser + server pair; value from the database; phone only hashed. Nothing fires while they are unset.
+- **Done (26 Nov 2026, 42a5de4):**
+  - **SEO:** title, description, canonical, Open Graph and Twitter card on every page. Item and category pages use their first photo at 1080 px; everything else uses the branded 1200 × 630 `public/shop/og.png`. The home page title and description come from Settings → Website. Policy pages take their first 155 characters as the description. Product/package pages carry Product JSON-LD (name, photos, BDT price, In stock / Out of stock — in the leak scan).
+  - **`/sitemap.xml`:** home, shown categories, shown items with a date-only lastmod, and the policies that have text (gate `listWebAddresses`).
+  - **`/robots.txt`:** disallows bag, checkout, order, api, search and preview; under `STOREFRONT_NOINDEX` or Website off it disallows everything.
+  - **ERP host:** `X-Robots-Tag: noindex, nofollow` on every answer.
+  - **Meta Pixel + Conversions API:** Settings → Website → Meta card, `settings.manage`.
+    - Settings: Pixel ID, a CAPI token encrypted with `encryptSecret` (shown only as `****…abc`; the audit says only "token changed"), a test event code, "Send test event", and an event log of the last 30 with Meta's answer.
+    - Switching on needs the ID, the token and a live privacy policy. The privacy policy can't be emptied while tracking is on.
+    - Tables: `meta_tracking`, `meta_events` (unique order + event name), `meta_order_signals`.
+  - **Events:** each fires in the browser and on the server with one `event_id`.
+    - PageView on every page except `/order/` and `/preview/`.
+    - ViewContent on an item page.
+    - AddToCart on Add to bag / Buy now.
+    - InitiateCheckout when the checkout opens.
+    - The server copy (`POST /api/shop/meta`: same-site, ≤4 KB, bots dropped, 60/min/IP, always 204) is priced through the catalog gate (`getWebItem`, `webBagLines`), never the browser.
+    - **Lead** when a website order is placed: `<W-ref>.lead`. The server queues it after the commit (`queueOrderLead`), and the 201 carries `track` so the checkout fires the same id. Value = the order total from the database.
+    - **Purchase** when `confirmDraftTx` confirms a website order: server only, `<W-ref>.purchase`, once, behind a savepoint. It carries the placement capture and the placement time, so Meta can still match the ad click; not sent if confirmed more than 7 days after placement. The `meta-events` sweep catches one missed while tracking was off.
+  - **Hashing:** `user_data` is made only by `buildUserData()` (`lib/meta/user-data.ts`): the SENDER's WhatsApp (country code, digits), first/last name and ISO country, SHA-256; a hashed customer id; fbp/fbc only when they look like Meta's own; IP and browser. The recipient's name, phone and address, and the note, are never read. The browser pixel is `init(pixelId)` only — no advanced matching. `event_source_url` drops the query, and the private order link goes as `/order`.
+  - **Sending:** events are sent after the response (`after()`). The `meta-events` cron runs every 5 min (`deploy/cron/giftvaly`, DEPLOYMENT.md §10): it retries at 1/5/15/60/180 min and then marks Failed, and keeps browsing events 30 days, order events 180 and the placement capture 30. When tracking is off nothing loads, nothing is queued, and anything still waiting is marked Skipped rather than sent later.
+  - **Tests:** `npm run test:meta` (9), with a fake transport, so Meta is never reached. It places an order with sentinel sender/recipient names, phones, address and note, then walks every queued row, every body sent and the browser event: no spelling of either phone, no name, no address and no note appear, and `ph`/`fn`/`ln`/`country` equal the SHA-256 of the normalised values. Also covered: one event_id per pair, database prices, Purchase once, retry → Failed, off → nothing, and the token never returned or audited. `test:storefront-catalog` scans the new gate reads (`getWebPixelId` never the token).
+  - **For W-10 / the owner:** the preview link, sitemap, canonical and share-image URLs use `STOREFRONT_URL`, else `https://<first STOREFRONT_HOSTS entry>` — list `giftvaly.com` first in production. The owner pastes the Pixel ID and token into Settings themselves, after putting the privacy policy on the website.
 
 ### W-9. Caching — [DONE]
 
