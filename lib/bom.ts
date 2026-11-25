@@ -633,6 +633,8 @@ export interface ChoiceGroupInfo {
   qty: number; // per one root package (line qty × parent multipliers)
   /** Path of package names from the root (["Probashi Combo", "Chocolate Box"]). */
   path: string[];
+  /** The same path as package ids (the website shows each one's website name). */
+  pathIds: number[];
   options: { productId: number; isDefault: boolean; extraPrice: number }[];
 }
 
@@ -662,6 +664,7 @@ export function collectChoiceGroups(
         label: line.choiceLabel ?? "Choose one",
         qty: line.qty * multiplier,
         path,
+        pathIds: [...chain, packageId].slice(1),
         options: line.options.map((o) => ({
           productId: o.productId,
           isDefault: o.isDefault,

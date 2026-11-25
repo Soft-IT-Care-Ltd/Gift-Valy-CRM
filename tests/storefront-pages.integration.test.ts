@@ -273,6 +273,16 @@ describe("W-4 settings, message, money", () => {
     assert.equal(withChoices, "Hi Gift Valy! I'd like to order:\nMoharani Saree Package\nSaree Colour: red saree\nPrice: ৳2,800\nhttps://giftvaly.com/p/moharani");
     const plain = fillTemplate(DEFAULT_PRODUCT_MESSAGE, { product: "Cake", choices: "", price: "৳900", link: "https://giftvaly.com/p/cake" });
     assert.ok(!plain.includes("\n\n"));
+    // Verify R3 — a one-line template keeps the line when {choices} is empty.
+    const oneLine = "Hi, I want {product} ({choices}) for {price} {link}";
+    assert.equal(
+      fillTemplate(oneLine, { product: "Cake", choices: "", price: "৳900", link: "https://giftvaly.com/p/cake" }),
+      "Hi, I want Cake for ৳900 https://giftvaly.com/p/cake"
+    );
+    assert.equal(
+      fillTemplate(oneLine, { product: "Saree", choices: "Colour: red", price: "৳900", link: "L" }),
+      "Hi, I want Saree (Colour: red) for ৳900 L"
+    );
     assert.deepEqual(unknownPlaceholders("{product} {colour} {price}"), ["{colour}"]);
   });
 

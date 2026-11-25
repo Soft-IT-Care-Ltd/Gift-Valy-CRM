@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { withdrawInactiveOptions } from "./inactive-options";
 import { prisma } from "@/lib/db";
 import { loadBomCatalog } from "@/lib/bom-db";
 import {
@@ -10,6 +11,7 @@ import {
   productAvailability,
   productPrintKitNeeds,
   type BomCatalog,
+  type ChoiceGroupInfo,
   type PrintKitNeed,
 } from "@/lib/bom";
 import { printKitPhotoCount } from "@/lib/print-kit";
@@ -90,15 +92,16 @@ const money = (d: Prisma.Decimal | number | null): number | null => (d == null ?
  */
 async function sellableCatalog(db: Db): Promise<BomCatalog> {
   await ensureWebsiteSlugs(db);
-  const [catalog, reserved] = await Promise.all([
+  const [catalog, reserved, inactiveOptions] = await Promise.all([
     loadBomCatalog(db),
     db.product.findMany({ where: { reservedQty: { gt: 0 } }, select: { id: true, reservedQty: true } }),
+    db.product.findMany({ where: { isActive: false, choiceOptions: { some: {} } }, select: { id: true } }),
   ]);
   for (const r of reserved) {
     const p = catalog.products.get(r.id);
     if (p) catalog.products.set(r.id, { ...p, stockQty: Math.max(0, p.stockQty - r.reservedQty) });
   }
-  return catalog;
+  return withdrawInactiveOptions(catalog, inactiveOptions.map((p) => p.id));
 }
 
 /** Photos and cards a print kit asks the customer for — one item, these picks. */
@@ -743,11 +746,12 @@ type Names = { products: Map<number, { name: string; photo: string | null }>; pa
 
 async function itemNames(db: Db, catalog: BomCatalog): Promise<Names> {
   const [products, packages] = await Promise.all([
-    db.product.findMany({ where: { id: { in: [...catalog.products.keys()] } }, select: { id: true, name: true, websiteName: true, photos: true } }),
+    db.product.findMany({ where: { id: { in: [...catalog.products.keys()] } }, select: { id: true, name: true, websiteName: true, photos: true, isActive: true } }),
     db.package.findMany({ where: { id: { in: [...catalog.packages.keys()] } }, select: { id: true, name: true, websiteName: true } }),
   ]);
   return {
-    products: new Map(products.map((p) => [p.id, { name: p.websiteName || p.name, photo: p.photos[0] ?? null }])),
+    // An inactive product's photo is never served (/img), so it gets the placeholder.
+    products: new Map(products.map((p) => [p.id, { name: p.websiteName || p.name, photo: p.isActive ? (p.photos[0] ?? null) : null }])),
     packages: new Map(packages.map((p) => [p.id, p.websiteName || p.name])),
   };
 }
@@ -758,13 +762,23 @@ async function itemNames(db: Db, catalog: BomCatalog): Promise<Names> {
  * function), never re-derived: the page's live total is price + Σ deltas.
  */
 function choiceGroupsOf(catalog: BomCatalog, packageId: number, names: Names, defaultPrice: number): WebChoiceGroup[] {
-  const groups = tryBom(() => collectChoiceGroups(catalog, packageId)) ?? [];
+  // One sub-package used at two places in the tree lists its group twice, but
+  // one pick (keyed by the group) serves both: show it once, its pieces added
+  // up — else the page's live total would count each option's delta twice.
+  const merged = new Map<number, ChoiceGroupInfo>();
+  for (const g of tryBom(() => collectChoiceGroups(catalog, packageId)) ?? []) {
+    const seen = merged.get(g.groupId);
+    if (seen) merged.set(g.groupId, { ...seen, qty: seen.qty + g.qty });
+    else merged.set(g.groupId, g);
+  }
+  const groups = [...merged.values()];
   const base = kitCounts(tryBom(() => packagePrintKitNeeds(catalog, packageId)));
   return groups.map((g) => ({
     key: g.groupId,
     label: g.label,
     qty: g.qty,
-    path: g.path.map((pkgName) => pkgName),
+    // Website names: a sub-package's ERP name may carry internal codes.
+    path: g.pathIds.map((id, i) => names.packages.get(id) ?? g.path[i]),
     options: g.options.map((o) => {
       const p = names.products.get(o.productId);
       const name = p?.name ?? "Option";

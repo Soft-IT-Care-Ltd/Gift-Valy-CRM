@@ -1472,7 +1472,12 @@ export function OrdersListClient({
           <TableBody>
             {orders.map((o) => {
               const hasNote = !!(o.notes || o.invoiceNote || o.courierNote);
-              const rowTargets = isTrashTab ? [] : eligibleTargets(o.status);
+              // A website draft is cancelled from its Website panel, with a reason.
+              const rowTargets = isTrashTab
+                ? []
+                : eligibleTargets(o.status).filter(
+                    (to) => !(to === "CANCELLED" && o.status === "DRAFT" && o.source === "WEBSITE")
+                  );
               const itemsTitle = o.items
                 .map((it) => `${it.qty}× ${it.name}`)
                 .join(", ");

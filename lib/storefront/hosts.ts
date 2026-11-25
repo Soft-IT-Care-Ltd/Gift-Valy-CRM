@@ -20,9 +20,10 @@ export const STOREFRONT_STATIC_PREFIX = "/shop/";
 
 /** Host header → bare lower-case host name ("Shop.Localhost:3000" → "shop.localhost"). */
 export function hostOnly(host: string): string {
-  const h = host.trim().toLowerCase().replace(/\.$/, "");
+  const h = host.trim().toLowerCase();
   if (h.startsWith("[")) return h.slice(0, h.indexOf("]") + 1);
-  return h.split(":")[0];
+  // Port first, then the root dot: "giftvaly.com.:443" → "giftvaly.com".
+  return h.split(":")[0].replace(/\.$/, "");
 }
 
 /** The website's host names, from STOREFRONT_HOSTS. */

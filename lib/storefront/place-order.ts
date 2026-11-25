@@ -12,7 +12,8 @@ import {
   type BomCatalog,
   type StoredChoiceSelection,
 } from "@/lib/bom";
-import { nextDraftNo } from "@/lib/draft-number";
+import { isDraftNo, nextDraftNo } from "@/lib/draft-number";
+import { withdrawInactiveOptions } from "./inactive-options";
 import { dbDate, dhakaDateBound, type DeliveryZoneValue } from "@/lib/order-constants";
 import { normalizePrintKit, printKitPhotoCount } from "@/lib/print-kit";
 import { syncPrintKits } from "@/lib/print-kits";
@@ -121,8 +122,15 @@ async function placeInTx(tx: Tx, input: CheckedOrderRequest, ctx: Ctx): Promise<
   const { now, websiteUserId } = ctx;
 
   // 1. One number, then one IP, at a time — so the hourly limits can't be raced.
-  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`website-order:phone:${input.whatsapp}`}))`;
-  if (ctx.ip) await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`website-order:ip:${ctx.ip}`}))`;
+  // Verify R3 — TRY the lock and answer 429 when it's held, never queue: a
+  // request waiting on a lock holds one of the pool's few connections, so a
+  // burst from one address could starve the staff's ERP.
+  const lock = async (key: string) => {
+    const [row] = await tx.$queryRaw<{ ok: boolean }[]>`SELECT pg_try_advisory_xact_lock(hashtext(${key})) AS ok`;
+    if (!row?.ok) throw new WebsiteOrderError(copy.api.busy, 429);
+  };
+  await lock(`website-order:phone:${input.whatsapp}`);
+  if (ctx.ip) await lock(`website-order:ip:${ctx.ip}`);
 
   // 2. The limits. Trashed orders count too (mentioning deletedAt opts out of the trash filter).
   const hourAgo = new Date(now.getTime() - 3_600_000);
@@ -337,7 +345,12 @@ async function priceFromDatabase(
           select: { id: true, slug: true, name: true, websiteName: true, ...delivery },
         })
       : [],
-    loadBomCatalog(tx),
+    loadBomCatalog(tx).then(async (catalog) =>
+      withdrawInactiveOptions(
+        catalog,
+        (await tx.product.findMany({ where: { isActive: false, choiceOptions: { some: {} } }, select: { id: true } })).map((p) => p.id)
+      )
+    ),
     tx.product.findMany({ where: { reservedQty: { gt: 0 } }, select: { id: true, reservedQty: true } }),
   ]);
   // What can still be sold: stock minus what confirmed orders hold (as the website shows it).
@@ -511,6 +524,17 @@ export async function websiteOrderByToken(token: string, db: Db = prisma): Promi
     },
   });
   if (!o) return null;
+  // A pick is saved with the ERP name; the customer saw the website name.
+  type SavedPick = { label?: unknown; name?: unknown; productId?: unknown };
+  const picksOf = (json: unknown): SavedPick[] => (Array.isArray(json) ? (json as SavedPick[]) : []);
+  const pickIds = [...new Set(o.items.flatMap((i) => picksOf(i.choiceSelections).map((c) => c.productId)).filter((id): id is number => typeof id === "number"))];
+  const webNames = new Map(
+    pickIds.length === 0
+      ? []
+      : (await db.product.findMany({ where: { id: { in: pickIds } }, select: { id: true, websiteName: true } }))
+          .filter((p) => p.websiteName)
+          .map((p) => [p.id, p.websiteName!] as const)
+  );
   const paid = round2(
     o.payments.reduce((s, p) => (p.isRejected ? s : s + (p.type === "REFUND" ? -Number(p.amount) : Number(p.amount))), 0)
   );
@@ -535,7 +559,8 @@ export async function websiteOrderByToken(token: string, db: Db = prisma): Promi
   }
   return {
     ref: o.webRef ?? "",
-    number: o.status === "DRAFT" ? null : o.orderNo,
+    // A DRAFT number is never shown — not even on a cancelled draft (those numbers are reused).
+    number: isDraftNo(o.orderNo) ? null : o.orderNo,
     state,
     stepsDone,
     placedAt: o.createdAt.toISOString(),
@@ -545,9 +570,10 @@ export async function websiteOrderByToken(token: string, db: Db = prisma): Promi
       qty: i.qty,
       unitPrice: Number(i.unitPrice),
       lineTotal: Number(i.lineTotal),
-      choices: Array.isArray(i.choiceSelections)
-        ? (i.choiceSelections as { label?: unknown; name?: unknown }[]).map((c) => ({ label: String(c.label ?? ""), name: String(c.name ?? "") }))
-        : [],
+      choices: picksOf(i.choiceSelections).map((c) => ({
+        label: String(c.label ?? ""),
+        name: (typeof c.productId === "number" && webNames.get(c.productId)) || String(c.name ?? ""),
+      })),
     })),
     subtotal: Number(o.subtotal),
     discount: Number(o.discount),

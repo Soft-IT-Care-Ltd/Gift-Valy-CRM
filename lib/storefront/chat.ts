@@ -19,14 +19,17 @@ export function unknownPlaceholders(template: string): string[] {
 }
 
 /**
- * The template filled in. A line whose placeholder has nothing to say (no
- * choices on a plain product) is left out whole, so the message never reads
- * "Choices: ".
+ * The template filled in. A line whose only placeholders have nothing to say
+ * (no choices on a plain product) is left out whole, so the message never
+ * reads "Choices: ". A line that also carries a filled placeholder is kept,
+ * with the empty one (and brackets it leaves empty) taken out — a one-line
+ * template must never turn into an empty message.
  */
 export function fillTemplate(template: string, values: MessageValues): string {
   const kept: string[] = [];
   for (const line of template.replace(/\r\n?/g, "\n").split("\n")) {
     let empty = false;
+    let filledAny = false;
     const filled = line.replace(PLACEHOLDER, (whole, key: string) => {
       if (!(MESSAGE_PLACEHOLDERS as readonly string[]).includes(key)) return whole;
       const v = values[key as MessagePlaceholder];
@@ -34,9 +37,19 @@ export function fillTemplate(template: string, values: MessageValues): string {
         empty = true;
         return "";
       }
+      filledAny = true;
       return v;
     });
     if (!empty) kept.push(filled);
+    else if (filledAny) {
+      kept.push(
+        filled
+          .replace(/\(\s*\)|\[\s*\]/g, "")
+          .replace(/[ \t]{2,}/g, " ")
+          .replace(/\s+([,.;:!?])/g, "$1")
+          .trim()
+      );
+    }
   }
   return kept.join("\n").trim();
 }

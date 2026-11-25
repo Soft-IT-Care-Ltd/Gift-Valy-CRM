@@ -121,11 +121,13 @@ async function main() {
         all.avgOrderValue === round2(all.salesValue / all.salesOrders)
     );
 
-    // Packages: only from non-lost orders.
+    // Packages: only from non-lost orders. The report leaves trashed orders
+    // out (lib/db's filter); a relation filter isn't auto-filtered, so say it
+    // here — else one trashed test order on dev fails this check.
     const pkgLines = await prisma.orderItem.findMany({
       where: {
         itemType: "PACKAGE",
-        order: { ...inRange, status: { notIn: NOT_SALE } },
+        order: { ...inRange, status: { notIn: NOT_SALE }, deletedAt: null },
       },
       select: { qty: true, lineTotal: true },
     });

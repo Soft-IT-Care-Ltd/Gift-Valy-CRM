@@ -132,6 +132,9 @@ export async function cancelWebsiteOrder(
   tx: Tx,
   input: { orderId: number; reason: WebsiteCancelReason; userId: number }
 ): Promise<{ ref: string }> {
+  // Verify R3 — wait for a confirmation in flight, then read its outcome
+  // (never cancel an order that just got its GV number).
+  await tx.$queryRaw`SELECT id FROM orders WHERE id = ${input.orderId} FOR UPDATE`;
   const order = await tx.order.findUnique({
     where: { id: input.orderId },
     select: { status: true, source: true, deletedAt: true, cancelReason: true, leadId: true, webRef: true },

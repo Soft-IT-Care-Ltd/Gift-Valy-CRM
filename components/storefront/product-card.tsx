@@ -33,7 +33,7 @@ export function ProductCard({ item, priority = false }: { item: WebCard; priorit
         </p>
         <p className="mt-auto flex flex-wrap items-baseline gap-x-2 text-[16px] font-bold text-navy">
           {formatTaka(item.price)}
-          {item.compareAtPrice ? <s className="text-[13px] font-normal text-muted">{formatTaka(item.compareAtPrice)}</s> : null}
+          {item.compareAtPrice && item.compareAtPrice > item.price ? <s className="text-[13px] font-normal text-muted">{formatTaka(item.compareAtPrice)}</s> : null}
         </p>
       </div>
     </Link>

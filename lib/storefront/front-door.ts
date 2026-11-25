@@ -52,6 +52,23 @@ function withErpHeaders(res: NextResponse): NextResponse {
   return res;
 }
 
+/**
+ * Verify R3 — next.config.ts sets skipTrailingSlashRedirect, because Next's
+ * own "/x/ → /x" 308 ran BEFORE this proxy: /go/ and /_c/ on the website host
+ * answered a redirect instead of rule 7's plain 404. The proxy refuses what it
+ * refuses first, then gives every other path the same 308 Next gave (same
+ * origin, query kept — Next sends a same-origin Location as a relative one;
+ * a proxy redirect must be built from an absolute URL), so nothing else
+ * changes on either host.
+ */
+function trailingSlashRedirect(nextUrl: URL): NextResponse | null {
+  const { pathname } = nextUrl;
+  if (pathname.length <= 1 || !pathname.endsWith("/")) return null;
+  const to = new URL(nextUrl.toString());
+  to.pathname = pathname.replace(/\/+$/, "") || "/";
+  return NextResponse.redirect(to, 308);
+}
+
 export async function frontDoor(
   req: { method: string; nextUrl: URL; headers: Headers },
   readState: ReadState = getPlatformState,
@@ -63,6 +80,8 @@ export async function frontDoor(
   if (isStorefrontHost(req.headers.get("host"), storefrontHostsEnv)) {
     const route = storefrontRoute(pathname);
     if (!route) return withStorefrontHeaders(notFound());
+    const slash = trailingSlashRedirect(req.nextUrl);
+    if (slash) return withStorefrontHeaders(slash);
     if ("pass" in route) return withStorefrontHeaders(NextResponse.next());
     const closed = comingSoonResponse(pathname, await readWebsiteStatus());
     if (closed) return withStorefrontHeaders(closed);
@@ -72,6 +91,8 @@ export async function frontDoor(
   }
 
   if (isStorefrontInternalPath(pathname)) return withErpHeaders(notFound());
+  const slash = trailingSlashRedirect(req.nextUrl);
+  if (slash) return withErpHeaders(slash);
   const locked = await billingLockGate(req.method, req.nextUrl, readState);
   return withErpHeaders(locked ?? NextResponse.next());
 }

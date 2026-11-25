@@ -167,15 +167,80 @@ export async function validatePackageBomInput(
   return null;
 }
 
-// Replace a package's BOM lines (and their options) with `items`. Runs inside
+// Make a package's BOM lines (and their options) equal `items`. Runs inside
 // the caller's transaction, AFTER validatePackageBomInput passed.
+//
+// Verify R3 — lines are updated IN PLACE, never re-issued: a CHOICE line's id
+// is the choice group's id in every saved pick (order_items.choice_selections
+// groupId, the frozen extra prices R3-2 keeps on edits, the website's bag
+// keys). The package form always sends the whole BOM, so re-creating the lines
+// on every save (even a rename) used to orphan every pending order's picks:
+// edits, the pick list and the invoice fell back to the default variant and a
+// re-pick charged today's extra on top of the one already sold.
+// Matching: a product line by its product, a sub-package line by its package,
+// a choice group by its label, else (a renamed group) by sharing an option.
+// Lines no longer in the BOM are deleted; new ones are created.
 export async function writePackageItems(
   tx: Tx,
   packageId: number,
   items: PackageItemInput[]
 ) {
-  await tx.packageItem.deleteMany({ where: { packageId } });
-  for (const it of items) {
+  const existing = await tx.packageItem.findMany({
+    where: { packageId },
+    include: { options: { select: { productId: true } } },
+    orderBy: { id: "asc" },
+  });
+  const taken = new Set<number>();
+  const take = (pred: (e: (typeof existing)[number]) => boolean) => {
+    const hit = existing.find((e) => !taken.has(e.id) && pred(e));
+    if (hit) taken.add(hit.id);
+    return hit?.id;
+  };
+  const label = (s: string | null | undefined) => (s ?? "").trim().toLowerCase();
+  const keep: (number | undefined)[] = items.map((it) =>
+    it.kind === "PRODUCT"
+      ? take((e) => e.kind === "PRODUCT" && e.productId === it.productId)
+      : it.kind === "PACKAGE"
+        ? take((e) => e.kind === "PACKAGE" && e.childPackageId === it.childPackageId)
+        : take((e) => e.kind === "CHOICE" && label(e.choiceLabel) === label(it.choiceLabel))
+  );
+  items.forEach((it, i) => {
+    if (keep[i] !== undefined || it.kind !== "CHOICE") return;
+    const wanted = new Set((it.options ?? []).map((o) => o.productId));
+    keep[i] = take((e) => e.kind === "CHOICE" && e.options.some((o) => wanted.has(o.productId)));
+  });
+
+  // Removed lines go first, so a product moved between lines can't clash
+  // with @@unique([packageId, productId]).
+  await tx.packageItem.deleteMany({
+    where: { packageId, id: { notIn: keep.filter((id): id is number => id !== undefined) } },
+  });
+  for (const [i, it] of items.entries()) {
+    const id = keep[i];
+    if (id === undefined) continue;
+    await tx.packageItem.update({
+      where: { id },
+      data: { qty: it.qty, choiceLabel: it.kind === "CHOICE" ? it.choiceLabel?.trim() : null },
+    });
+    if (it.kind !== "CHOICE") continue;
+    const options = it.options ?? [];
+    await tx.packageItemOption.deleteMany({
+      where: { packageItemId: id, productId: { notIn: options.map((o) => o.productId) } },
+    });
+    for (const o of options) {
+      const data = {
+        isDefault: !!o.isDefault,
+        extraPrice: Math.round((o.extraPrice ?? 0) * 100) / 100,
+      };
+      await tx.packageItemOption.upsert({
+        where: { packageItemId_productId: { packageItemId: id, productId: o.productId } },
+        create: { packageItemId: id, productId: o.productId, ...data },
+        update: data,
+      });
+    }
+  }
+  for (const [i, it] of items.entries()) {
+    if (keep[i] !== undefined) continue;
     await tx.packageItem.create({
       data: {
         packageId,

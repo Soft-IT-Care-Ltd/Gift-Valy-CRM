@@ -105,7 +105,7 @@ const ERP_PATHS = [
 describe("W-1 host matching (STOREFRONT_HOSTS)", () => {
   test("names from the env, port, case and trailing dot ignored", () => {
     assert.deepEqual(storefrontHosts(HOSTS), ["giftvaly.test", "www.giftvaly.test", "shop-staging.giftvaly.test"]);
-    for (const h of ["giftvaly.test", "GiftValy.Test", "giftvaly.test:443", "www.giftvaly.test", "shop-staging.giftvaly.test:3210", "giftvaly.test."])
+    for (const h of ["giftvaly.test", "GiftValy.Test", "giftvaly.test:443", "www.giftvaly.test", "shop-staging.giftvaly.test:3210", "giftvaly.test.", "giftvaly.test.:443"])
       assert.equal(isStorefrontHost(h, HOSTS), true, h);
     for (const h of [ERP, "evil-giftvaly.test", "giftvaly.test.evil.test", "localhost:3000", "", null, undefined])
       assert.equal(isStorefrontHost(h, HOSTS), false, String(h));
@@ -204,11 +204,38 @@ describe("W-1 website host", () => {
 
   test("/go/ and /_c/ are Funnel Liner's: a plain 404, never rewritten", async () => {
     const { read } = reader("active");
-    for (const p of ["/go/x", "/go", "/_c/giftvaly/api/webhooks/steadfast", "/_c", "/%5Fc/x"]) {
+    for (const p of ["/go/x", "/go", "/go/", "/_c/", "/_c/giftvaly/api/webhooks/steadfast", "/_c", "/%5Fc/x"]) {
       const res = await frontDoor(request(WEBSITE, p), read, HOSTS, OPEN);
       assert.equal(res.status, 404, p);
       assert.equal(rewriteOf(res), null, p);
+      assert.equal(res.headers.get("location"), null, `${p}: never a redirect`);
     }
+  });
+
+  test("Verify R3 — a trailing slash: the same 308 Next made (same origin, query kept), after the 404s", async () => {
+    const { read } = reader("active");
+    for (const [host, p, to] of [
+      [WEBSITE, "/bag/", "/bag"],
+      [WEBSITE, "/p/moharani/?ref=fb", "/p/moharani?ref=fb"],
+      [ERP, "/orders/", "/orders"],
+      [ERP, "/api/orders//", "/api/orders"],
+    ] as const) {
+      const res = await frontDoor(request(host, p), read, HOSTS, OPEN);
+      assert.equal(res.status, 308, `${host}${p}`);
+      const location = new URL(res.headers.get("location") ?? "");
+      assert.equal(location.host, host, `${host}${p}: same origin`);
+      assert.equal(`${location.pathname}${location.search}`, to, `${host}${p}`);
+    }
+    for (const [host, p] of [[WEBSITE, "/storefront/"], [ERP, "/storefront/"], [ERP, "/storefront/bag/"]] as const) {
+      assert.equal((await frontDoor(request(host, p), read, HOSTS, OPEN)).status, 404, `${host}${p}`);
+    }
+    const root = await frontDoor(request(WEBSITE, "/"), read, HOSTS, OPEN);
+    assert.ok(rewriteOf(root), "/ is never redirected");
+  });
+
+  test("next.config turns Next's own trailing-slash redirect off (the proxy makes it)", () => {
+    const config = readFileSync(path.join(process.cwd(), "next.config.ts"), "utf8");
+    assert.match(config, /skipTrailingSlashRedirect: true/);
   });
 
   test("the build's files and public/shop/ pass unchanged", async () => {

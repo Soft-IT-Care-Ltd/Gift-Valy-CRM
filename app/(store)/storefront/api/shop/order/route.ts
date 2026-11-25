@@ -1,5 +1,6 @@
 import { queueOrderLead } from "@/lib/meta/orders";
 import { flushMetaEvents, sendSoon } from "@/lib/meta/send";
+import { allowOrderTry } from "@/lib/storefront/attempt-limit";
 import { clientIp } from "@/lib/storefront/client-ip";
 import { copy } from "@/lib/storefront/copy";
 import {
@@ -29,12 +30,18 @@ export const dynamic = "force-dynamic";
 
 const cookie = (request: Request, name: string): string | null => {
   const hit = (request.headers.get("cookie") ?? "").split(/;\s*/).find((c) => c.startsWith(`${name}=`));
-  return hit ? decodeURIComponent(hit.slice(name.length + 1)) : null;
+  if (!hit) return null;
+  try {
+    return decodeURIComponent(hit.slice(name.length + 1));
+  } catch {
+    return null; // a malformed cookie is no cookie
+  }
 };
 
 export async function POST(request: Request) {
   const refused = rejectCrossSite(request, copy.api.crossSite) ?? rejectNonJson(request, copy.api.notJson);
   if (refused) return refused;
+  if (!allowOrderTry(clientIp(request.headers))) return publicJson({ error: copy.api.tooFast }, 429);
   let body: unknown;
   try {
     body = await readJsonLimited(request, ORDER_BODY_LIMIT);
@@ -45,19 +52,27 @@ export async function POST(request: Request) {
   const ip = clientIp(request.headers);
   try {
     const placed = await placeWebsiteOrder(body, { ip });
-    const meta = await queueOrderLead(undefined, {
-      orderId: placed.orderId,
-      ip,
-      userAgent: request.headers.get("user-agent"),
-      fbp: cookie(request, "_fbp"),
-      fbc: cookie(request, "_fbc"),
-      sourceUrl: request.headers.get("referer"),
-    });
-    if (meta?.eventRowId) {
-      const id = meta.eventRowId;
-      sendSoon(() => flushMetaEvents(undefined, { ids: [id] }));
+    // The order has committed: nothing after this line may turn it into an
+    // error (the customer would place it again).
+    let track: unknown = null;
+    try {
+      const meta = await queueOrderLead(undefined, {
+        orderId: placed.orderId,
+        ip,
+        userAgent: request.headers.get("user-agent"),
+        fbp: cookie(request, "_fbp"),
+        fbc: cookie(request, "_fbc"),
+        sourceUrl: request.headers.get("referer"),
+      });
+      if (meta?.eventRowId) {
+        const id = meta.eventRowId;
+        sendSoon(() => flushMetaEvents(undefined, { ids: [id] }));
+      }
+      track = meta?.browser ?? null;
+    } catch (error) {
+      console.error("Website order: queueing Meta's Lead failed:", error);
     }
-    return publicJson({ ref: placed.ref, link: `/order/${placed.token}`, track: meta?.browser ?? null }, 201);
+    return publicJson({ ref: placed.ref, link: `/order/${placed.token}`, track }, 201);
   } catch (error) {
     if (error instanceof WebsiteOrderError) {
       return publicJson({ error: error.message, field: error.field, fields: error.fields }, error.status);

@@ -1,7 +1,9 @@
 import { existsSync } from "node:fs";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { logAuditTx } from "./audit";
 import { AuthzError } from "./authz";
+import { BomError, packagePrice } from "./bom";
+import { loadBomCatalog } from "./bom-db";
 import { uploadUrlPath } from "./file-storage";
 import {
   type WebsiteInput,
@@ -135,18 +137,19 @@ export async function ensureWebsiteSlugs(tx: Tx): Promise<number> {
     tx.package.findMany({ where: { showOnWebsite: true, slug: null }, select: { id: true, name: true, websiteName: true, code: true } }),
     tx.category.findMany({ where: { showOnWebsite: true, slug: null }, select: { id: true, name: true, websiteName: true } }),
   ]);
-  for (const p of products) {
-    await writeSlug(tx, "product", p.id, { slug: await autoSlug(tx, "product", p.id, p.websiteName || p.name, p.sku), slugPublishedAt: now });
-    made++;
-  }
-  for (const p of packages) {
-    await writeSlug(tx, "package", p.id, { slug: await autoSlug(tx, "package", p.id, p.websiteName || p.name, p.code), slugPublishedAt: now });
-    made++;
-  }
-  for (const c of categories) {
-    await writeSlug(tx, "category", c.id, { slug: await autoSlug(tx, "category", c.id, c.websiteName || c.name, null), slugPublishedAt: now });
-    made++;
-  }
+  // Verify R3 — two page loads can fill the same gaps at once: one that loses
+  // the race on an address (unique) leaves it to the next read, never a 500.
+  const fill = async (kind: WebsiteKind, id: number, slug: () => Promise<string>) => {
+    try {
+      await writeSlug(tx, kind, id, { slug: await slug(), slugPublishedAt: now });
+      made++;
+    } catch (e) {
+      if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")) throw e;
+    }
+  };
+  for (const p of products) await fill("product", p.id, () => autoSlug(tx, "product", p.id, p.websiteName || p.name, p.sku));
+  for (const p of packages) await fill("package", p.id, () => autoSlug(tx, "package", p.id, p.websiteName || p.name, p.code));
+  for (const c of categories) await fill("category", c.id, () => autoSlug(tx, "category", c.id, c.websiteName || c.name, null));
   return made;
 }
 
@@ -168,12 +171,38 @@ export interface WebsiteContext {
 }
 
 /** A photo the form may store: one of ours under /uploads, on disk. Photos already on the item are kept as they are. */
-function assertPhotos(photos: string[], before: string[]) {
+/** What POST /api/uploads names a file: <uuid>.<jpg|png|webp>, nothing else (no category-, banner-, card-bg-, print/ files). */
+const CATALOG_UPLOAD = /^\/uploads\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|png|webp)$/;
+
+/**
+ * A new website photo must be a plain upload that exists — and never a file
+ * the ERP keeps private in the same folder (a payment screenshot, an expense
+ * receipt): /img would put it on the public website (Verify R3).
+ */
+async function assertPhotos(tx: Tx, photos: string[], before: string[]) {
   if (new Set(photos).size !== photos.length) throw new WebsiteInputError("The same photo is in the list twice");
-  for (const url of photos) {
-    if (before.includes(url)) continue;
-    const file = uploadUrlPath(url);
+  const fresh = photos.filter((url) => !before.includes(url));
+  for (const url of fresh) {
+    const file = CATALOG_UPLOAD.test(url) ? uploadUrlPath(url) : null;
     if (!file || !existsSync(file)) throw new WebsiteInputError("Upload the photo again — that file isn't one of ours");
+  }
+  if (fresh.length === 0) return;
+  const [payments, expenses] = await Promise.all([
+    tx.payment.count({ where: { screenshotUrl: { in: fresh } } }),
+    tx.expense.count({ where: { receiptUrl: { in: fresh } } }),
+  ]);
+  if (payments + expenses > 0) {
+    throw new WebsiteInputError("That file is a payment screenshot or a receipt, not a product photo — upload the photo itself");
+  }
+}
+
+/** The price the website shows for a package: its selling price + the default picks' extras. */
+async function packageWebsitePrice(tx: Tx, packageId: number, fallback: number): Promise<number> {
+  try {
+    return packagePrice(await loadBomCatalog(tx), packageId).unitPrice;
+  } catch (e) {
+    if (e instanceof BomError) return fallback;
+    throw e;
   }
 }
 
@@ -227,7 +256,10 @@ export async function applyWebsite(
         categoryId: kind === "category" ? id : null,
       },
     });
-    slugPublishedAt = null;
+    // Verify R3 — the typed address is as fixed as the one it replaced. (Null
+    // here, on a hidden item, let the next save quietly put the name-made
+    // address back and drop the redirect.)
+    slugPublishedAt = new Date();
   }
   if (slug) {
     // Reclaiming one of this item's own old addresses: it stops being a redirect.
@@ -257,11 +289,15 @@ export async function applyWebsite(
     await tx.category.update({ where: { id }, data: common });
   } else {
     const photos = w.photos ?? before.photos ?? [];
-    if (w.photos) assertPhotos(photos, before.photos ?? []);
+    if (w.photos) await assertPhotos(tx, photos, before.photos ?? []);
     const compareAtPrice =
       w.compareAtPrice === undefined ? (before.compareAtPrice == null ? null : Number(before.compareAtPrice)) : w.compareAtPrice;
-    if (compareAtPrice != null && ctx.price != null && !(compareAtPrice > ctx.price)) {
-      throw new WebsiteInputError(`The compare-at price (৳${compareAtPrice}) must be above the price (৳${ctx.price}) — or leave it empty`);
+    // Verify R3 — a package's website price includes its default picks' extras
+    // (packagePrice, R3-2): "was ৳X" must be above THAT price, not the base.
+    const shownPrice =
+      compareAtPrice != null && ctx.price != null && kind === "package" ? await packageWebsitePrice(tx, id, ctx.price) : ctx.price;
+    if (compareAtPrice != null && shownPrice != null && !(compareAtPrice > shownPrice)) {
+      throw new WebsiteInputError(`The compare-at price (৳${compareAtPrice}) must be above the price (৳${shownPrice}) — or leave it empty`);
     }
     const item = {
       ...common,

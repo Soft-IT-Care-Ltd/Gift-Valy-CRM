@@ -120,9 +120,11 @@ export async function PATCH(req: Request, { params }: Params) {
     }
 
     // BOM replace affects future orders only — past orders keep their
-    // unit_cost_snapshot (SPEC §6.2). NOTE: replacing lines re-issues
-    // package_items ids, so pending (not yet packed) orders whose choice
-    // selections point at old group ids fall back to the new defaults.
+    // unit_cost_snapshot (SPEC §6.2). Lines are updated in place
+    // (writePackageItems), so a choice group keeps its id and pending orders'
+    // picks — and the extra prices they were sold at — still match. Only a
+    // group that is removed (or one whose label AND options all change) is
+    // new, and its old picks fall back to the default.
     const after = await prisma.$transaction(async (tx) => {
       if (data.items) {
         await writePackageItems(tx, id, data.items);

@@ -57,6 +57,23 @@ export function assertCategoryPhotoUrl(url: string): void {
   }
 }
 
+/**
+ * Verify R3 — a category photo belongs to one category: the file is deleted
+ * when that category replaces or drops it, so another category may not point
+ * at it (a crafted request would otherwise get someone else's file deleted).
+ */
+export async function assertCategoryPhotoUnused(
+  db: { category: { findFirst(args: { where: { photoUrl: string; NOT?: { id: number } }; select: { id: true } }): Promise<{ id: number } | null> } },
+  url: string,
+  selfId: number | null
+): Promise<void> {
+  const other = await db.category.findFirst({
+    where: { photoUrl: url, ...(selfId != null ? { NOT: { id: selfId } } : {}) },
+    select: { id: true },
+  });
+  if (other) throw new CategoryPhotoError("Upload the photo again — that file belongs to another category");
+}
+
 /** Deletes a category photo's file (only ever a category-<uuid>.webp). */
 export async function deleteCategoryPhoto(url: string | null | undefined): Promise<void> {
   if (!url || !isCategoryPhotoUrl(url)) return;

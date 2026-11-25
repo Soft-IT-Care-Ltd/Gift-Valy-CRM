@@ -20,7 +20,8 @@ import { getWebsiteUserId } from "../lib/system-user";
 import { aggregateUserAchievement } from "../lib/targets";
 import { monthKeyOf } from "../lib/targets-constants";
 import { placeWebsiteOrder, websiteOrderByToken, WebsiteOrderError, WEB_REF } from "../lib/storefront/place-order";
-import { normalizeBdMobile, normalizeSenderWhatsApp, phoneSpellings, type OrderRequestInput } from "../lib/storefront/checkout-shape";
+import { isCalendarDate, normalizeBdMobile, normalizeSenderWhatsApp, phoneSpellings, type OrderRequestInput } from "../lib/storefront/checkout-shape";
+import { allowOrderTry, ORDER_TRIES_PER_MINUTE, resetOrderTries } from "../lib/storefront/attempt-limit";
 import { clientIp } from "../lib/storefront/client-ip";
 import { ORDER_BODY_LIMIT } from "../lib/storefront/http";
 import { WEBSITE_SETTINGS_KEY } from "../lib/storefront/settings-shape";
@@ -189,6 +190,14 @@ describe("W-5 checkout fields", () => {
     assert.equal(normalizeSenderWhatsApp("KSA", "12345"), null);
     assert.deepEqual(phoneSpellings("+966512345678").sort(), ["+966512345678", "00966512345678", "966512345678"]);
     assert.ok(phoneSpellings("+8801712345678").includes("01712345678"));
+  });
+
+  test("a fixed date must be a real day (Verify R3)", () => {
+    assert.equal(isCalendarDate("2026-12-31"), true);
+    assert.equal(isCalendarDate("2028-02-29"), true);
+    assert.equal(isCalendarDate("2026-11-31"), false);
+    assert.equal(isCalendarDate("2026-12-45"), false);
+    assert.equal(isCalendarDate("2027-02-29"), false);
   });
 
   test("the recipient's Bangladeshi mobile", () => {
@@ -407,6 +416,18 @@ describe("W-5 limits", () => {
     });
   });
 
+  test("Verify R3 — a flood of tries from one address is refused before the database (20 a minute)", () => {
+    resetOrderTries();
+    const t0 = 1_000_000;
+    for (let i = 0; i < ORDER_TRIES_PER_MINUTE; i++) assert.equal(allowOrderTry("198.51.100.9", t0 + i), true);
+    assert.equal(allowOrderTry("198.51.100.9", t0 + 100), false, "the 21st try in the minute");
+    assert.equal(allowOrderTry("198.51.100.10", t0 + 100), true, "another address is its own count");
+    assert.equal(allowOrderTry("198.51.100.9", t0 + 60_000), true, "a minute later it's fine");
+    resetOrderTries();
+    const src = readFileSync(path.join(process.cwd(), "lib/storefront/place-order.ts"), "utf8");
+    assert.ok(src.includes("pg_try_advisory_xact_lock") && !/pg_advisory_xact_lock\(/.test(src), "the order's locks are tried, never waited on");
+  });
+
   test("the honeypot field filled in → 400, nothing written", async () => {
     await inRollback(async (tx) => {
       const f = await fixture(tx);
@@ -567,8 +588,24 @@ describe("W-6 confirm and cancel (rule 6)", () => {
         cancelWebsiteOrder(tx, { orderId: placed.orderId, reason: "DUPLICATE", userId: p.a.id }),
         (e) => (e as { status?: number }).status === 409
       );
-      assert.equal((await websiteOrderByToken(placed.token, tx))?.state, "CANCELLED");
+      const receipt = await websiteOrderByToken(placed.token, tx);
+      assert.equal(receipt?.state, "CANCELLED");
+      assert.equal(receipt?.number, null, "a cancelled draft never shows its DRAFT number (Verify R3)");
+      // Verify R3 — a confirmation after the cancel (e.g. racing it) can't take a number.
+      await assert.rejects(confirmDraftTx(tx, placed.orderId, p.a.id, null), (e) => (e as { status?: number }).status === 400);
+      assert.deepEqual(await tx.orderSequence.findMany({ orderBy: { yearMonth: "asc" } }), snapshot, "still untouched");
     });
+  });
+
+  test("the generic status control can't cancel a website draft (Verify R3): the Website panel's Cancel moves the lead to LOST", () => {
+    const route = readFileSync(path.join(process.cwd(), "app/api/orders/[id]/status/route.ts"), "utf8");
+    assert.match(route, /to === "CANCELLED" && order\.status === "DRAFT" && order\.source === "WEBSITE"/);
+    const orders = readFileSync(path.join(process.cwd(), "lib/orders.ts"), "utf8");
+    const confirm = orders.slice(orders.indexOf("export async function confirmDraftTx"));
+    assert.ok(
+      confirm.indexOf("FOR UPDATE") > 0 && confirm.indexOf("FOR UPDATE") < confirm.indexOf("generateOrderNumber(tx)"),
+      "confirmDraftTx locks the order row before it takes a number"
+    );
   });
 
   test("website orders count for targets only when Settings → Website says so", async () => {

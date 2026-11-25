@@ -545,6 +545,11 @@ export async function confirmDraftTx(
   userId: number,
   note: string | null
 ): Promise<{ orderNo: string }> {
+  // Verify R3 — lock the row before reading its status, so two confirmations
+  // racing (the SE's advance + a TL's "Confirmed", or a website-draft cancel)
+  // can't both see DRAFT: the second waits, then reads CONFIRMED and stops —
+  // otherwise it would take a second number from order_sequences (rule 6).
+  await tx.$queryRaw`SELECT id FROM orders WHERE id = ${orderId} FOR UPDATE`;
   const order = await tx.order.findUniqueOrThrow({
     where: { id: orderId },
     include: { payments: { select: { type: true, amount: true, isRejected: true } } },

@@ -226,6 +226,8 @@ export const copy = {
     crossSite: "Not allowed.",
     tooManyPhone: "You've placed several orders in the last hour. Please wait a little, or message us on WhatsApp.",
     tooManyIp: "Many orders came from your network in the last hour. Please wait a little, or message us on WhatsApp.",
+    busy: "We're still placing your last order. Please wait a moment and try again.",
+    tooFast: "Too many tries in a short time. Please wait a minute and try again.",
     itemGone: "Something in your bag is no longer available. We've updated your bag — please check.",
     choiceGone: "A choice in your bag is no longer offered. We've updated your bag — please check.",
     soldOut: (name: string) => `Sorry, ${name} just sold out. Please remove it or lower the quantity.`,

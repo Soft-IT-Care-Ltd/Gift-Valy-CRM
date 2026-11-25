@@ -16,6 +16,7 @@ import {
   resolveItemsAndTotals,
 } from "../lib/orders";
 import { loadInvoiceOrder } from "../lib/invoice";
+import { writePackageItems } from "../lib/bom-db";
 import {
   PACKING_PRINT_REFUSED,
   invoicePdfHandler,
@@ -329,6 +330,103 @@ describe("R3-2 choice extra prices — the order API", () => {
       assert.equal(fresh.lines[0].priceFloor, 1950);
     });
   });
+
+  // Verify R3 — the package form always sends the whole BOM; saving it must
+  // not re-issue the choice groups' ids, or every saved pick (and the extra
+  // it was sold at) would stop matching.
+  test("a package save through the form's write path keeps the choice groups' ids", async () => {
+    await inRollback(async (tx) => {
+      const f = await hamperFixture(tx);
+      const admin = await tx.user.findFirstOrThrow({ where: { role: { name: "Admin" } } });
+      const sold = await testOrder(tx, "CONFIRMED", {
+        salesExecutiveId: admin.id,
+        items: [
+          {
+            itemType: "PACKAGE",
+            package: { connect: { id: f.hamperId } },
+            qty: 1,
+            unitPrice: 1750,
+            lineTotal: 1750,
+            choiceSelections: [
+              { groupId: f.gSaree, label: "Saree colour", productId: f.blue, name: "R3 Blue saree", extraPrice: 300, qty: 2 },
+              { groupId: f.gCard, label: "Card", productId: f.gold, name: "R3 Gold card", extraPrice: 150, qty: 1 },
+            ],
+          },
+        ],
+      });
+      const setLine = await tx.packageItem.findFirstOrThrow({ where: { packageId: f.hamperId, kind: "PACKAGE" } });
+      const milkLine = await tx.packageItem.findFirstOrThrow({ where: { packageId: f.hamperId, kind: "PRODUCT" } });
+      const extra = await tx.product.create({
+        data: { sku: "TEST-R3-RIBBON", name: "R3 Ribbon", categoryId: (await tx.product.findUniqueOrThrow({ where: { id: f.red } })).categoryId, sellingPrice: 0 },
+      });
+
+      // The Saree Set saved again with Blue now +৳500.
+      await writePackageItems(tx, setLine.childPackageId!, [
+        {
+          kind: "CHOICE",
+          choiceLabel: "Saree colour",
+          qty: 1,
+          options: [
+            { productId: f.red, isDefault: true, extraPrice: 0 },
+            { productId: f.blue, isDefault: false, extraPrice: 500 },
+          ],
+        },
+      ]);
+      // The hamper saved with a renamed card group (Gold +৳200), 2 milks and a new ribbon line.
+      await writePackageItems(tx, f.hamperId, [
+        { kind: "PRODUCT", productId: milkLine.productId!, qty: 2 },
+        { kind: "PACKAGE", childPackageId: setLine.childPackageId!, qty: 2 },
+        {
+          kind: "CHOICE",
+          choiceLabel: "Greeting card",
+          qty: 1,
+          options: [
+            { productId: f.gold, isDefault: false, extraPrice: 200 },
+            { productId: f.silver, isDefault: true, extraPrice: -50 },
+          ],
+        },
+        { kind: "PRODUCT", productId: extra.id, qty: 1 },
+      ]);
+
+      const saree = await tx.packageItem.findUniqueOrThrow({ where: { id: f.gSaree }, include: { options: true } });
+      assert.equal(Number(saree.options.find((o) => o.productId === f.blue)!.extraPrice), 500);
+      const card = await tx.packageItem.findUniqueOrThrow({ where: { id: f.gCard }, include: { options: true } });
+      assert.equal(card.choiceLabel, "Greeting card");
+      assert.equal(Number(card.options.find((o) => o.productId === f.gold)!.extraPrice), 200);
+      const lines = await tx.packageItem.findMany({ where: { packageId: f.hamperId }, orderBy: { id: "asc" } });
+      assert.deepEqual(
+        lines.map((l) => [l.id === milkLine.id || l.id === setLine.id || l.id === f.gCard, l.kind, l.qty]),
+        [
+          [true, "PRODUCT", 2],
+          [true, "PACKAGE", 2],
+          [true, "CHOICE", 1],
+          [false, "PRODUCT", 1],
+        ]
+      );
+
+      // The sold order's picks still match: an edit keeps Blue +300 / Gold +150.
+      const picks = { [f.gSaree]: f.blue, [f.gCard]: f.gold };
+      const edit = await resolveItemsAndTotals(tx, payload(f, { qty: 1, unitPrice: 1750, picks }), {
+        frozenExtras: await frozenExtrasForOrder(tx, sold.id),
+      });
+      assert.deepEqual(edit.lines[0].choiceSelections?.map((s) => [s.groupId, s.productId, s.extraPrice]), [
+        [f.gSaree, f.blue, 300],
+        [f.gCard, f.gold, 150],
+      ]);
+      assert.equal(edit.lines[0].priceFloor, 1550);
+      assert.deepEqual(edit.floorBreaches, []);
+
+      // A group whose label AND options all change is a new group; a removed line is gone.
+      await writePackageItems(tx, f.hamperId, [
+        { kind: "PACKAGE", childPackageId: setLine.childPackageId!, qty: 2 },
+        { kind: "CHOICE", choiceLabel: "Ribbon", qty: 1, options: [{ productId: extra.id, isDefault: true, extraPrice: 0 }] },
+      ]);
+      const after = await tx.packageItem.findMany({ where: { packageId: f.hamperId }, orderBy: { id: "asc" } });
+      assert.equal(after.length, 2);
+      assert.equal(after[0].id, setLine.id);
+      assert.notEqual(after[1].id, f.gCard);
+    });
+  });
 });
 
 // =====================================================================
@@ -475,5 +573,17 @@ describe("R3-1 category photo", () => {
     assert.equal(categoryPhotoAction("/uploads/a", "/uploads/b"), "category.photo.replace");
     assert.equal(categoryPhotoAction("/uploads/a", null), "category.photo.remove");
     assert.equal(categoryPhotoAction("/uploads/a", "/uploads/a"), null);
+  });
+
+  test("Verify R3 — a category can't point at another category's photo (its file would be deleted under it)", async () => {
+    const { assertCategoryPhotoUnused } = await import("../lib/category-photo");
+    await inRollback(async (tx) => {
+      const url = "/uploads/category-0b7e5f0a-1c2d-4e5f-8a9b-0c1d2e3f4a5b.webp";
+      const owner = await tx.category.create({ data: { name: `TEST-R3 owner ${Date.now()}`, photoUrl: url } });
+      const other = await tx.category.create({ data: { name: `TEST-R3 other ${Date.now()}` } });
+      await assert.rejects(assertCategoryPhotoUnused(tx, url, other.id), /another category/);
+      await assert.rejects(assertCategoryPhotoUnused(tx, url, null), /another category/);
+      await assertCategoryPhotoUnused(tx, url, owner.id);
+    });
   });
 });

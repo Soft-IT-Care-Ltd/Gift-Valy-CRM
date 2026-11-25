@@ -142,6 +142,12 @@ export function dhakaYmdOf(d: Date): string {
 /** A fixed delivery date may be today (Dhaka) up to a year ahead. */
 export const FIXED_DATE_MAX_DAYS = 365;
 
+/** "2026-11-31" or "2026-12-45" are not days (a hand-made request; the date field can't send them). */
+export function isCalendarDate(ymd: string): boolean {
+  const d = new Date(`${ymd}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === ymd;
+}
+
 export function fixedDateRange(now: Date): { min: string; max: string } {
   return { min: dhakaYmdOf(now), max: dhakaYmdOf(new Date(now.getTime() + FIXED_DATE_MAX_DAYS * 86_400_000)) };
 }
@@ -235,7 +241,9 @@ export function checkOrderRequest(
   if (v.delivery.mode === "FIXED") {
     const { min, max } = fixedDateRange(now);
     if (!v.delivery.date) errors["delivery.date"] = copy.checkout.errors.dateMissing;
-    else if (v.delivery.date < min || v.delivery.date > max) errors["delivery.date"] = copy.checkout.errors.dateRange;
+    else if (!isCalendarDate(v.delivery.date) || v.delivery.date < min || v.delivery.date > max) {
+      errors["delivery.date"] = copy.checkout.errors.dateRange;
+    }
   }
   if (Object.keys(errors).length > 0) return { ok: false, errors };
   return {

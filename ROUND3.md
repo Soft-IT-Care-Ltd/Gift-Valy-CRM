@@ -46,7 +46,7 @@ How to use this file (for Claude Code):
 | 4 | W2 — Website pages: home, category, product/package, search — [DONE] | Gift Valy repo | W1 |
 | 5 | W3 — Bag, checkout, website orders in the ERP — [DONE] | Gift Valy repo | W2 |
 | 6 | W4 — Settings → Website, home page manager, SEO, Meta Pixel — [DONE] | Gift Valy repo | W3 |
-| 7 | Verify R3 | Gift Valy repo | W4 |
+| 7 | Verify R3 — [DONE] | Gift Valy repo | W4 |
 | 8 | Deploy R3 — staging, then production | Gift Valy repo, on the server via `ssh antu` | Verify R3 |
 
 ### R3-0 — Read the reference, plan (Gift Valy repo)
@@ -136,6 +136,60 @@ Reviewer pass on R3-A and W1–W4, by reading the code and testing on dev:
 14. npm run build passes; every test and verify:* script passes; test:platform still passes.
 Report findings, fix them, commit, push.
 ```
+
+**Verify R3 — done (26 Nov 2026).** Code read end to end by three independent reviewers (R3-A; hosts + gate + panel + SEO; checkout + ERP orders + settings + Meta), then checked over HTTP on a production build (`next start`, `shop.localhost:3005` / `localhost:3005`) against the dev database.
+
+- **Checked on dev:**
+  - **1.** A 3000 × 2000 JPEG with EXIF became an 800 × 1200 WebP with no metadata. It is served only at `/img/category-…` (`/uploads` is 404 on the website host and 401 signed out on the ERP), is gone as soon as the category is hidden, and the category keeps working after the photo is removed (file deleted).
+  - **2, 8, 9.** Website order: Lateset ×2 with the nested red saree (+৳300) plus a Customize Chocolate Box gave ৳8,300 / ৳2,500 + ৳240 delivery = ৳19,340. The bag, the saved line, its picks, the receipt and the invoice all agree.
+    - A wrong `seenPrice`, or a price changed in the ERP between page and order → 409. A `unitPrice` key → 400.
+    - The 6th order from one number (five spellings, Arabic digits included) → 429.
+    - Each order landed as a DRAFT, source Website, lead WEBSITE/COMMITTED, assigned to the only checked-in SE (`ON_DUTY`), with a bell. The receipt has no name, phone or address.
+    - Confirming by the SE's advance → GV-2611-0001, `order_sequences` 2611: 0 → 1, usage counts 1, the receipt shows the number.
+    - A cancelled draft (Fake order) leaves the counter and usage alone; its lead is LOST/FAKE_ORDER.
+  - **3.** Packing: invoice 200 for Confirmed / Packed / Handed / In transit, 403 for the other six statuses. Bulk prints the queue and skips the rest. Order, settings and report APIs → 403/404. The Packing page carries no cost, payment or abroad phone.
+  - **5.** Every website page (42) and `/api/shop/bag` with every item was scanned against every SKU, package code, staff email/phone, customer phone, supplier and recipient phone: none found. The only hit was the shop's own WhatsApp number.
+  - **6.** On the website host, `/login`, `/api/orders`, `/uploads/x`, `/api/cron/x`, `/billing`, `/api/auth/*`, `/go/`, `/_c/` and their percent-encoded spellings → 404, with no cookie set. On the ERP host, every storefront path → 404, with `noindex` on every answer.
+  - **7.** Suspended: the website pages load and take an order (a draft). ERP pages → 307 /billing; ERP APIs → 423.
+  - **10.** Removing the WhatsApp number in Settings → Website removes the button from the product, package and confirmation pages on the very next load, and restoring it brings it back. The message carries the product, picks, price and link.
+  - **11.** Open Graph, canonical and Twitter tags are present; the sitemap lists only shown items; robots.txt is right.
+  - **12.** With tracking unset, no pixel script or `fbq` appears on any page. Event pairs and hashing are covered by `test:meta`.
+  - **13.** All 42 website pages, plus the bag and checkout with items, at 375 and 1440 px: no sideways scroll.
+- **Fixed:**
+  - **(1) Package save re-issued every BOM line id.** The form always sends the whole BOM, so even a rename gave choice groups new ids. Every pending order's picks then fell back to the default: the pick list, the invoice, the frozen R3-2 extra, and a re-pick charging today's extra on top. `writePackageItems` now updates lines in place: products by product, sub-packages by package, groups by label, else by a shared option.
+  - **(2) Website draft cancelled from the generic status control.** That path left its lead COMMITTED for good. It is now refused (and hidden in the UI) in favour of the Website panel's Cancel with a reason.
+  - **(3) No row lock in `confirmDraftTx` / `cancelWebsiteOrder`.** A TL's "Confirmed" racing the SE's advance could take a second number from `order_sequences` (rule 6). Both now lock the row (`FOR UPDATE`) first.
+  - **(4) One-line message template.** A one-line WhatsApp/Messenger template with an empty `{choices}` sent an empty message. The line is now kept without the empty part.
+  - **(5) Cancelled draft's receipt.** A cancelled draft's receipt showed its DRAFT number. It no longer does.
+  - **(6) Malformed `_fbc` cookie.** It turned a placed order into a 500, so the customer would order again. Everything after the commit is now caught.
+  - **(7) Impossible fixed dates.** `2026-11-31` and `2026-12-45` are refused.
+  - **(8) Receipt option names.** The receipt showed options by their ERP names; it now uses the website names, like the product page.
+  - **(9) Inactive choice option.** A deactivated choice option stayed orderable on the website, with a broken photo. It is now Out of stock with the placeholder, and refused at checkout.
+  - **(10) Sub-package used twice.** It doubled its options' price deltas on the product page (the checkout then said 409). Its group is now shown once.
+  - **(11) ERP sub-package names.** Sub-package names in "inside X › Y" came from the ERP; they now use the website names.
+  - **(12) Compare-at for packages.** It was checked against the base price, not the price with the default picks. The card now also hides a "was" price that isn't higher.
+  - **(13) Private files as photos.** A website photo could be any upload: a payment screenshot, an expense receipt, a category, banner or print file. Only plain catalog uploads are taken now.
+  - **(14) Shared category photo.** A category photo URL could point at another category's file, which was then deleted under it. Category delete now also writes `category.photo.remove`, and a PATCH without `photoUrl` no longer writes back a stale value.
+  - **(15) Hidden item's typed address.** On a hidden item, a typed address went back to the name-made one at the next save.
+  - **(16) `giftvaly.com.:443`.** This host was taken for the ERP.
+  - **(17) Trailing slash on `/go/` and `/_c/`.** Next's own trailing-slash 308 ran before the proxy, so these two were redirects, not 404s. The proxy now makes that 308 itself after the 404s (`skipTrailingSlashRedirect`).
+  - **(18) Order-request flood.** The order endpoint waited on its locks while holding a database connection, and bad requests (409) never reached the hourly limits. It now tries the locks (busy → 429) and allows 20 tries a minute per address before any query.
+  - **(19) Concurrent slug fill.** Two page loads filling missing addresses at once could 500.
+  - **(20) Bulk print over 100.** The error said "Too big"; it now explains the limit.
+  - **(21) `verify:reports` and `verify:pnl` counted trashed orders.** Their reference queries counted trashed orders (a relation filter, or the scripts' raw client, isn't trash-filtered), so one trashed test order on dev failed them. The reports themselves were right.
+  - **Tests:** new cases in `test:round3`, `test:website-orders`, `test:storefront`, `test:storefront-catalog` and `test:storefront-pages`.
+- **Dev data left behind:**
+  - The 7 test website orders are in Trash; the purge removes them. One was confirmed, so the dev counter for 2611 is now 1, which is right (rule 6).
+  - Their test customers (`VR3 …`) remain.
+  - Partho has a check-in/out today.
+  - The platform state was pushed suspended → active.
+  - The Teddy category photo was added and removed, and product 224's price and package 65's red saree extra were changed and put back (all audited).
+- **Left as they are (noted for W-10 / later):**
+  - `/img` is `immutable`, so a photo hidden or removed stays in browser and CDN caches; the server 404s at once.
+  - Resized copies in `UPLOAD_DIR/web-cache` of a removed photo are not deleted (disk only).
+  - The giftvaly.com Nginx block must pass `Host $host` (the same-site check compares Origin with Host) and the `X-Real-IP` snippets.
+  - A number typed `+966 0 5…` is kept with the 0, as staff-typed foreign numbers always were.
+  - A category with nothing shown still answers its own `/c/` page (empty); it isn't in the sitemap or on the home page.
 
 ### Deploy R3 — staging, then production (Gift Valy repo, on the server via `ssh antu`)
 

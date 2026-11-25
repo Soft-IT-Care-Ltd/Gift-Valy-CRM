@@ -14,7 +14,7 @@
 import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { PrismaClient, type Prisma } from "@prisma/client";
 import { prisma as appPrisma } from "../lib/db";
@@ -22,6 +22,7 @@ import * as catalog from "../lib/storefront/catalog";
 import { buildHomeView } from "../lib/storefront/home-data";
 import { applyWebsite, WebsiteInputError } from "../lib/catalog-website";
 import { parseRichText } from "../lib/catalog-website-shape";
+import { uploadUrlPath } from "../lib/file-storage";
 
 const ROOT = path.resolve(__dirname, "..");
 const prisma = new PrismaClient();
@@ -439,6 +440,22 @@ describe("W-2 the Website panel's server path", () => {
       await assert.rejects(applyWebsite(tx, "product", f.choc.id, { compareAtPrice: 999 }, ctx), /must be above the price/);
       await assert.rejects(applyWebsite(tx, "product", f.choc.id, { photos: ["/uploads/not-there.jpg"] }, ctx), /Upload the photo again/);
       await assert.rejects(applyWebsite(tx, "product", f.choc.id, { photos: ["https://evil.example/x.jpg"] }, ctx), /Upload the photo again/);
+      // Verify R3 — never a private file from the same folder: a receipt (or a
+      // payment screenshot), a category photo, a print upload.
+      const receipt = `/uploads/${randomUUID()}.jpg`;
+      const receiptFile = uploadUrlPath(receipt)!;
+      mkdirSync(path.dirname(receiptFile), { recursive: true });
+      writeFileSync(receiptFile, "x");
+      try {
+        const expenseCategory = await tx.expenseCategory.findFirstOrThrow();
+        await tx.expense.create({ data: { expenseDate: new Date(), categoryId: expenseCategory.id, amount: 1, receiptUrl: receipt } });
+        await assert.rejects(applyWebsite(tx, "product", f.choc.id, { photos: [receipt] }, ctx), /payment screenshot or a receipt/);
+      } finally {
+        unlinkSync(receiptFile);
+      }
+      for (const url of [`/uploads/category-${randomUUID()}.webp`, `/uploads/print/${randomUUID()}.jpg`, `/uploads/banner-${randomUUID()}.webp`]) {
+        await assert.rejects(applyWebsite(tx, "product", f.choc.id, { photos: [url] }, ctx), /Upload the photo again/, url);
+      }
       // Reordering existing photos is fine, and the first becomes the ERP photo.
       await tx.product.update({ where: { id: f.choc.id }, data: { photos: [f.photo, f.optionPhoto] } });
       await applyWebsite(tx, "product", f.choc.id, { photos: [f.optionPhoto, f.photo] }, ctx);

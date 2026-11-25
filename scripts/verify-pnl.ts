@@ -264,8 +264,9 @@ async function main() {
   // Revenue + COGS reconcile with the confirmed-basis orders directly.
   // EXCLUDED_SALE_STATUSES: lib/pnl.ts drops DRAFT (committed-but-unpaid,
   // CORRECTIONS Leads §10) as well as the lost trio.
+  // This script's raw client sees the trash; the P&L (lib/db) never does.
   const monthOrders = await prisma.order.findMany({
-    where: { createdAt: { gte: start, lt: next }, status: { notIn: EXCLUDED_SALE_STATUSES } },
+    where: { createdAt: { gte: start, lt: next }, status: { notIn: EXCLUDED_SALE_STATUSES }, deletedAt: null },
     select: { totalAmount: true, items: { select: { qty: true, unitCostSnapshot: true } } },
   });
   const expRevenue = round2(monthOrders.reduce((s, o) => s + Number(o.totalAmount), 0));

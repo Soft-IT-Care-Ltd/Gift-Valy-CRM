@@ -29,6 +29,9 @@ const nextConfig: NextConfig = {
   // ROUND3 W-1 — two root layouts (app/(erp), app/(store)), so an address
   // matching no route at all renders app/global-not-found.tsx.
   experimental: { globalNotFound: true },
+  // Verify R3 — the proxy (lib/storefront/front-door.ts) makes the "/x/ → /x"
+  // 308 itself, after refusing /go/ and /_c/ on the website host (rule 7).
+  skipTrailingSlashRedirect: true,
 };
 
 export default nextConfig;

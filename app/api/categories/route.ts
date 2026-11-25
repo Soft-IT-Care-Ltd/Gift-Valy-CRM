@@ -6,6 +6,7 @@ import { requirePermission, apiError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
 import {
   CategoryPhotoError,
+  assertCategoryPhotoUnused,
   assertCategoryPhotoUrl,
   deleteCategoryPhoto,
 } from "@/lib/category-photo";
@@ -48,7 +49,10 @@ export async function POST(req: Request) {
     const session = await requirePermission("catalog.manage");
     const data = createSchema.parse(await req.json());
     const photoUrl = data.photoUrl || null;
-    if (photoUrl) assertCategoryPhotoUrl(photoUrl);
+    if (photoUrl) {
+      assertCategoryPhotoUrl(photoUrl);
+      await assertCategoryPhotoUnused(prisma, photoUrl, null);
+    }
     let category;
     try {
       category = await prisma.$transaction(async (tx) => {

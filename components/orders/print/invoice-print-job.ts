@@ -26,7 +26,14 @@ export async function openInvoicePdf(orderId: number, orderNo: string): Promise<
 }
 
 /** Bulk: one PDF, two half-A4 invoices per A4 page. */
+/** The bulk endpoint's limit (lib/invoice-print.ts bulkBodySchema). */
+export const MAX_PRINT_JOB_ORDERS = 100;
+
 export async function openInvoicesPrintJob(orderIds: number[]): Promise<boolean> {
+  if (orderIds.length > MAX_PRINT_JOB_ORDERS) {
+    toast.error(`Print at most ${MAX_PRINT_JOB_ORDERS} invoices at a time — ${orderIds.length} are selected.`);
+    return false;
+  }
   const res = await fetch("/api/orders/print-invoices", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

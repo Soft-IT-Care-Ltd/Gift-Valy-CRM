@@ -77,6 +77,16 @@ export async function POST(req: Request, { params }: Params) {
         `Cannot move from ${order.status} to ${to}`
       );
     }
+    // ROUND3 W-6 — a website order waiting for confirmation is cancelled from
+    // its Website panel, with one of the reasons: that also moves its lead to
+    // LOST (lib/website-orders.ts). The generic control would leave the lead
+    // COMMITTED for ever.
+    if (to === "CANCELLED" && order.status === "DRAFT" && order.source === "WEBSITE") {
+      throw new AuthzError(
+        400,
+        "Cancel a website order from its Website panel (Cancel…), choosing the reason."
+      );
+    }
     if (to === "CANCELLED" && !note) {
       throw new AuthzError(400, "Cancel requires a reason");
     }

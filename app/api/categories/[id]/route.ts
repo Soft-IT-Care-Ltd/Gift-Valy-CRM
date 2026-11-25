@@ -6,6 +6,7 @@ import { requirePermission, apiError } from "@/lib/authz";
 import { logAudit } from "@/lib/audit";
 import {
   CategoryPhotoError,
+  assertCategoryPhotoUnused,
   assertCategoryPhotoUrl,
   categoryPhotoAction,
   deleteCategoryPhoto,
@@ -37,13 +38,17 @@ export async function PATCH(req: Request, { params }: Params) {
     }
     const photoUrl =
       data.photoUrl === undefined ? before.photoUrl : data.photoUrl || null;
-    if (photoUrl && photoUrl !== before.photoUrl) assertCategoryPhotoUrl(photoUrl);
+    if (photoUrl && photoUrl !== before.photoUrl) {
+      assertCategoryPhotoUrl(photoUrl);
+      await assertCategoryPhotoUnused(prisma, photoUrl, id);
+    }
     let after;
     try {
       after = await prisma.$transaction(async (tx) => {
         const updated = await tx.category.update({
           where: { id },
-          data: { name: data.name.trim(), photoUrl, updatedBy: session.user.id },
+          // Absent = unchanged: never write back a value read before the transaction.
+          data: { name: data.name.trim(), photoUrl: data.photoUrl === undefined ? undefined : photoUrl, updatedBy: session.user.id },
         });
         await applyWebsite(tx, "category", id, data.website, {
           userId: session.user.id,
@@ -126,6 +131,17 @@ export async function DELETE(req: Request, { params }: Params) {
       entityId: id,
       before: { id: category.id, name: category.name, photoUrl: category.photoUrl },
     });
+    if (category.photoUrl) {
+      // R3-1 — every photo add / replace / remove has its own audit row.
+      await logAudit({
+        userId: session.user.id,
+        action: "category.photo.remove",
+        entity: "categories",
+        entityId: id,
+        before: { photoUrl: category.photoUrl },
+        after: { photoUrl: null },
+      });
+    }
     await deleteCategoryPhoto(category.photoUrl);
     // ROUND3 W-9 — the website shows this on its very next page load.
     revalidateStorefrontCatalog();

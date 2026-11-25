@@ -83,7 +83,9 @@ export default async function OrderDetailPage({
   const allowedTransitions = ALLOWED_TRANSITIONS[order.status].filter(
     (to) =>
       statusChangePermitted(to, permissions) &&
-      !COURIER_STAGE_STATUSES.includes(to)
+      !COURIER_STAGE_STATUSES.includes(to) &&
+      // A website draft is cancelled from its Website panel, with a reason.
+      !(to === "CANCELLED" && order.status === "DRAFT" && order.source === "WEBSITE")
   );
 
   // SPEC §5 / §16 Phase 4 — WhatsApp API availability for the send button, and
