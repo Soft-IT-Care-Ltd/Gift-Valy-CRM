@@ -64,6 +64,7 @@ describe("Nginx", () => {
   const guard = code(read("deploy/nginx/snippets/giftvaly-staging-guard.conf"));
   const legacy = code(read("deploy/nginx/giftvaly-legacy-redirect.conf"));
   const shopStaging = code(read("deploy/nginx/giftvaly-shop-staging.conf"));
+  const shop = code(read("deploy/nginx/giftvaly-shop.conf"));
   const blocks = (site: string) => site.split(/^server \{/m).slice(1);
 
   test("staging: only gv-staging.funnelliner.com, only to the staging app on :3210", () => {
@@ -96,9 +97,32 @@ describe("Nginx", () => {
     assert.match(blocks(shopStaging)[0], /return 301 https:\/\/\$host\$request_uri;/);
   });
 
+  test("production website (ROUND3 W-10): giftvaly.com → the production app on :3200, www → 301 to the bare name", () => {
+    const names = blocks(shop).map((b) => b.match(/server_name ([^;]+);/)?.[1]);
+    assert.deepEqual(names, ["giftvaly.com", "www.giftvaly.com", "giftvaly.com", "www.giftvaly.com"]);
+    const [http, httpWww, https, httpsWww] = blocks(shop);
+    // Only the bare name's HTTPS block proxies, and only to production's port.
+    const upstreams = [...shop.matchAll(/proxy_pass (\S+);/g)].map((m) => m[1]);
+    assert.deepEqual(upstreams, ["http://127.0.0.1:3200"]);
+    assert.match(https, /proxy_pass http:\/\/127\.0\.0\.1:3200;\s*include snippets\/antu-app-proxy\.conf;/);
+    // No machine path on the website: /_c/ (even /_c/giftvaly/) and /go/ → 404 (rule 7).
+    assert.match(https, /location \/_c\/ \{ return 404; \}/);
+    assert.match(https, /location \/go\/ \{ return 404; \}/);
+    assert.doesNotMatch(shop, /location \/_c\/giftvaly\//);
+    // Production is never behind the staging password or noindex.
+    assert.doesNotMatch(shop, /giftvaly-staging-guard|auth_basic|noindex/);
+    // One certificate names both; both HTTPS blocks take 12 MB bodies like the dashboard block.
+    for (const b of [https, httpsWww]) {
+      assert.match(b, /ssl_certificate\s+\/etc\/letsencrypt\/live\/giftvaly\.com\/fullchain\.pem;/);
+      assert.match(b, /client_max_body_size 12m;/);
+    }
+    assert.match(http, /return 301 https:\/\/\$host\$request_uri;/);
+    for (const b of [httpWww, httpsWww]) assert.match(b, /return 301 https:\/\/giftvaly\.com\$request_uri;/);
+  });
+
   test("every server block takes the real IP from Cloudflare and answers certificate checks", () => {
-    for (const site of [staging, legacy, shopStaging]) {
-      assert.equal(blocks(site).length, 2);
+    for (const site of [staging, legacy, shopStaging, shop]) {
+      assert.equal(blocks(site).length, site === shop ? 4 : 2);
       for (const b of blocks(site)) {
         assert.match(b, /include snippets\/cloudflare-real-ip\.conf;/);
         assert.match(b, /include snippets\/acme-challenge\.conf;/);
@@ -126,10 +150,10 @@ describe("Nginx", () => {
     assert.deepEqual(returns, ["301 https://dashboard.funnelliner.com/", "301 https://dashboard.funnelliner.com/"]);
   });
 
-  test("production's ERP has no site file of its own — it is reached through dashboard.funnelliner.com (GV-16)", () => {
+  test("production's ERP has no site file of its own — it is reached through dashboard.funnelliner.com (GV-16); giftvaly-shop.conf is only the website", () => {
     assert.deepEqual(
       readdirSync(path.join(ROOT, "deploy/nginx")).filter((n) => n.endsWith(".conf")).sort(),
-      ["giftvaly-legacy-redirect.conf", "giftvaly-shop-staging.conf", "giftvaly-staging.conf"]
+      ["giftvaly-legacy-redirect.conf", "giftvaly-shop-staging.conf", "giftvaly-shop.conf", "giftvaly-staging.conf"]
     );
   });
 });

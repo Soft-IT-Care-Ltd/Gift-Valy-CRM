@@ -31,6 +31,7 @@ Commands marked **(root)** run as root through `sudo` from `ssh antu` (the serve
 |---|---|
 | DNS `gv-staging.funnelliner.com` — A record to the server, **proxied** (orange cloud) | owner, in Cloudflare |
 | DNS `shop-staging.giftvaly.com` (zone `giftvaly.com`) — A record to the server, **proxied**; nothing in that zone redirecting it — step 4b | owner, in Cloudflare |
+| DNS `giftvaly.com` (`@`) and `www.giftvaly.com` — A records to the server, **proxied** — step 4b (production website) | owner, in Cloudflare |
 | A read-only GitHub deploy key for `Soft-IT-Care-Ltd/Gift-Valy-CRM` — step 1 | a repository admin adds it |
 | The A7 shared sign-in page (admin repo) and the GV-N Nginx block (Antu repo) built and pushed | both repos |
 | B2 lifecycle rules for the `giftvaly-` prefixes — step 11 | owner, in the B2 web UI |
@@ -133,7 +134,7 @@ No shadow database on the server: `SHADOW_DATABASE_URL` is development only (CLA
 
 The server has one public address, **IPv4 `165.101.188.249`** (no IPv6 — so no AAAA record), and ufw lets only Cloudflare reach 80/443: every website name must be **proxied** (orange cloud), from the start — a grey record would never reach Nginx, not even for the certificate.
 
-1. **DNS:** `shop-staging` — Type **A**, IPv4 `165.101.188.249`, **Proxied**. (Production's `@` and `www` are W-10 Part 2.)
+1. **DNS:** `shop-staging` — Type **A**, IPv4 `165.101.188.249`, **Proxied**. Production (W-10 Part 2): `@` and `www` — the same, each Type **A**, IPv4 `165.101.188.249`, **Proxied**. (`www` must be its own record, not a CNAME to a name outside this server; Nginx answers it with the 301 to the bare name.)
 2. **SSL/TLS → Overview:** **Full (strict)** — Nginx holds a Let's Encrypt certificate for every name. *Flexible* would send Cloudflare to port 80, which only redirects to https: an endless redirect.
 3. **Nothing may redirect the website's names away.** **Rules → Overview** (Redirect Rules, Page Rules, Bulk Redirects) must hold no rule that matches `shop-staging.giftvaly.com` (later `giftvaly.com` / `www`) — a rule for all hostnames or `*.giftvaly.com` catches it, Let's Encrypt's check included. The one rule that stays is **`app.giftvaly.com` → `https://dashboard.funnelliner.com/`** (step 5b), which needs its own proxied `app` record or the zone's wildcard. (On 26 Nov 2026 every name in the zone — `www`, `app`, any other — answered with Cloudflare's own `301 → https://get-entry.to/`, from a proxied `*` record and a zone rule; the apex was a grey record to another server.)
 4. **Caching:** no cache rule is needed in this zone. Cloudflare's default caches only file types (the build's `/_next/static/…`, `/img/…`, `/shop/…`), never the pages: the website's pages send `s-maxage=600` for the app's own cache, and Cloudflare must **not** keep them, or a save in the ERP would wait for the CDN (ROUND3 W-9). **Never "Cache Everything"** in this zone; `/api/shop/…` (bag, checkout, the order) is never cached.
@@ -193,6 +194,26 @@ install -m 644 /srv/giftvaly-staging/app/deploy/nginx/giftvaly-shop-staging.conf
 
 What it does: `shop-staging.giftvaly.com` → `127.0.0.1:3210`, the same staging app as `gv-staging` (the app shows the website because the name is in `STOREFRONT_HOSTS`, step 6b); `/_c/…` and `/go/…` → 404 (machines use `gv-staging`); port 80 → a 301 to HTTPS; the Cloudflare real IP; `antu-app-proxy.conf` (Host, X-Real-IP, 600 s timeouts) and 12 MB bodies, as the ERP. The same `giftvaly-staging-guard.conf` as `gv-staging`: **the same staging password**, noindex, and a `robots.txt` that disallows everything. The certificate renews like the others (certbot's timer, through the same webroot).
 
+### 5d. The website — `giftvaly.com` and `www.giftvaly.com` (ROUND3 W-10) **(root)**
+
+After step 4b (`@` and `www`) and after production runs a release with the website in it (step 6b, then `scripts/deploy.sh main`). The certificate first — one for both names — through a port-80-only site, as step 5c:
+
+```bash
+printf 'server {\n    listen 80;\n    listen [::]:80;\n    server_name giftvaly.com www.giftvaly.com;\n    include snippets/cloudflare-real-ip.conf;\n    include snippets/acme-challenge.conf;\n    location / { return 404; }\n}\n' > /etc/nginx/sites-available/gv-acme.conf && ln -sf /etc/nginx/sites-available/gv-acme.conf /etc/nginx/sites-enabled/ && nginx -t && systemctl reload nginx
+```
+
+```bash
+certbot certonly --webroot -w /var/www/letsencrypt -d giftvaly.com -d www.giftvaly.com --agree-tos -m <owner email> --non-interactive
+```
+
+Then the site file, from the production release, and remove the temporary one:
+
+```bash
+install -m 644 /srv/giftvaly/app/deploy/nginx/giftvaly-shop.conf /etc/nginx/sites-available/ && ln -sf /etc/nginx/sites-available/giftvaly-shop.conf /etc/nginx/sites-enabled/ && rm -f /etc/nginx/sites-enabled/gv-acme.conf /etc/nginx/sites-available/gv-acme.conf && nginx -t && systemctl reload nginx
+```
+
+What it does: `giftvaly.com` → `127.0.0.1:3200`, the same production app as `dashboard.funnelliner.com` (the app shows the website because the name is in `STOREFRONT_HOSTS`, step 6b); `www.giftvaly.com` → a 301 to `https://giftvaly.com` with the path kept, on 80 and 443; `/_c/…` and `/go/…` → 404 (machines use `dashboard.funnelliner.com/_c/giftvaly/`); port 80 → a 301 to HTTPS; the Cloudflare real IP; `antu-app-proxy.conf` (Host, X-Real-IP, 600 s timeouts) and 12 MB bodies, as the dashboard block. No password, no noindex. The certificate renews like the others (certbot's timer, through the same webroot).
+
 ---
 
 ## 6. The `.env` files **(root, the same shell as step 3)**
@@ -234,7 +255,13 @@ The app is the website only for the names in `STOREFRONT_HOSTS` (`lib/storefront
 f=/srv/giftvaly-staging/shared/.env; for kv in 'STOREFRONT_HOSTS="shop-staging.giftvaly.com"' 'STOREFRONT_NOINDEX="1"'; do k=${kv%%=*}; grep -q "^$k=" $f && sed -i "s|^$k=.*|$kv|" $f || echo "$kv" >> $f; done; grep -E '^STOREFRONT_' $f
 ```
 
-`STOREFRONT_URL` stays unset: links, the sitemap and share images use `https://<first name>`. A change later (without a deploy): `pm2 reload giftvaly-staging --update-env`.
+Production — before its first deploy with the website; the bare name **first** (links, the sitemap, canonical and share images use it), and never `STOREFRONT_NOINDEX` (the deploy refuses it):
+
+```bash
+f=/srv/giftvaly/shared/.env; kv='STOREFRONT_HOSTS="giftvaly.com,www.giftvaly.com"'; k=${kv%%=*}; grep -q "^$k=" $f && sed -i "s|^$k=.*|$kv|" $f || echo "$kv" >> $f; sed -i '/^STOREFRONT_NOINDEX=/d' $f; grep -E '^STOREFRONT_' $f
+```
+
+`STOREFRONT_URL` stays unset: links, the sitemap and share images use `https://<first name>`. A change later (without a deploy): `pm2 reload giftvaly-staging --update-env` (production: `pm2 reload giftvaly --update-env`).
 
 ---
 
@@ -452,3 +479,14 @@ In this order:
 4. Confirm it → it gets its `GV-` number and `order_sequences` moves by exactly one (rule 6).
 5. A Packing user prints its invoice from the Packing queue.
 6. On the website name `/login`, `/api/orders`, `/uploads/x`, `/go/`, `/_c/giftvaly/api/platform/usage` are 404; on `gv-staging` the website's paths are 404.
+
+### 14d. Production website (ROUND3 W-10)
+
+No test order on production (rule 6) — the owner places the first real one.
+
+1. `https://giftvaly.com` answers the website (or its holding page while Settings → Website is off); no password, no `X-Robots-Tag: noindex`; `/robots.txt` and `/sitemap.xml` name `https://giftvaly.com`.
+2. `http://giftvaly.com/x`, `http://www.giftvaly.com/x` and `https://www.giftvaly.com/x` → 301 to `https://giftvaly.com/x`.
+3. On `giftvaly.com`: `/login`, `/api/orders`, `/uploads/x`, `/go/`, `/_c/giftvaly/api/platform/usage` are 404.
+4. `dashboard.funnelliner.com` still signs in to Gift Valy and to Antu; the website's paths there are the ERP's.
+5. Admin panel → Clients → Gift Valy: **Test connection** passes.
+6. HTML pages come back from Cloudflare `cf-cache-status: DYNAMIC` (never `HIT`); `/_next/static/…` may be `HIT`.

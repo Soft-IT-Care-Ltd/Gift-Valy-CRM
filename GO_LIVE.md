@@ -142,6 +142,18 @@ Cloudflare → zone **`giftvaly.com`**:
 
 `https://shop-staging.giftvaly.com` খুললে **staging এর সেই একই পাসওয়ার্ড** চাইবে (ধাপ ২.২), আর Google কে ঢুকতে দেবে না (noindex)।
 
+### ৬.২ — আসল ওয়েবসাইট (`giftvaly.com`)
+
+Cloudflare → zone **`giftvaly.com`** → **DNS → Records**:
+
+1. **Add record:** Type `A`, Name `@`, IPv4 `165.101.188.249`, **Proxied চালু** → Save।
+2. **Add record:** Type `A`, Name `www`, IPv4 `165.101.188.249`, **Proxied চালু** → Save।
+3. ৬.১ এর ২–৪ নম্বর এই দুই নামের জন্যও: SSL **Full (strict)**; কোনো Redirect/Page Rule যেন `giftvaly.com` বা `www` কে অন্য কোথাও না পাঠায় — **শুধু `app.giftvaly.com → dashboard.funnelliner.com` rule টা থাকবে**; **"Cache Everything" কখনো নয়**।
+4. **AI Crawl Control / Bots → "Managed robots.txt"** বন্ধ রাখুন — ওয়েবসাইট নিজের `robots.txt` দেয়।
+5. Developer কে জানান। Developer certificate বানিয়ে site চালু করবে। `www.giftvaly.com` খুললে নিজে থেকেই `giftvaly.com` এ চলে যাবে।
+
+তারপর ERP তে (`dashboard.funnelliner.com`): **Settings → Website** চালু করুন, WhatsApp নম্বর, পেজের লিংক, ঠিকানা আর নীতিমালা লিখে Save করুন; **Catalog → Products / Packages / Categories** এ যেটা ওয়েবসাইটে দেখাতে চান তার Edit খুলে **Website** অংশে "Show on website" চালু করে ছবি দিন। প্রথম আসল order টা আপনি নিজে দিন — production এ পরীক্ষার order নয় (নিয়ম ৬)।
+
 ---
 
 ## শেষে মিলিয়ে নিন
@@ -151,4 +163,5 @@ Cloudflare → zone **`giftvaly.com`**:
 - [ ] Steadfast এর প্রথম webhook এসেছে।
 - [ ] Developer জানিয়েছে: প্রথম রাতের ও ঘণ্টার ব্যাকআপ Backblaze এ পৌঁছেছে, আর restore drill পাস করেছে।
 - [ ] `app.giftvaly.com` → `dashboard.funnelliner.com`।
+- [ ] `https://giftvaly.com` এ ওয়েবসাইট খোলে; `www.giftvaly.com` → `giftvaly.com`।
 - [ ] Production এ কোনো পরীক্ষার order নেই।
