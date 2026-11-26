@@ -3,6 +3,8 @@ import type { MetadataRoute } from "next";
 // PWA manifest (SPEC §16 Phase 4 — mobile PWA). Next serves this at
 // /manifest.webmanifest and links it from every page automatically, so the
 // team can "Add to Home Screen" and use the app full-screen like a native one.
+// ERP host only: the website's root layout (app/(store)/layout.tsx) links its
+// own manifest instead, and the front door 404s this file on the website host.
 export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "Gift Valy — Business Management",

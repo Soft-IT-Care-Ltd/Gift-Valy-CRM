@@ -11,7 +11,9 @@ import {
   storefrontHosts,
   storefrontRoute,
   STOREFRONT_PREFIX,
+  STOREFRONT_STATIC_PREFIX,
 } from "../lib/storefront/hosts";
+import { storeManifest, STORE_MANIFEST_PATH, STORE_THEME_COLOR } from "../lib/storefront/seo";
 import type { PlatformStateName } from "../lib/platform/state-shape";
 
 const ROOT = path.resolve(__dirname, "..");
@@ -350,6 +352,56 @@ describe("W-7 Website off — the Coming soon page", () => {
   });
 });
 
+// W-10 follow-up — app/manifest.ts (the ERP's PWA manifest) made Next link
+// /manifest.webmanifest from every page, website pages included, where the
+// front door 404s it: a console error on every website page. The website
+// links its own manifest instead, served on the website host only.
+describe("W-10 the website's own manifest (never the ERP's)", () => {
+  const { read } = reader("active");
+  const internal = `${STOREFRONT_PREFIX}${STORE_MANIFEST_PATH}`;
+
+  test("on the website host its path is a storefront route; the ERP's /manifest.webmanifest stays a 404", async () => {
+    const res = await frontDoor(request(WEBSITE, STORE_MANIFEST_PATH), read, HOSTS, OPEN);
+    assert.equal(rewriteOf(res), internal);
+    assert.ok(storefrontRoutes().some((r) => r.test(internal)), `${internal} is answered by the storefront`);
+    assert.notEqual(STORE_MANIFEST_PATH, "/manifest.webmanifest");
+    assert.ok(ERP_PATHS.includes("/manifest.webmanifest"), "the ERP's manifest stays in the website's 404 list");
+  });
+
+  test("on the ERP host it doesn't exist; nothing outside the store serves it", async () => {
+    assert.equal((await frontDoor(request(ERP, internal), read, HOSTS, OPEN)).status, 404);
+    const store = path.join(ROOT, "app", "(store)");
+    const outside = walk(path.join(ROOT, "app"))
+      .filter((f) => !f.startsWith(store + path.sep))
+      .filter((f) => f.includes(STORE_MANIFEST_PATH.slice(1)))
+      .map((f) => path.relative(ROOT, f));
+    assert.deepEqual(outside, []);
+    assert.equal(existsSync(path.join(ROOT, "public", STORE_MANIFEST_PATH)), false, "not a public/ file (both hosts would serve it)");
+  });
+
+  test("Gift Valy, navy, the website's own icon (true size), opens the shop", () => {
+    const m = storeManifest();
+    assert.equal(m.name, "Gift Valy");
+    assert.equal(m.theme_color, STORE_THEME_COLOR);
+    assert.equal(STORE_THEME_COLOR.toLowerCase(), "#2c347c");
+    assert.equal(m.start_url, "/");
+    assert.ok(m.icons?.some((i) => i.src === "/shop/icon.png"), "public/shop/icon.png");
+    for (const icon of m.icons ?? []) {
+      assert.ok(icon.src.startsWith(STOREFRONT_STATIC_PREFIX), `${icon.src} passes the front door`);
+      const png = readFileSync(path.join(ROOT, "public", icon.src));
+      assert.equal(icon.sizes, `${png.readUInt32BE(16)}x${png.readUInt32BE(20)}`, `${icon.src} size`);
+    }
+    assert.doesNotMatch(JSON.stringify(m), /\/icons\/|Business Management|ERP|#7c3aed/i, "nothing of the ERP's");
+  });
+
+  test("the website's root layout links it; the route reads no database", () => {
+    const layout = readFileSync(path.join(ROOT, "app/(store)/layout.tsx"), "utf8");
+    assert.match(layout, /manifest: STORE_MANIFEST_PATH,/);
+    const route = readFileSync(path.join(ROOT, "app/(store)/storefront", STORE_MANIFEST_PATH.slice(1), "route.ts"), "utf8");
+    assert.doesNotMatch(route, /from\s+["'](@\/lib\/db|@prisma\/client|@\/lib\/storefront\/catalog)["']/);
+  });
+});
+
 describe("W-1 separation in the code", () => {
   const files = (dir: string) =>
     (existsSync(path.join(ROOT, dir)) ? walk(path.join(ROOT, dir)) : [])
@@ -365,7 +417,8 @@ describe("W-1 separation in the code", () => {
 
   test("the website's root layout loads none of the ERP's providers, theme, PWA or service worker", () => {
     const layout = readFileSync(path.join(ROOT, "app/(store)/layout.tsx"), "utf8");
-    assert.doesNotMatch(layout, /ThemeProvider|PwaRegister|Toaster|globals\.css|sw\.js|manifest/);
+    // W-10 follow-up: its own manifest (STORE_MANIFEST_PATH) is allowed, the ERP's never.
+    assert.doesNotMatch(layout, /ThemeProvider|PwaRegister|Toaster|globals\.css|sw\.js|manifest\.webmanifest|app\/manifest|\/icons\//);
     assert.equal(statSync(path.join(ROOT, "app/(erp)/layout.tsx")).isFile(), true);
     assert.throws(() => statSync(path.join(ROOT, "app/layout.tsx")), "no shared root layout");
   });

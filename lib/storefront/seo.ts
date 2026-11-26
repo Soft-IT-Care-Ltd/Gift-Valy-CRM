@@ -1,3 +1,5 @@
+import type { MetadataRoute } from "next";
+import { copy } from "./copy";
 import type { WebItem } from "./types";
 
 // ROUND3 W-8 — what search engines and link previews (Facebook, WhatsApp)
@@ -5,6 +7,36 @@ import type { WebItem } from "./types";
 
 /** The branded link-preview image (public/shop/og.png, 1200 × 630) — every page without a photo of its own. */
 export const SHARE_IMAGE = { url: "/shop/og.png", width: 1200, height: 630 } as const;
+
+/** The website's brand navy: the browser bar (viewport theme-color) and the manifest. */
+export const STORE_THEME_COLOR = "#2c347c";
+
+/**
+ * W-10 follow-up — the website's own web app manifest, at this public path on
+ * the website host only (app/(store)/storefront/site.webmanifest/route.ts;
+ * the ERP host has no such route). The store's root layout links it, which
+ * replaces the link Next adds to every page for the ERP's manifest
+ * (app/manifest.ts) — the front door 404s ERP files on the website host, so
+ * that link was a console error on every website page.
+ */
+export const STORE_MANIFEST_PATH = "/site.webmanifest";
+
+/** "Add to Home screen" for a customer: the shop's name, navy, its own icon (public/shop/, 512 × 512); opens the shop with the browser's buttons kept. */
+export function storeManifest(): MetadataRoute.Manifest {
+  return {
+    id: "/",
+    name: copy.brand.name,
+    short_name: copy.brand.name,
+    description: copy.brand.tagline,
+    lang: copy.lang,
+    start_url: "/",
+    scope: "/",
+    display: "minimal-ui",
+    background_color: "#fffaf4",
+    theme_color: STORE_THEME_COLOR,
+    icons: [{ src: "/shop/icon.png", sizes: "512x512", type: "image/png", purpose: "any" }],
+  };
+}
 
 /** A shown photo at its largest website size, for og:image. */
 export const ogPhoto = (path: string | null | undefined) => (path ? { url: `${path}-1080.webp`, width: 1080, height: 1080 } : SHARE_IMAGE);

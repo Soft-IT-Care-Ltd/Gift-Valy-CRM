@@ -6,7 +6,7 @@ import { StoreHeader } from "@/components/storefront/store-header";
 import { cachedPixelId } from "@/lib/storefront/cached";
 import { copy } from "@/lib/storefront/copy";
 import { storefrontOrigin } from "@/lib/storefront/hosts";
-import { SHARE_IMAGE } from "@/lib/storefront/seo";
+import { SHARE_IMAGE, STORE_MANIFEST_PATH, STORE_THEME_COLOR } from "@/lib/storefront/seo";
 import "./store.css";
 
 // ROUND3 W-1/W-4 — the public website's root layout: its own fonts, theme
@@ -18,6 +18,10 @@ import "./store.css";
 // W-8: every page's link preview (Facebook, WhatsApp) falls back to the
 // branded 1200 × 630 share image; the Meta Pixel loads only while tracking is
 // on (Settings → Website → Meta Pixel).
+//
+// W-10 follow-up: the website links its own web app manifest (name, navy,
+// its own icon — lib/storefront/seo.ts), never the ERP's, which is a 404 on
+// the website host.
 
 const hind = Hind_Siliguri({
   subsets: ["bengali", "latin"],
@@ -42,10 +46,11 @@ export const metadata: Metadata = {
   twitter: { card: "summary_large_image", images: [SHARE_IMAGE.url] },
   icons: { icon: [{ url: "/shop/icon.png", type: "image/png" }], apple: [{ url: "/shop/icon.png" }] },
   formatDetection: { telephone: false },
+  manifest: STORE_MANIFEST_PATH,
 };
 
 export const viewport: Viewport = {
-  themeColor: "#2c347c",
+  themeColor: STORE_THEME_COLOR,
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
