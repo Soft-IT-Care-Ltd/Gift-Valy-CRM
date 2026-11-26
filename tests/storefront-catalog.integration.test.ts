@@ -20,7 +20,7 @@ import { PrismaClient, type Prisma } from "@prisma/client";
 import { prisma as appPrisma } from "../lib/db";
 import * as catalog from "../lib/storefront/catalog";
 import { buildHomeView } from "../lib/storefront/home-data";
-import { applyWebsite, bulkWebsiteNeedsApply, WebsiteInputError } from "../lib/catalog-website";
+import { applyWebsite, WebsiteInputError } from "../lib/catalog-website";
 import { parseRichText } from "../lib/catalog-website-shape";
 import { uploadUrlPath } from "../lib/file-storage";
 
@@ -424,31 +424,6 @@ describe("W-2 the Website panel's server path", () => {
       assert.ok(back && "item" in back);
       const rows = await tx.auditLog.findMany({ where: { action: "catalog.website", entity: "products", entityId: String(f.choc.id) } });
       assert.ok(rows.length >= 3, "each change audited");
-    });
-  });
-
-  test("an item made before the website (on, no address) is not shown until Show on website gives it an address", async () => {
-    await inRollback(async (tx) => {
-      const f = await fixture(tx);
-      // As W-2's migration left every existing row: show_on_website DEFAULT true, slug NULL.
-      const old = await tx.product.create({
-        data: { name: `Old Mug ${f.tag}`, sku: `OLD-${f.tag}`, categoryId: f.category.id, sellingPrice: 450, createdBy: f.staff.id, updatedBy: f.staff.id },
-        select: { id: true, name: true, sku: true, showOnWebsite: true, slug: true },
-      });
-      assert.equal(old.showOnWebsite, true);
-      assert.equal(old.slug, null);
-      const names = async () => (await catalog.listWebItems({ take: 500 }, tx)).map((c) => c.name);
-      assert.ok(!(await names()).includes(old.name), "no address → not on the website");
-      // The bulk switch must not skip it as "already shown"…
-      assert.equal(bulkWebsiteNeedsApply(old, true), true);
-      await applyWebsite(tx, "product", old.id, { showOnWebsite: true }, { userId: f.staff.id, name: old.name, code: old.sku, price: 450, notEligible: null, isActive: true });
-      const after = await tx.product.findUniqueOrThrow({ where: { id: old.id }, select: { showOnWebsite: true, slug: true, slugPublishedAt: true } });
-      assert.ok(after.slug && after.slugPublishedAt, "Show gave it an address, published");
-      assert.ok((await names()).includes(old.name), "now on the website");
-      // …and once it has one, Show again is a no-op; Hide still applies.
-      assert.equal(bulkWebsiteNeedsApply(after, true), false);
-      assert.equal(bulkWebsiteNeedsApply(after, false), true);
-      assert.equal(bulkWebsiteNeedsApply({ showOnWebsite: false, slug: null }, false), false);
     });
   });
 

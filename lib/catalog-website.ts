@@ -345,4 +345,4 @@ export async function applyWebsite(
   }
 }
 
-export { websiteValues, productWebsiteBlock, bulkWebsiteNeedsApply } from "./catalog-website-values";
+export { websiteValues, productWebsiteBlock } from "./catalog-website-values";
