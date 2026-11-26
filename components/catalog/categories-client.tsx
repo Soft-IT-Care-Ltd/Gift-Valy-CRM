@@ -149,7 +149,11 @@ export function CategoriesClient({ categories }: { categories: CategoryRow[] }) 
                 <TableCell className="font-medium">{c.name}</TableCell>
                 <TableCell>{c.productsCount}</TableCell>
                 <TableCell>
-                  {c.website.showOnWebsite ? (
+                  {c.website.showOnWebsite && !c.website.slug ? (
+                    <Badge variant="outline" className="border-amber-400 text-amber-700" title="Not on the website yet — open and save it">
+                      No address yet
+                    </Badge>
+                  ) : c.website.showOnWebsite ? (
                     <Badge variant="secondary" title={c.website.slug ? `/c/${c.website.slug}` : undefined}>
                       Shown{c.website.websiteFeatured ? " · featured" : ""}
                     </Badge>

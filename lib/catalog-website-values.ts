@@ -43,6 +43,17 @@ export function websiteValues(row: WebsiteRow): WebsiteValues {
   };
 }
 
+/**
+ * The bulk Website switch: does this row need applyWebsite()? When its state
+ * differs — and also when it is to be shown but has no address yet. Rows made
+ * before the website existed (W-2's migration) are "Show on website" on by
+ * default with no slug, so they are not on the website; "Show on website"
+ * must give them their address rather than skip them as already shown.
+ */
+export function bulkWebsiteNeedsApply(row: { showOnWebsite: boolean; slug: string | null }, show: boolean): boolean {
+  return row.showOnWebsite !== show || (show && !row.slug);
+}
+
 /** Why a product can't be on the website, or null. */
 export function productWebsiteBlock(productType: string): string | null {
   return productType === "COMPONENT" ? "Component-only products (packing materials) are never sold on the website" : null;

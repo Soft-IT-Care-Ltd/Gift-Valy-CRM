@@ -38,6 +38,14 @@ export function WebsiteFilterTabs({ value, onChange }: { value: WebsiteFilter; o
 
 export function WebsiteCell({ website, eligible }: { website: WebsiteValues; eligible: boolean }) {
   if (!website.showOnWebsite) return <Badge variant="outline">Hidden</Badge>;
+  // On, but never given an address (made before the website existed): not on
+  // the website until it is saved, or "Show on website" from the list.
+  if (!website.slug)
+    return (
+      <Badge variant="outline" className="border-amber-400 text-amber-700" title="Not on the website yet — select it and press Show on website, or open and save it">
+        No address yet
+      </Badge>
+    );
   return (
     <span className="inline-flex flex-wrap items-center gap-1">
       <Badge variant={eligible ? "secondary" : "outline"} title={website.slug ? `/p/${website.slug}` : undefined}>
