@@ -13,7 +13,7 @@ import { PrismaClient, type Prisma } from "@prisma/client";
 import { prisma as appPrisma } from "../lib/db";
 import { loadBomCatalog } from "../lib/bom-db";
 import { packagePrice } from "../lib/bom";
-import { confirmDraftTx } from "../lib/orders";
+import { confirmDraftTx, editedCodAmount, nextCodAmount, recomputeDue } from "../lib/orders";
 import { dhakaYearMonth, formatOrderNo } from "../lib/order-number";
 import { dhakaDateBound } from "../lib/order-constants";
 import { getWebsiteUserId } from "../lib/system-user";
@@ -567,6 +567,60 @@ describe("W-6 confirm and cancel (rule 6)", () => {
       assert.equal(receipt?.number, orderNo);
       assert.equal(receipt?.state, "ACTIVE");
       assert.equal(receipt?.stepsDone, 1);
+    });
+  });
+
+  test("the COD follows the due before handover: the courier never collects an advance already paid", async () => {
+    await inRollback(async (tx) => {
+      const f = await fixture(tx);
+      const p = await people(tx);
+      const placed = await placeWebsiteOrder(request(f, ksaPhone()), { ip: null }, tx);
+      const money = async () => {
+        const o = await tx.order.findUniqueOrThrow({ where: { id: placed.orderId }, select: { totalAmount: true, dueAmount: true, codAmount: true } });
+        return { total: Number(o.totalAmount), due: Number(o.dueAmount), cod: Number(o.codAmount) };
+      };
+      const pay = async (amount: number) => {
+        const row = await tx.payment.create({ data: { orderId: placed.orderId, type: "ADVANCE", method: "CASH", amount, createdBy: p.a.id, updatedBy: p.a.id } });
+        await recomputeDue(tx, placed.orderId);
+        return row;
+      };
+      const start = await money();
+      assert.equal(start.cod, start.total, "a website draft: COD = total, nothing paid yet");
+      // The advance lands (the payments route: payment → recomputeDue → confirm).
+      const advance = await pay(1000);
+      await confirmDraftTx(tx, placed.orderId, p.a.id, null);
+      let m = await money();
+      assert.equal(m.due, start.total - 1000);
+      assert.equal(m.cod, m.due, "COD = due after the advance (was the whole total before the fix)");
+      // A rejected advance (money that never arrived) puts it back.
+      await tx.payment.update({ where: { id: advance.id }, data: { isRejected: true } });
+      await recomputeDue(tx, placed.orderId);
+      m = await money();
+      assert.equal(m.cod, start.total);
+      // A COD set by hand stays — but never above what is still due.
+      await tx.order.update({ where: { id: placed.orderId }, data: { codAmount: 500 } });
+      await pay(100);
+      assert.equal((await money()).cod, 500, "custom COD kept");
+      await pay(start.total - 100 - 300);
+      m = await money();
+      assert.equal(m.due, 300);
+      assert.equal(m.cod, 300, "custom COD capped at the due");
+      // After handover the order's COD is the one handed over: a later payment doesn't move it.
+      await tx.order.update({ where: { id: placed.orderId }, data: { status: "IN_TRANSIT" } });
+      await pay(100);
+      m = await money();
+      assert.equal(m.due, 200);
+      assert.equal(m.cod, 300, "in transit: left as handed over");
+      // The rule itself.
+      assert.equal(nextCodAmount({ codAmount: 3480, dueAmount: 3480 }, 2480), 2480);
+      assert.equal(nextCodAmount({ codAmount: 0, dueAmount: 0 }, 150), 150, "fully paid, then a payment rejected");
+      assert.equal(nextCodAmount({ codAmount: 0, dueAmount: 500 }, 400), 0, "COD 0 by hand (all paid by bKash later) stays 0");
+      assert.equal(nextCodAmount({ codAmount: 3480, dueAmount: 3480 }, -20), 0, "overpaid → nothing to collect");
+      // An order edit (the form sends the stored COD back): untouched → follows; typed → capped at the due.
+      assert.equal(editedCodAmount({ submitted: 2480, before: 2480, followed: 2780, due: 2780 }), 2780, "total raised by 300, COD untouched → follows");
+      assert.equal(editedCodAmount({ submitted: 3480, before: 2480, followed: 2480, due: 2480 }), 2480, "typed above the due → the due");
+      assert.equal(editedCodAmount({ submitted: 1000, before: 2480, followed: 2480, due: 2480 }), 1000, "typed below → kept");
+      assert.equal(editedCodAmount({ submitted: null, before: 2480, followed: 2480, due: 2200 }), 2200, "cleared → the due");
     });
   });
 

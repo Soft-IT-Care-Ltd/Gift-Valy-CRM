@@ -262,7 +262,7 @@ async function placeInTx(tx: Tx, input: CheckedOrderRequest, ctx: Ctx): Promise<
       totalAmount: total,
       advanceAmount: 0,
       dueAmount: total, // nothing paid yet (CLAUDE.md rule 2)
-      codAmount: total, // as a staff draft: the SE sets it when the advance lands
+      codAmount: total, // as a staff draft: follows the due when the advance lands (recomputeDue → nextCodAmount)
       status: "DRAFT",
       notes: input.note ? `Customer's note (website): ${input.note}` : null,
       salesExecutiveId: ownerId,

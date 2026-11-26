@@ -9,6 +9,7 @@ import {
   CUSTOMER_COUNTRIES,
   DELIVERY_DATE_MODES,
   DELIVERY_ZONES,
+  EDITABLE_STATUSES,
   MFS_METHODS,
   OCCASIONS,
   ORDER_STATUSES,
@@ -596,14 +597,41 @@ export async function confirmDraftTx(
 
 // ---------- due recompute (CLAUDE.md rule 2 / SPEC integrity rule 1) ----------
 
+// The COD amount (SPEC §4.1 D: "auto/edit — portion to collect on
+// delivery") after the due changes. A COD that was following the due — the
+// default, and every website order and staff draft (COD = total until the
+// advance lands) — keeps following it: an advance or a payment lowers it, a
+// rejected payment raises it back. A COD set by hand stays, but never above
+// what is still due, so the courier never collects money already paid.
+export function nextCodAmount(prev: { codAmount: number; dueAmount: number }, newDue: number): number {
+  const cap = round2(Math.max(newDue, 0));
+  if (round2(prev.codAmount) === round2(Math.max(prev.dueAmount, 0))) return cap;
+  return Math.min(round2(prev.codAmount), cap);
+}
+
+// The COD an order edit saves. The edit form always sends the stored COD:
+// sent back unchanged → what recomputeDue made of it (`followed`, which
+// already follows the new due); cleared → the due; typed by hand → that
+// value, but never above what is due.
+export function editedCodAmount(input: { submitted: number | null | undefined; before: number; followed: number; due: number }): number {
+  const cap = round2(Math.max(input.due, 0));
+  if (input.submitted == null) return cap;
+  if (round2(input.submitted) === round2(input.before)) return input.followed;
+  return Math.min(round2(input.submitted), cap);
+}
+
 // due = total − Σ(payments ≠ REFUND) + Σ(REFUND). Runs inside the same
 // transaction as the payment write; also called after edits change the total.
 // Rejected payments (money that never arrived, SPEC §8) are excluded, so
 // rejecting a bogus payment restores the order's due.
+// Before courier handover (an editable status, no shipment) the COD follows
+// the new due (nextCodAmount) — the bulk Steadfast send uses the stored COD.
+// After handover the parcel's COD is the courier's (shipments.cod_amount) and
+// the order's COD is left as it was handed over.
 export async function recomputeDue(tx: Tx, orderId: number): Promise<number> {
   const order = await tx.order.findUniqueOrThrow({
     where: { id: orderId },
-    select: { totalAmount: true },
+    select: { totalAmount: true, dueAmount: true, codAmount: true, status: true, shipment: { select: { id: true } } },
   });
   const payments = await tx.payment.findMany({
     where: { orderId, isRejected: false },
@@ -614,7 +642,12 @@ export async function recomputeDue(tx: Tx, orderId: number): Promise<number> {
     0
   );
   const due = round2(Number(order.totalAmount) - paid);
-  await tx.order.update({ where: { id: orderId }, data: { dueAmount: due } });
+  const data: { dueAmount: number; codAmount?: number } = { dueAmount: due };
+  if (!order.shipment && EDITABLE_STATUSES.includes(order.status as OrderStatusValue)) {
+    const cod = nextCodAmount({ codAmount: Number(order.codAmount), dueAmount: Number(order.dueAmount) }, due);
+    if (cod !== round2(Number(order.codAmount))) data.codAmount = cod;
+  }
+  await tx.order.update({ where: { id: orderId }, data });
   return due;
 }
 
@@ -701,6 +734,7 @@ export async function applyOrderEdit(
   totals: ResolvedTotals,
   userId: number
 ) {
+  const { codAmount: codBefore } = await tx.order.findUniqueOrThrow({ where: { id: orderId }, select: { codAmount: true } });
   await tx.orderItem.deleteMany({ where: { orderId } });
   await tx.orderItem.createMany({
     data: totals.lines.map((l) => ({
@@ -756,9 +790,9 @@ export async function applyOrderEdit(
     anniversary: payload.recipientAnniversary,
     userId,
   });
-  const due = await recomputeDue(tx, orderId);
-  // COD: explicit value wins, otherwise follow the recomputed due (never < 0).
-  const cod = payload.codAmount ?? Math.max(due, 0);
+  const due = await recomputeDue(tx, orderId); // the COD already follows the new due here (nextCodAmount)
+  const { codAmount: followed } = await tx.order.findUniqueOrThrow({ where: { id: orderId }, select: { codAmount: true } });
+  const cod = editedCodAmount({ submitted: payload.codAmount, before: Number(codBefore), followed: Number(followed), due });
   await tx.order.update({ where: { id: orderId }, data: { codAmount: cod } });
   // Reservations track the items of a CONFIRMED order. PACKED edits don't
   // touch stock — the deduction reflects what was physically packed, and any
