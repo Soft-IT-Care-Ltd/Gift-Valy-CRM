@@ -178,8 +178,9 @@ export async function syncPrintKits(
 }
 
 /**
- * Recounts a kit's photos and cards and sets its status: PENDING until every
- * photo and card is in, then READY. Once printed, any change (`changed`)
+ * Recounts a kit's photos and cards and sets its status: PENDING until at
+ * least one photo and every card is in (kitProgress — the photo count is the
+ * frame's maximum), then READY. Once printed, any change (`changed`)
  * makes it CHANGED_AFTER_PRINT — Packing must reprint (PP-7).
  */
 export async function refreshKit(

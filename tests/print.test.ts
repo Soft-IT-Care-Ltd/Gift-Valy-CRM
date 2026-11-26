@@ -500,9 +500,21 @@ describe("PP-4 crop math (shared by the crop dialog and the print file)", () => 
 
 describe("PP-4 kit progress + the order-list badge", () => {
   test("photos first, then cards, then ready", () => {
-    assert.deepEqual(kitProgressLabel(kitProgress(KIT, 9, 0)).en, "Photos pending 9/14");
+    assert.deepEqual(kitProgressLabel(kitProgress(KIT, 0, 0)).en, "Photos pending 0/14");
     assert.deepEqual(kitProgressLabel(kitProgress(KIT, 14, 1)).en, "Cards pending 1/2");
     assert.equal(kitProgress(KIT, 14, 2).state, "READY");
+    assert.equal(kitProgressLabel(kitProgress(KIT, 14, 2)).en, "Ready to print");
+  });
+
+  test("the photo count is the frame's maximum — fewer photos still print", () => {
+    assert.equal(kitProgress(KIT, 12, 2).state, "READY");
+    assert.equal(kitProgress(KIT, 1, 2).state, "READY");
+    assert.equal(kitProgressLabel(kitProgress(KIT, 12, 2)).en, "Ready to print · 12/14 photos");
+    assert.equal(kitProgressLabel(kitProgress(KIT, 12, 2)).bn, "প্রিন্টের জন্য তৈরি · 12/14 ছবি");
+    // Every card is still required.
+    assert.deepEqual(kitProgressLabel(kitProgress(KIT, 12, 1)).en, "Cards pending 1/2");
+    // A cards-only kit needs no photo.
+    assert.equal(kitProgress({ photos: { PHOTO_L: 0, PHOTO_S: 0 }, cards: ["CARD_1"] }, 0, 1).state, "READY");
   });
 
   const k = (status: string, photoCount: number, cardCount: number, orphanedAt: Date | null = null) => ({
@@ -516,9 +528,13 @@ describe("PP-4 kit progress + the order-list badge", () => {
   test("summary sums kits, ignores removed-line kits", () => {
     assert.equal(orderPrintSummary([]), null);
     assert.equal(orderPrintSummary([k("PENDING", 3, 0, new Date())]), null);
-    assert.equal(orderPrintSummary([k("PENDING", 9, 0), k("READY", 14, 2)])?.label, "Photos pending 23/28");
+    assert.equal(orderPrintSummary([k("PENDING", 0, 0), k("READY", 14, 2)])?.label, "Photos pending 14/28");
+    assert.equal(orderPrintSummary([k("PENDING", 9, 0), k("READY", 14, 2)])?.label, "Cards pending 2/4");
     assert.equal(orderPrintSummary([k("PENDING", 14, 1)])?.label, "Cards pending 1/2");
     assert.equal(orderPrintSummary([k("READY", 14, 2), k("PRINTED", 14, 2)])?.state, "READY");
+    assert.equal(orderPrintSummary([k("READY", 12, 2)])?.state, "READY");
+    assert.equal(orderPrintSummary([k("READY", 12, 2), k("READY", 14, 2)])?.label, "Ready to print · 26/28 photos");
+    assert.equal(orderPrintSummary([k("PRINTED", 12, 2)])?.state, "PRINTED");
     assert.equal(orderPrintSummary([k("PRINTED", 14, 2)])?.state, "PRINTED");
     assert.equal(orderPrintSummary([k("PRINTED", 14, 2), k("CHANGED_AFTER_PRINT", 14, 2)])?.state, "CHANGED_AFTER_PRINT");
   });

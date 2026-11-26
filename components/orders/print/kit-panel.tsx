@@ -254,7 +254,8 @@ export function KitPanel({
               📷 ছবি যোগ করুন / Add photos
             </Button>
             <span className="text-xs text-muted-foreground">
-              Pick all {progress.photosNeeded} at once — first {kit.spec.photos.PHOTO_L} go to big, the rest to small.
+              Up to {progress.photosNeeded} photos (fewer is fine) — pick them all at once; first{" "}
+              {kit.spec.photos.PHOTO_L} go to big, the rest to small.
             </span>
           </div>
           {queue.length > 0 && (

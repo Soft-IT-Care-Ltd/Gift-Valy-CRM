@@ -31,8 +31,8 @@ import { renderInfoText, renderPrintPdf } from "./print-pdf";
 // its last change, text, names), and the info box (order no., recipient,
 // phone, delivery). The file is INVOICE_DIR/print/<orderNo>-<hash>.pdf, so any
 // change to a photo, crop, card or setting simply gives a new name — a stale
-// PDF can never be served. Built when a kit becomes ready (warmPrintPdf, after
-// every kit change) or on first open.
+// PDF can never be served. Built ahead of time once the photos and cards stop
+// changing (warmPrintPdf, debounced after every kit change) or on first open.
 
 /** Bump when the drawing changes, so cached PDFs are rebuilt. */
 const PDF_RENDER_VERSION = 1;
@@ -74,7 +74,8 @@ function infoFor(o: OrderForPrint): InfoForPrint {
   };
 }
 
-/** Every live kit has all its photos and cards. */
+/** The kit can be printed: at least one photo (up to the frame's count —
+ *  empty slots are left out of the PDF) and every card (kitProgress). */
 export function kitIsComplete(k: { spec: unknown; photoCount: number; cardCount: number }): boolean {
   const spec = normalizePrintKit(k.spec);
   return !!spec && kitProgress(spec, k.photoCount, k.cardCount).state === "READY";
@@ -198,15 +199,25 @@ export async function getOrderPrintPdf(orderId: number): Promise<{ file: string;
   return { file: await job, hash, orderNo: order.orderNo };
 }
 
-/** Builds the PDF ahead of time once the order's kits are all ready. Never
- *  throws — a kit that isn't ready yet, or a failed build, is simply skipped
- *  (the Print button builds it again). */
-export async function warmPrintPdf(orderId: number): Promise<void> {
-  try {
-    await getOrderPrintPdf(orderId);
-  } catch (e) {
-    if (!(e instanceof AuthzError)) console.error(`Print PDF warm-up failed for order ${orderId}:`, e);
-  }
+/** Quiet time after an order's last photo/card change before the warm-up
+ *  build. A kit is printable from its first photo, so without it every photo
+ *  of a 14-photo upload would build (and throw away) a whole PDF. */
+const WARM_DELAY_MS = 15_000;
+const warmTimers = new Map<number, ReturnType<typeof setTimeout>>();
+
+/** Builds the PDF ahead of time, WARM_DELAY_MS after the order's last kit
+ *  change. Never throws — a kit that isn't ready yet, or a failed build, is
+ *  simply skipped (the Print button builds it again). */
+export function warmPrintPdf(orderId: number): void {
+  clearTimeout(warmTimers.get(orderId));
+  const timer = setTimeout(() => {
+    warmTimers.delete(orderId);
+    getOrderPrintPdf(orderId).catch((e) => {
+      if (!(e instanceof AuthzError)) console.error(`Print PDF warm-up failed for order ${orderId}:`, e);
+    });
+  }, WARM_DELAY_MS);
+  timer.unref?.();
+  warmTimers.set(orderId, timer);
 }
 
 /**

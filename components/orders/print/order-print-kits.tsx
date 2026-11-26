@@ -149,7 +149,11 @@ export function OrderPrintKits({
                 }`}
               >
                 Kit {i + 1}
-                {k.orphaned ? " (removed)" : ""} · {k.progress.state === "READY" ? "✓" : `${k.progress.photos}/${k.progress.photosNeeded}`}
+                {k.orphaned ? " (removed)" : ""} · {k.progress.state === "READY"
+                  ? k.progress.photos < k.progress.photosNeeded
+                    ? `✓ ${k.progress.photos}/${k.progress.photosNeeded}`
+                    : "✓"
+                  : `${k.progress.photos}/${k.progress.photosNeeded}`}
               </button>
             ))}
           </div>

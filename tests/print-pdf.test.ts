@@ -109,6 +109,16 @@ describe("PP-6 plan: kit + layout → pages", () => {
     assert.equal(pages[0].info.pageLabel, "Page 1 of 1");
   });
 
+  test("12 of a 14-photo frame: 10 big + 2 small + both cards, the empty small slots left out", () => {
+    const kit = fullKit();
+    kit.photos = kit.photos.filter((p) => p.slot === "PHOTO_L" || p.position <= 2);
+    const pages = planPrintPages([kit], PRINT_LAYOUTS.BORDERLESS_2, DEFAULT_PRINT_SIZES, INFO);
+    const placed = pages.flatMap((pg) => pg.images);
+    assert.equal(placed.filter((i) => i.kind === "photo").length, 12);
+    assert.equal(placed.filter((i) => i.kind === "card").length, 2);
+    assert.ok(!placed.some((i) => i.slot === "PHOTO_S" && i.n > 2));
+  });
+
   test("two kits: each starts on a new page, pages counted per kit", () => {
     const pages = planPrintPages([fullKit("a"), fullKit("b")], PRINT_LAYOUTS.BORDERLESS_2, DEFAULT_PRINT_SIZES, INFO);
     assert.equal(pages.length, 4);
