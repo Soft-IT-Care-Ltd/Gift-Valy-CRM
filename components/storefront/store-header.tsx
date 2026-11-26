@@ -16,7 +16,7 @@ export async function StoreHeader() {
         <div className="sf-container flex h-16 items-center gap-3">
           <Link href="/" className="flex min-h-12 shrink-0 items-center" aria-label={copy.header.home}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/shop/logo.png" alt="Gift Valy" width={163} height={49} className="h-10 w-auto md:h-11" />
+            <img src="/shop/logo.png" alt="Gift Valy" width={562} height={150} className="h-10 w-auto md:h-12" />
           </Link>
           <nav aria-label={copy.header.categories} className="mx-auto hidden min-w-0 items-center gap-1 lg:flex">
             {categories.slice(0, 7).map((c) => (

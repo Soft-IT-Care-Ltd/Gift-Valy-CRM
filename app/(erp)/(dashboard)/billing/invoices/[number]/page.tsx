@@ -1,4 +1,3 @@
-import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
@@ -6,6 +5,7 @@ import { requirePagePermission } from "@/lib/page-auth";
 import { readBillingSnapshot } from "@/lib/platform/billing";
 import { InvoiceBody, InvoiceStatusBadge } from "@/components/billing/billing-parts";
 import { PrintButton } from "@/components/billing/print-button";
+import { BrandLogo } from "@/components/brand-logo";
 
 export const dynamic = "force-dynamic";
 
@@ -37,7 +37,7 @@ export default async function BillingInvoicePage({
             <div className="text-sm text-muted-foreground">Billed to Gift Valy</div>
           </div>
           <div className="flex flex-col items-end gap-2">
-            <Image src="/gift-valy-logo.png" alt="Gift Valy" width={815} height={246} className="h-7 w-auto" />
+            <BrandLogo className="h-8" />
             <InvoiceStatusBadge status={invoice.status} />
           </div>
         </div>

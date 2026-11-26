@@ -39,7 +39,7 @@ const OPEN_ASSETS: OpenRule[] = [
   { path: /^\/icons\/[^/]+$/, why: "PWA icons" },
   { path: /^\/favicon\.ico$/, why: "browser tab icon" },
   { path: /^\/fonts\/[^/]+$/, why: "Bangla font for the open pages" },
-  { path: /^\/gift-valy-logo\.png$/, why: "logo on the sign-in and Billing pages" },
+  { path: /^\/gift-valy-logo(-dark)?\.png$/, why: "logo on the sign-in and Billing pages (and its dark-mode twin)" },
 ];
 
 export const BILLING_LOCK_OPEN = { pages: OPEN_PAGES, api: OPEN_API, assets: OPEN_ASSETS };

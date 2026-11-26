@@ -1,7 +1,7 @@
 /*
  * ROUND3 W-4 — the website's own stylesheet: the Gift Valy brand from the
- * logo (Settings → Invoice branding / public/shop/logo.png) — the navy of the
- * lettering and the orange of the gift box, on a warm cream. Baloo Da 2
+ * logo (public/shop/logo.png) — the navy of "Gift" and the orange of "Valy"
+ * and its diamond, on a warm cream. Baloo Da 2
  * (rounded, like the logo's letters) for headings, Hind Siliguri for text;
  * both render Bangla names. Never the ERP's violet: the two root layouts
  * never share CSS, and Tailwind scans only the storefront's files here.

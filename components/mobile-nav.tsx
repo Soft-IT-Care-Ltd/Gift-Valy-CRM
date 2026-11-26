@@ -5,9 +5,9 @@
 // header opens a slide-over drawer carrying the exact same SidebarNav tree;
 // it closes on route change (link tapped) and on backdrop/Escape.
 import { useEffect, useState } from "react";
-import Image from "next/image";
 import { Menu, X } from "lucide-react";
 import { SidebarNav, type NavGroup } from "@/components/sidebar-nav";
+import { BrandLogo } from "@/components/brand-logo";
 
 export function MobileNav({ groups }: { groups: NavGroup[] }) {
   const [open, setOpen] = useState(false);
@@ -40,13 +40,7 @@ export function MobileNav({ groups }: { groups: NavGroup[] }) {
           />
           <div className="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col border-r bg-background shadow-xl">
             <div className="flex h-14 shrink-0 items-center justify-between border-b px-4">
-              <Image
-                src="/gift-valy-logo.png"
-                alt="Gift Valy"
-                width={815}
-                height={246}
-                className="h-7 w-auto"
-              />
+              <BrandLogo className="h-7" />
               <button
                 type="button"
                 aria-label="Close menu"

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
-import Image from "next/image";
+import { BrandLogo } from "@/components/brand-logo";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -50,14 +50,7 @@ export function LoginForm({
     <Card className="w-full max-w-sm">
       <CardHeader className="text-center">
         <div className="flex justify-center">
-          <Image
-            src="/gift-valy-logo.png"
-            alt="Gift Valy"
-            width={815}
-            height={246}
-            priority
-            className="h-12 w-auto"
-          />
+          <BrandLogo priority className="h-14" />
         </div>
         <CardDescription className="mt-3">
           Business Management — sign in

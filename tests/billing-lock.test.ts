@@ -72,6 +72,7 @@ describe("GV-7 closed by default", () => {
     "/favicon.ico",
     "/fonts/NotoSansBengali-Bold.ttf",
     "/fonts/NotoSansBengali-Regular.ttf",
+    "/gift-valy-logo-dark.png",
     "/gift-valy-logo.png",
     "/icons/apple-touch-icon.png",
     "/icons/icon-192.png",

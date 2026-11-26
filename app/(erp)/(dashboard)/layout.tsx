@@ -1,4 +1,3 @@
-import Image from "next/image";
 import { redirect } from "next/navigation";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -17,6 +16,7 @@ import { SignOutButton } from "@/components/sign-out-button";
 import { NotificationBell } from "@/components/notification-bell";
 import { unreadNotificationCount } from "@/lib/notifications";
 import { MobileNav } from "@/components/mobile-nav";
+import { BrandLogo } from "@/components/brand-logo";
 import {
   SidebarNav,
   type NavGroup,
@@ -302,14 +302,7 @@ export default async function DashboardLayout({
     <div className="flex min-h-screen">
       <aside className="hidden w-60 shrink-0 flex-col border-r bg-background md:flex print:hidden">
         <div className="flex h-14 items-center border-b px-4">
-          <Image
-            src="/gift-valy-logo.png"
-            alt="Gift Valy"
-            width={815}
-            height={246}
-            priority
-            className="h-8 w-auto"
-          />
+          <BrandLogo priority className="h-9" />
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           <SidebarNav groups={navGroups} />
@@ -331,13 +324,7 @@ export default async function DashboardLayout({
           {/* §R11 — phones get a hamburger drawer with the full nav tree. */}
           <div className="flex items-center gap-1.5 md:hidden">
             <MobileNav groups={navGroups} />
-            <Image
-              src="/gift-valy-logo.png"
-              alt="Gift Valy"
-              width={815}
-              height={246}
-              className="h-7 w-auto"
-            />
+            <BrandLogo className="h-6" />
           </div>
           <div className="ml-auto flex min-w-0 items-center gap-3">
             <div className="min-w-0 text-right">
